@@ -1,5 +1,5 @@
 {
-  "name": "copilot-proxy",
+  "name": "@jer-y/copilot-proxy",
   "type": "module",
   "version": "0.1.0",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
