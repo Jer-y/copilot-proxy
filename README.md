@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 # Copilot API Proxy
 
 > [!WARNING]
@@ -25,12 +27,13 @@
 
 ## Project Overview
 
-A reverse-engineered proxy for the GitHub Copilot API that exposes it as an OpenAI and Anthropic compatible service. This allows you to use GitHub Copilot with any tool that supports the OpenAI Chat Completions API or the Anthropic Messages API, including to power [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
+A reverse-engineered proxy for the GitHub Copilot API that exposes it as an OpenAI- and Anthropic-compatible service. This lets you use GitHub Copilot with tools that support OpenAI Chat Completions/Responses or Anthropic Messages, including [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and OpenAI Codex.
 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
 - **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for thinking-mode models like `gpt-5`, `gpt-5.1-codex`, `gpt-5.2-codex`, `o3-mini`, and `o4-mini`.
+- **Codex Ready**: Works with OpenAI Codex CLI/SDK by pointing its base URL to this proxy.
 - **Model-Aware Translation**: Automatically applies model-specific optimizations — prompt caching (`copilot_cache_control`) for Claude models, `reasoning_effort` mapping from Anthropic's `thinking.budget_tokens`, and intelligent model name normalization (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
@@ -115,7 +118,7 @@ mkdir -p ./copilot-data
 # Run the container with a bind mount to persist the token
 # This ensures your authentication survives container restarts
 
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy copilot-proxy
+docker run -p 4399:4399 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy copilot-proxy
 ```
 
 > **Note:**
@@ -130,10 +133,10 @@ You can pass the GitHub token directly to the container using environment variab
 docker build --build-arg GH_TOKEN=your_github_token_here -t copilot-proxy .
 
 # Run with GitHub token
-docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-proxy
+docker run -p 4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy
 
 # Run with additional options
-docker run -p 4141:4141 -e GH_TOKEN=your_token copilot-proxy start --verbose --port 4141
+docker run -p 4399:4399 -e GH_TOKEN=your_token copilot-proxy start --verbose --port 4399
 ```
 
 ### Docker Compose Example
@@ -144,7 +147,7 @@ services:
   copilot-proxy:
     build: .
     ports:
-      - '4141:4141'
+      - '4399:4399'
     environment:
       - GH_TOKEN=your_github_token_here
     restart: unless-stopped
@@ -196,7 +199,7 @@ The following command line options are available for the `start` command:
 
 | Option         | Description                                                                   | Default    | Alias |
 | -------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
-| --port         | Port to listen on                                                             | 4141       | -p    |
+| --port         | Port to listen on                                                             | 4399       | -p    |
 | --verbose      | Enable verbose logging                                                        | false      | -v    |
 | --account-type | Account type to use (individual, business, enterprise)                        | individual | -a    |
 | --manual       | Enable manual request approval                                                | false      | none  |
@@ -317,7 +320,7 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
     npx @jer-y/copilot-proxy@latest start
     ```
 2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
-    `https://jer-y.github.io/copilot-proxy?endpoint=http://localhost:4141/usage`
+    `https://jer-y.github.io/copilot-proxy?endpoint=http://localhost:4399/usage`
     - If you use the `start.bat` script on Windows, this page will open automatically.
 
 The dashboard provides a user-friendly interface to view your Copilot usage data:
@@ -356,7 +359,7 @@ Here is an example `.claude/settings.json` file:
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_BASE_URL": "http://localhost:4399",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
     "ANTHROPIC_MODEL": "gpt-4.1",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4.1",

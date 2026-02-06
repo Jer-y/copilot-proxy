@@ -2,7 +2,7 @@
   "name": "@jer-y/copilot-proxy",
   "type": "module",
   "version": "0.1.0",
-  "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
+  "description": "Turn GitHub Copilot into an OpenAI/Anthropic-compatible server with Claude Code and Codex support.",
   "author": "jer-y",
   "homepage": "https://github.com/jer-y/copilot-proxy",
   "repository": {
