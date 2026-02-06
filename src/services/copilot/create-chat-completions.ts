@@ -147,6 +147,8 @@ export interface ChatCompletionsPayload {
     | { type: 'function', function: { name: string } }
     | null
   user?: string | null
+  reasoning_effort?: 'low' | 'medium' | 'high' | null
+  snippy?: { enabled: boolean } | null
 }
 
 export interface Tool {
@@ -156,6 +158,7 @@ export interface Tool {
     description?: string
     parameters: Record<string, unknown>
   }
+  copilot_cache_control?: { type: 'ephemeral' } | null
 }
 
 export interface Message {
@@ -165,6 +168,7 @@ export interface Message {
   name?: string
   tool_calls?: Array<ToolCall>
   tool_call_id?: string
+  copilot_cache_control?: { type: 'ephemeral' } | null
 }
 
 export interface ToolCall {

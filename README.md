@@ -30,6 +30,8 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as an Open
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
+- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for thinking-mode models like `gpt-5`, `gpt-5.1-codex`, `gpt-5.2-codex`, `o3-mini`, and `o4-mini`.
+- **Model-Aware Translation**: Automatically applies model-specific optimizations — prompt caching (`copilot_cache_control`) for Claude models, `reasoning_effort` mapping from Anthropic's `thinking.budget_tokens`, and intelligent model name normalization (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
@@ -173,7 +175,7 @@ The following command line options are available for the `start` command:
 
 ## API Endpoints
 
-The server exposes several endpoints to interact with the Copilot API. It provides OpenAI-compatible endpoints and now also includes support for Anthropic-compatible endpoints, allowing for greater flexibility with different tools and services.
+The server exposes several endpoints to interact with the Copilot API. It provides OpenAI-compatible endpoints and Anthropic-compatible endpoints, allowing for greater flexibility with different tools and services. All endpoints are available with or without the `/v1/` prefix.
 
 ### OpenAI Compatible Endpoints
 
@@ -185,9 +187,17 @@ These endpoints mimic the OpenAI API structure.
 | `GET /v1/models`            | `GET`  | Lists the currently available models.                     |
 | `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.  |
 
+### OpenAI Responses API Endpoint
+
+This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format, used by thinking-mode models such as `gpt-5`, `gpt-5.1-codex`, `gpt-5.2-codex`, `o3-mini`, and `o4-mini`. Requests are forwarded directly to Copilot's `/responses` endpoint.
+
+| Endpoint              | Method | Description                                                              |
+| --------------------- | ------ | ------------------------------------------------------------------------ |
+| `POST /v1/responses`  | `POST` | Creates a model response using the Responses API (supports streaming).   |
+
 ### Anthropic Compatible Endpoints
 
-These endpoints are designed to be compatible with the Anthropic Messages API.
+These endpoints are designed to be compatible with the Anthropic Messages API. Incoming Anthropic-format requests are automatically translated to the OpenAI format before being sent to Copilot, and responses are translated back.
 
 | Endpoint                         | Method | Description                                                  |
 | -------------------------------- | ------ | ------------------------------------------------------------ |
@@ -196,7 +206,7 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 
 ### Usage Monitoring Endpoints
 
-New endpoints for monitoring your Copilot usage and quotas.
+Endpoints for monitoring your Copilot usage and quotas.
 
 | Endpoint     | Method | Description                                                  |
 | ------------ | ------ | ------------------------------------------------------------ |

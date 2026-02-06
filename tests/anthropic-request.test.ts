@@ -199,6 +199,215 @@ describe('Anthropic to OpenAI translation logic', () => {
   })
 })
 
+describe('Model name normalization via translateToOpenAI', () => {
+  const makePayload = (model: string): AnthropicMessagesPayload => ({
+    model,
+    messages: [{ role: 'user', content: 'Hello!' }],
+    max_tokens: 100,
+  })
+
+  test('should normalize claude-sonnet-4-20250514 to claude-sonnet-4', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-20250514'))
+    expect(result.model).toBe('claude-sonnet-4')
+  })
+
+  test('should normalize claude-opus-4-20250514 to claude-opus-4', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-20250514'))
+    expect(result.model).toBe('claude-opus-4')
+  })
+
+  test('should normalize claude-haiku-4-20250514 to claude-haiku-4', () => {
+    const result = translateToOpenAI(makePayload('claude-haiku-4-20250514'))
+    expect(result.model).toBe('claude-haiku-4')
+  })
+
+  test('should normalize claude-sonnet-4.5-20250514 to claude-sonnet-4.5', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4.5-20250514'))
+    expect(result.model).toBe('claude-sonnet-4.5')
+  })
+
+  test('should normalize claude-opus-4.5-20250514 to claude-opus-4.5', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.5-20250514'))
+    expect(result.model).toBe('claude-opus-4.5')
+  })
+
+  test('should normalize claude-opus-4.6-20250514 to claude-opus-4.6', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6-20250514'))
+    expect(result.model).toBe('claude-opus-4.6')
+  })
+
+  test('should normalize claude-haiku-4.5-20250514 to claude-haiku-4.5', () => {
+    const result = translateToOpenAI(makePayload('claude-haiku-4.5-20250514'))
+    expect(result.model).toBe('claude-haiku-4.5')
+  })
+
+  test('should normalize claude-sonnet-4-5-20250929 to claude-sonnet-4.5', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-5-20250929'))
+    expect(result.model).toBe('claude-sonnet-4.5')
+  })
+
+  test('should leave gpt-4o unchanged', () => {
+    const result = translateToOpenAI(makePayload('gpt-4o'))
+    expect(result.model).toBe('gpt-4o')
+  })
+
+  test('should leave claude-sonnet-4 unchanged (no suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4'))
+    expect(result.model).toBe('claude-sonnet-4')
+  })
+})
+
+describe('copilot_cache_control injection for Claude models', () => {
+  test('should add copilot_cache_control to system message for Claude models', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      system: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+    }
+    const result = translateToOpenAI(payload)
+    const systemMessage = result.messages.find(m => m.role === 'system')
+    expect(systemMessage).toBeDefined()
+    expect(systemMessage?.copilot_cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  test('should add copilot_cache_control to the last tool for Claude models', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tools: [
+        {
+          name: 'tool_a',
+          description: 'First tool',
+          input_schema: { type: 'object' },
+        },
+        {
+          name: 'tool_b',
+          description: 'Second tool',
+          input_schema: { type: 'object' },
+        },
+      ],
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.tools).toBeDefined()
+    expect(result.tools!.length).toBe(2)
+    // First tool should NOT have copilot_cache_control
+    expect(result.tools![0].copilot_cache_control).toBeUndefined()
+    // Last tool should have copilot_cache_control
+    expect(result.tools![1].copilot_cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  test('should add copilot_cache_control to the only tool for Claude models', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tools: [
+        {
+          name: 'tool_a',
+          description: 'Only tool',
+          input_schema: { type: 'object' },
+        },
+      ],
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.tools![0].copilot_cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  test('should NOT add copilot_cache_control for non-Claude models', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-4o',
+      system: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tools: [
+        {
+          name: 'tool_a',
+          description: 'A tool',
+          input_schema: { type: 'object' },
+        },
+      ],
+    }
+    const result = translateToOpenAI(payload)
+    const systemMessage = result.messages.find(m => m.role === 'system')
+    expect(systemMessage).toBeDefined()
+    expect(systemMessage?.copilot_cache_control).toBeUndefined()
+    expect(result.tools![0].copilot_cache_control).toBeUndefined()
+  })
+})
+
+describe('reasoning_effort mapping', () => {
+  test('should map thinking budget_tokens to reasoning_effort high', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      thinking: {
+        type: 'enabled',
+        budget_tokens: 4096,
+      },
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBe('high')
+  })
+
+  test('should use model default reasoning_effort when thinking is not set', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBe('high')
+  })
+
+  test('should not include reasoning_effort when thinking is not set', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBeUndefined()
+  })
+
+  test('should not include reasoning_effort when thinking has no budget_tokens', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      thinking: {
+        type: 'enabled',
+      },
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBeUndefined()
+  })
+})
+
+describe('snippy field', () => {
+  test('should always include snippy: { enabled: false }', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.snippy).toEqual({ enabled: false })
+  })
+
+  test('should include snippy for Claude models', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.snippy).toEqual({ enabled: false })
+  })
+})
+
 describe('OpenAI Chat Completion v1 Request Payload Validation with Zod', () => {
   test('should return true for a minimal valid request payload', () => {
     const validPayload = {

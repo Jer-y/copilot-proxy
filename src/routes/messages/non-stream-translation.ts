@@ -1,6 +1,7 @@
 import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, AnthropicMessage, AnthropicMessagesPayload, AnthropicResponse, AnthropicTextBlock, AnthropicThinkingBlock, AnthropicTool, AnthropicToolResultBlock, AnthropicToolUseBlock, AnthropicUserContentBlock, AnthropicUserMessage } from './anthropic-types'
 
 import type { ChatCompletionResponse, ChatCompletionsPayload, ContentPart, Message, TextPart, Tool, ToolCall } from '~/services/copilot/create-chat-completions'
+import { getModelConfig } from '~/lib/model-config'
 import { mapOpenAIStopReasonToAnthropic } from './utils'
 
 // Payload translation
@@ -8,31 +9,81 @@ import { mapOpenAIStopReasonToAnthropic } from './utils'
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
 ): ChatCompletionsPayload {
+  const model = translateModelName(payload.model)
+  const modelConfig = getModelConfig(model)
+  const enableCacheControl = modelConfig.enableCacheControl === true
+
+  const messages = translateAnthropicMessagesToOpenAI(
+    payload.messages,
+    payload.system,
+  )
+
+  // Add copilot_cache_control to the system message for Claude models
+  if (enableCacheControl) {
+    const systemMessage = messages.find(m => m.role === 'system')
+    if (systemMessage) {
+      systemMessage.copilot_cache_control = { type: 'ephemeral' }
+    }
+  }
+
+  const tools = translateAnthropicToolsToOpenAI(payload.tools)
+
+  // Add copilot_cache_control to the last tool for Claude models
+  if (enableCacheControl && tools && tools.length > 0) {
+    tools[tools.length - 1].copilot_cache_control = { type: 'ephemeral' }
+  }
+
+  // Map Anthropic thinking budget_tokens to reasoning_effort
+  let reasoning_effort: 'low' | 'medium' | 'high' | undefined
+  if (payload.thinking?.budget_tokens) {
+    reasoning_effort = 'high'
+  }
+  else if (modelConfig.thinkingMode !== true && modelConfig.defaultReasoningEffort) {
+    reasoning_effort = modelConfig.defaultReasoningEffort
+  }
+
   return {
-    model: translateModelName(payload.model),
-    messages: translateAnthropicMessagesToOpenAI(
-      payload.messages,
-      payload.system,
-    ),
+    model,
+    messages,
     max_tokens: payload.max_tokens,
     stop: payload.stop_sequences,
     stream: payload.stream,
     temperature: payload.temperature,
     top_p: payload.top_p,
     user: payload.metadata?.user_id,
-    tools: translateAnthropicToolsToOpenAI(payload.tools),
+    tools,
     tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
+    snippy: { enabled: false },
+    ...(reasoning_effort && { reasoning_effort }),
   }
 }
 
 function translateModelName(model: string): string {
-  // Subagent requests use a specific model number which Copilot doesn't support
-  if (model.startsWith('claude-sonnet-4-')) {
-    return model.replace(/^claude-sonnet-4-.*/, 'claude-sonnet-4')
+  // Claude subagent requests use specific version suffixes that Copilot doesn't support
+  // e.g., claude-sonnet-4-20250514 → claude-sonnet-4
+  const hyphenVersionMatch = model.match(
+    /^(claude-(?:sonnet|opus|haiku)-4)-(5|6)-\d+$/,
+  )
+  if (hyphenVersionMatch) {
+    return `${hyphenVersionMatch[1]}.${hyphenVersionMatch[2]}`
   }
-  else if (model.startsWith('claude-opus-')) {
-    return model.replace(/^claude-opus-4-.*/, 'claude-opus-4')
+  const claudePatterns = [
+    /^(claude-sonnet-4)-\d+$/,
+    /^(claude-opus-4)-\d+$/,
+    /^(claude-haiku-4)-\d+$/,
+    /^(claude-sonnet-4\.5)-\d+$/,
+    /^(claude-opus-4\.5)-\d+$/,
+    /^(claude-opus-4\.6)-\d+$/,
+    /^(claude-haiku-4\.5)-\d+$/,
+  ]
+
+  for (const pattern of claudePatterns) {
+    const match = model.match(pattern)
+    if (match) {
+      return match[1]
+    }
   }
+
   return model
 }
 
