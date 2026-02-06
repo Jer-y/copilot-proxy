@@ -1,7 +1,7 @@
 {
   "name": "copilot-proxy",
   "type": "module",
-  "version": "0.7.0",
+  "version": "0.1.0",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
   "author": "jer-y",
   "homepage": "https://github.com/jer-y/copilot-proxy",
