@@ -132,7 +132,7 @@ export const start = defineCommand({
     'port': {
       alias: 'p',
       type: 'string',
-      default: '4141',
+      default: '4399',
       description: 'Port to listen on',
     },
     'verbose': {

@@ -14,7 +14,7 @@ echo Starting server...
 echo The usage viewer page will open automatically after the server starts
 echo.
 
-start "" "https://jer-y.github.io/copilot-proxy?endpoint=http://localhost:4141/usage"
+start "" "https://jer-y.github.io/copilot-proxy?endpoint=http://localhost:4399/usage"
 bun run dev
 
 pause
