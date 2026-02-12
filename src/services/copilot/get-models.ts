@@ -3,8 +3,15 @@ import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 
 export async function getModels() {
+  const headers = copilotHeaders(state)
+  // Use GitHub OAuth token + copilot-developer-cli integration ID for models listing,
+  // as some models (e.g. claude-opus-4.6-1m) are only visible with this combination.
+  if (state.githubToken) {
+    headers.Authorization = `Bearer ${state.githubToken}`
+    headers['copilot-integration-id'] = 'copilot-developer-cli'
+  }
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
-    headers: copilotHeaders(state),
+    headers,
   })
 
   if (!response.ok)
