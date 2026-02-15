@@ -9,9 +9,10 @@ export async function createResponses(payload: ResponsesPayload) {
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
-  const hasVision = hasVisionInput(payload)
+  const inputArray = Array.isArray(payload.input) ? payload.input : []
+  const hasVision = inputArray.length > 0 && hasVisionInput(inputArray)
 
-  const isAgentCall = payload.input.some(item =>
+  const isAgentCall = inputArray.some(item =>
     ['assistant'].includes(item.role),
   )
 
@@ -38,7 +39,7 @@ export async function createResponses(payload: ResponsesPayload) {
   return (await response.json()) as ResponsesResponse
 }
 
-function hasVisionInput(payload: ResponsesPayload): boolean {
+function hasVisionInput(input: Array<ResponsesInputItem>): boolean {
   const visionTypes = new Set([
     'input_image',
     'image',
@@ -46,7 +47,7 @@ function hasVisionInput(payload: ResponsesPayload): boolean {
     'image_file',
   ])
 
-  return payload.input.some((item) => {
+  return input.some((item) => {
     if (!Array.isArray(item.content)) {
       return false
     }
@@ -59,7 +60,7 @@ function hasVisionInput(payload: ResponsesPayload): boolean {
 export interface ResponsesPayload {
   model: string
   instructions?: string
-  input: Array<ResponsesInputItem>
+  input: string | Array<ResponsesInputItem>
   tools?: Array<ResponsesTool>
   reasoning?: {
     effort?: 'low' | 'medium' | 'high' | 'xhigh'

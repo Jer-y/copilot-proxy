@@ -1,15 +1,31 @@
+import consola from 'consola'
+
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 
 export async function getModels() {
-  const headers = copilotHeaders(state)
-  // Use GitHub OAuth token + copilot-developer-cli integration ID for models listing,
-  // as some models (e.g. claude-opus-4.6-1m) are only visible with this combination.
+  // Try with copilot-developer-cli integration for extended model list
   if (state.githubToken) {
-    headers.Authorization = `Bearer ${state.githubToken}`
-    headers['copilot-integration-id'] = 'copilot-developer-cli'
+    try {
+      const cliHeaders = copilotHeaders(state)
+      cliHeaders.Authorization = `Bearer ${state.githubToken}`
+      cliHeaders['copilot-integration-id'] = 'copilot-developer-cli'
+      const response = await fetch(`${copilotBaseUrl(state)}/models`, {
+        headers: cliHeaders,
+      })
+      if (response.ok) {
+        return (await response.json()) as ModelsResponse
+      }
+      consola.warn(`copilot-developer-cli models request failed (${response.status} ${response.statusText}), falling back to standard auth`)
+    }
+    catch (e) {
+      consola.warn('copilot-developer-cli models request error, falling back:', e)
+    }
   }
+
+  // Fallback: standard copilot token auth
+  const headers = copilotHeaders(state)
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
     headers,
   })

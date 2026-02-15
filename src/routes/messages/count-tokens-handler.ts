@@ -20,7 +20,7 @@ export async function handleCountTokens(c: Context) {
     const openAIPayload = translateToOpenAI(anthropicPayload)
 
     const selectedModel = state.models?.data.find(
-      model => model.id === anthropicPayload.model,
+      model => model.id === openAIPayload.model,
     )
 
     if (!selectedModel) {

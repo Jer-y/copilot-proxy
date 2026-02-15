@@ -31,6 +31,3 @@ export async function getVSCodeVersion() {
     clearTimeout(timeout)
   }
 }
-
-// eslint-disable-next-line antfu/no-top-level-await
-await getVSCodeVersion()
