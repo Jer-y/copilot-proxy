@@ -62,19 +62,19 @@ function translateModelName(model: string): string {
   // Claude subagent requests use specific version suffixes that Copilot doesn't support
   // e.g., claude-sonnet-4-20250514 → claude-sonnet-4
   const hyphenVersionMatch = model.match(
-    /^(claude-(?:sonnet|opus|haiku)-4)-(5|6)-\d+$/,
+    /^(claude-(?:sonnet|opus|haiku)-4)-(5|6)(?:-\d{8,})?$/,
   )
   if (hyphenVersionMatch) {
     return `${hyphenVersionMatch[1]}.${hyphenVersionMatch[2]}`
   }
   const claudePatterns = [
-    /^(claude-sonnet-4)-\d+$/,
-    /^(claude-opus-4)-\d+$/,
-    /^(claude-haiku-4)-\d+$/,
-    /^(claude-sonnet-4\.5)-\d+$/,
-    /^(claude-opus-4\.5)-\d+$/,
-    /^(claude-opus-4\.6)-\d+$/,
-    /^(claude-haiku-4\.5)-\d+$/,
+    /^(claude-sonnet-4)-\d{8,}$/,
+    /^(claude-opus-4)-\d{8,}$/,
+    /^(claude-haiku-4)-\d{8,}$/,
+    /^(claude-sonnet-4\.5)-\d{8,}$/,
+    /^(claude-opus-4\.5)-\d{8,}$/,
+    /^(claude-opus-4\.6)-\d{8,}$/,
+    /^(claude-haiku-4\.5)-\d{8,}$/,
   ]
 
   for (const pattern of claudePatterns) {

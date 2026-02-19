@@ -246,6 +246,36 @@ describe('Model name normalization via translateToOpenAI', () => {
     expect(result.model).toBe('claude-sonnet-4.5')
   })
 
+  test('should normalize claude-sonnet-4-6 to claude-sonnet-4.6 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-6'))
+    expect(result.model).toBe('claude-sonnet-4.6')
+  })
+
+  test('should normalize claude-opus-4-6 to claude-opus-4.6 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-6'))
+    expect(result.model).toBe('claude-opus-4.6')
+  })
+
+  test('should normalize claude-haiku-4-6 to claude-haiku-4.6 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-haiku-4-6'))
+    expect(result.model).toBe('claude-haiku-4.6')
+  })
+
+  test('should normalize claude-haiku-4-5 to claude-haiku-4.5 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-haiku-4-5'))
+    expect(result.model).toBe('claude-haiku-4.5')
+  })
+
+  test('should normalize claude-sonnet-4-5 to claude-sonnet-4.5 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-5'))
+    expect(result.model).toBe('claude-sonnet-4.5')
+  })
+
+  test('should normalize claude-opus-4-5 to claude-opus-4.5 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-5'))
+    expect(result.model).toBe('claude-opus-4.5')
+  })
+
   test('should leave gpt-4o unchanged', () => {
     const result = translateToOpenAI(makePayload('gpt-4o'))
     expect(result.model).toBe('gpt-4o')
@@ -254,6 +284,21 @@ describe('Model name normalization via translateToOpenAI', () => {
   test('should leave claude-sonnet-4 unchanged (no suffix)', () => {
     const result = translateToOpenAI(makePayload('claude-sonnet-4'))
     expect(result.model).toBe('claude-sonnet-4')
+  })
+
+  test('should leave claude-sonnet-4-7 unchanged (unsupported minor)', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-7'))
+    expect(result.model).toBe('claude-sonnet-4-7')
+  })
+
+  test('should leave claude-sonnet-4-5-foo unchanged (malformed suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-5-foo'))
+    expect(result.model).toBe('claude-sonnet-4-5-foo')
+  })
+
+  test('should leave claude-sonnet-4-56 unchanged (concatenated version)', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4-56'))
+    expect(result.model).toBe('claude-sonnet-4-56')
   })
 })
 
