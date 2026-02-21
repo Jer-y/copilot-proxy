@@ -635,7 +635,7 @@ describe('Model variant routing', () => {
 
   test('speed field is not present in OpenAI output', () => {
     const result = translateToOpenAI(makePayload('claude-opus-4.6', { speed: 'fast' }))
-    expect((result as Record<string, unknown>).speed).toBeUndefined()
+    expect((result as unknown as Record<string, unknown>).speed).toBeUndefined()
   })
 
   test('model with date suffix is normalized before applying variant', () => {

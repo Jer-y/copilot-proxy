@@ -85,7 +85,7 @@ describe('Variant routing integration', () => {
     const result = translateToOpenAI(
       makePayload('claude-opus-4.6', { speed: 'fast' }),
     )
-    expect((result as Record<string, unknown>).speed).toBeUndefined()
+    expect((result as unknown as Record<string, unknown>).speed).toBeUndefined()
   })
 
   test('non-opus models are not affected by variant signals', () => {
