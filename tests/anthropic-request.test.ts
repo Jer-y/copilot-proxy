@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { z } from 'zod'
 
-import { translateToOpenAI } from '../src/routes/messages/non-stream-translation'
+import { applyModelVariant, parseBetaFeatures, translateToOpenAI } from '../src/routes/messages/non-stream-translation'
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
@@ -563,5 +563,101 @@ describe('OpenAI Chat Completion v1 Request Payload Validation with Zod', () => 
     expect(isValidChatCompletionRequest(undefined)).toBe(false)
     expect(isValidChatCompletionRequest('a string')).toBe(false)
     expect(isValidChatCompletionRequest(123)).toBe(false)
+  })
+})
+
+describe('Model variant routing', () => {
+  const makePayload = (model: string, extra?: Partial<AnthropicMessagesPayload>): AnthropicMessagesPayload => ({
+    model,
+    messages: [{ role: 'user', content: 'Hello!' }],
+    max_tokens: 100,
+    ...extra,
+  })
+
+  test('fast mode via speed: "fast" body field', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6', { speed: 'fast' }))
+    expect(result.model).toBe('claude-opus-4.6-fast')
+  })
+
+  test('fast mode via anthropic-beta header', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6'), { anthropicBeta: 'fast-mode-2026-02-01' })
+    expect(result.model).toBe('claude-opus-4.6-fast')
+  })
+
+  test('1m context via anthropic-beta header', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6'), { anthropicBeta: 'context-1m-2025-08-07' })
+    expect(result.model).toBe('claude-opus-4.6-1m')
+  })
+
+  test('comma-separated beta header parsing', () => {
+    const features = parseBetaFeatures('claude-code-2025-01-01, context-1m-2025-08-07')
+    expect(features.has('context-1m-2025-08-07')).toBe(true)
+    expect(features.has('claude-code-2025-01-01')).toBe(true)
+  })
+
+  test('fast takes priority over 1m when both present', () => {
+    const result = translateToOpenAI(
+      makePayload('claude-opus-4.6', { speed: 'fast' }),
+      { anthropicBeta: 'context-1m-2025-08-07, fast-mode-2026-02-01' },
+    )
+    expect(result.model).toBe('claude-opus-4.6-fast')
+  })
+
+  test('unsupported models are not affected by fast signal - sonnet-4.6', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4.6', { speed: 'fast' }))
+    expect(result.model).toBe('claude-sonnet-4.6')
+  })
+
+  test('unsupported models are not affected - sonnet-4', () => {
+    const result = translateToOpenAI(makePayload('claude-sonnet-4', { speed: 'fast' }))
+    expect(result.model).toBe('claude-sonnet-4')
+  })
+
+  test('unsupported models are not affected - opus-4.5', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.5'), { anthropicBeta: 'fast-mode-2026-02-01' })
+    expect(result.model).toBe('claude-opus-4.5')
+  })
+
+  test('unsupported models are not affected - gpt-4o', () => {
+    const result = translateToOpenAI(makePayload('gpt-4o', { speed: 'fast' }))
+    expect(result.model).toBe('gpt-4o')
+  })
+
+  test('speed: "normal" does not trigger fast mode', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6', { speed: 'normal' }))
+    expect(result.model).toBe('claude-opus-4.6')
+  })
+
+  test('no signal leaves model name unchanged', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6'))
+    expect(result.model).toBe('claude-opus-4.6')
+  })
+
+  test('speed field is not present in OpenAI output', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6', { speed: 'fast' }))
+    expect((result as Record<string, unknown>).speed).toBeUndefined()
+  })
+
+  test('model with date suffix is normalized before applying variant', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-6-20250514', { speed: 'fast' }))
+    expect(result.model).toBe('claude-opus-4.6-fast')
+  })
+
+  test('model with hyphen version is normalized before applying variant', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-6', { speed: 'fast' }))
+    expect(result.model).toBe('claude-opus-4.6-fast')
+  })
+
+  test('applyModelVariant directly - no variant for unknown model', () => {
+    const payload = makePayload('some-unknown-model', { speed: 'fast' })
+    expect(applyModelVariant('some-unknown-model', payload, undefined)).toBe('some-unknown-model')
+  })
+
+  test('parseBetaFeatures returns empty set for undefined', () => {
+    expect(parseBetaFeatures(undefined).size).toBe(0)
+  })
+
+  test('parseBetaFeatures returns empty set for empty string', () => {
+    expect(parseBetaFeatures('').size).toBe(0)
   })
 })

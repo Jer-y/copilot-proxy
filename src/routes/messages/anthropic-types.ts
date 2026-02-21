@@ -23,6 +23,7 @@ export interface AnthropicMessagesPayload {
     budget_tokens?: number
   }
   service_tier?: 'auto' | 'standard_only'
+  speed?: 'fast' | 'normal'
 }
 
 export interface AnthropicTextBlock {

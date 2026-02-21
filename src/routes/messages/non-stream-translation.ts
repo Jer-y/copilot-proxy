@@ -6,10 +6,59 @@ import { mapOpenAIStopReasonToAnthropic } from './utils'
 
 // Payload translation
 
+export interface TranslateOptions {
+  anthropicBeta?: string
+}
+
+/** Models that support variant suffixes (e.g. -fast, -1m) */
+const MODEL_VARIANTS: Record<string, Set<string>> = {
+  'claude-opus-4.6': new Set(['fast', '1m']),
+}
+
+/** Parse comma-separated anthropic-beta header into a Set of feature names */
+export function parseBetaFeatures(anthropicBeta: string | undefined): Set<string> {
+  if (!anthropicBeta) {
+    return new Set()
+  }
+  return new Set(anthropicBeta.split(',').map(s => s.trim()).filter(Boolean))
+}
+
+/** Apply model variant suffix based on speed field and beta header signals */
+export function applyModelVariant(
+  model: string,
+  payload: AnthropicMessagesPayload,
+  anthropicBeta: string | undefined,
+): string {
+  const normalizedModel = translateModelName(model)
+  const variants = MODEL_VARIANTS[normalizedModel]
+  if (!variants) {
+    return normalizedModel
+  }
+
+  const betaFeatures = parseBetaFeatures(anthropicBeta)
+
+  // Fast mode takes priority: speed body field or beta header
+  if (variants.has('fast')) {
+    if (payload.speed === 'fast' || betaFeatures.has('fast-mode-2026-02-01')) {
+      return `${normalizedModel}-fast`
+    }
+  }
+
+  // 1M context window
+  if (variants.has('1m')) {
+    if (betaFeatures.has('context-1m-2025-08-07')) {
+      return `${normalizedModel}-1m`
+    }
+  }
+
+  return normalizedModel
+}
+
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
+  options?: TranslateOptions,
 ): ChatCompletionsPayload {
-  const model = translateModelName(payload.model)
+  const model = applyModelVariant(payload.model, payload, options?.anthropicBeta)
   const modelConfig = getModelConfig(model)
   const enableCacheControl = modelConfig.enableCacheControl === true
 

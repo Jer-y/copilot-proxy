@@ -2,11 +2,44 @@ import type { Context } from 'hono'
 
 import type { AnthropicMessagesPayload } from './anthropic-types'
 
+import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 import { state } from '~/lib/state'
 
 import { getTokenCount } from '~/lib/tokenizer'
-import { translateToOpenAI } from './non-stream-translation'
+import { parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
+
+/**
+ * Find a model in the models list, falling back to the base model
+ * when a variant suffix (-fast, -1m) doesn't have its own entry.
+ */
+export function findModelWithFallback(
+  modelId: string,
+  models: Array<Model> | undefined,
+): Model | undefined {
+  if (!models) {
+    return undefined
+  }
+  const exact = models.find(m => m.id === modelId)
+  if (exact) {
+    return exact
+  }
+  // Strip variant suffix and retry
+  const baseModel = modelId.replace(/-(fast|1m)$/, '')
+  if (baseModel !== modelId) {
+    return models.find(m => m.id === baseModel)
+  }
+  return undefined
+}
+
+/**
+ * Determine if the request is from Claude Code based on anthropic-beta tokens.
+ * Order-independent: works regardless of token position in the header.
+ */
+export function isClaudeCodeRequest(anthropicBeta: string | undefined): boolean {
+  const betaFeatures = parseBetaFeatures(anthropicBeta)
+  return [...betaFeatures].some(f => f.startsWith('claude-code'))
+}
 
 /**
  * Handles token counting for Anthropic messages
@@ -17,11 +50,9 @@ export async function handleCountTokens(c: Context) {
 
     const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
 
-    const openAIPayload = translateToOpenAI(anthropicPayload)
+    const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
 
-    const selectedModel = state.models?.data.find(
-      model => model.id === openAIPayload.model,
-    )
+    const selectedModel = findModelWithFallback(openAIPayload.model, state.models?.data)
 
     if (!selectedModel) {
       consola.warn('Model not found, returning default token count')
@@ -34,7 +65,7 @@ export async function handleCountTokens(c: Context) {
 
     if (anthropicPayload.tools && anthropicPayload.tools.length > 0) {
       let mcpToolExist = false
-      if (anthropicBeta?.startsWith('claude-code')) {
+      if (isClaudeCodeRequest(anthropicBeta)) {
         mcpToolExist = anthropicPayload.tools.some(tool =>
           tool.name.startsWith('mcp__'),
         )

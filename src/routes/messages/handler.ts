@@ -22,10 +22,11 @@ import { translateChunkToAnthropicEvents } from './stream-translation'
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
+  const anthropicBeta = c.req.header('anthropic-beta')
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug('Anthropic request payload:', JSON.stringify(anthropicPayload))
 
-  const openAIPayload = translateToOpenAI(anthropicPayload)
+  const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
   consola.debug(
     'Translated OpenAI request payload:',
     JSON.stringify(openAIPayload),
