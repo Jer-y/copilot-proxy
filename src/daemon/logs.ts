@@ -65,6 +65,10 @@ function followLogsWatch(): void {
   fs.watchFile(PATHS.DAEMON_LOG, { interval: 500 }, () => {
     const fd = fs.openSync(PATHS.DAEMON_LOG, 'r')
     const stat = fs.fstatSync(fd)
+    if (stat.size < position) {
+      // File was truncated, reset
+      position = 0
+    }
     if (stat.size > position) {
       const buffer = Buffer.alloc(stat.size - position)
       fs.readSync(fd, buffer, 0, buffer.length, position)

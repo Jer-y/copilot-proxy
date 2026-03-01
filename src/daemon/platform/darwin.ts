@@ -10,9 +10,13 @@ const PLIST_NAME = 'com.copilot-proxy.plist'
 const LAUNCH_AGENTS_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents')
 const PLIST_PATH = path.join(LAUNCH_AGENTS_DIR, PLIST_NAME)
 
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 export async function installAutoStart(execPath: string, args: string[]): Promise<void> {
   const programArgs = [execPath, ...args]
-    .map(arg => `        <string>${arg}</string>`)
+    .map(arg => `        <string>${xmlEscape(arg)}</string>`)
     .join('\n')
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -30,9 +34,9 @@ ${programArgs}
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${PATHS.DAEMON_LOG}</string>
+    <string>${xmlEscape(PATHS.DAEMON_LOG)}</string>
     <key>StandardErrorPath</key>
-    <string>${PATHS.DAEMON_LOG}</string>
+    <string>${xmlEscape(PATHS.DAEMON_LOG)}</string>
 </dict>
 </plist>
 `

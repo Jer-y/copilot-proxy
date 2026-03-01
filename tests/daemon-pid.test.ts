@@ -12,9 +12,14 @@ afterEach(() => {
 })
 
 describe('writePid / readPid', () => {
-  test('writes and reads PID', () => {
+  test('writes and reads PID with startTime', () => {
+    const before = Date.now()
     writePid(12345)
-    expect(readPid()).toBe(12345)
+    const info = readPid()
+    expect(info).not.toBeNull()
+    expect(info!.pid).toBe(12345)
+    expect(info!.startTime).toBeGreaterThanOrEqual(before)
+    expect(info!.startTime).toBeLessThanOrEqual(Date.now())
   })
 
   test('returns null when no PID file', () => {
@@ -38,6 +43,19 @@ describe('writePid / readPid', () => {
 
   test('returns null for negative PID', () => {
     fs.writeFileSync(PATHS.DAEMON_PID, '-1')
+    expect(readPid()).toBeNull()
+  })
+
+  test('reads legacy format (PID only) with startTime 0', () => {
+    fs.writeFileSync(PATHS.DAEMON_PID, '12345')
+    const info = readPid()
+    expect(info).not.toBeNull()
+    expect(info!.pid).toBe(12345)
+    expect(info!.startTime).toBe(0)
+  })
+
+  test('returns null for valid PID with invalid startTime', () => {
+    fs.writeFileSync(PATHS.DAEMON_PID, '12345\nnotanumber')
     expect(readPid()).toBeNull()
   })
 })

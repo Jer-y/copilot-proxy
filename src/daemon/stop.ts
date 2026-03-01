@@ -5,13 +5,14 @@ import consola from 'consola'
 import { isProcessRunning, readPid, removePidFile } from '~/daemon/pid'
 
 function stopDaemon(): void {
-  const pid = readPid()
-  if (pid === null || !isProcessRunning(pid)) {
+  const info = readPid()
+  if (info === null || !isProcessRunning(info.pid)) {
     consola.info('Daemon is not running')
     removePidFile()
     return
   }
 
+  const pid = info.pid
   consola.info(`Stopping daemon (PID: ${pid})...`)
 
   try {

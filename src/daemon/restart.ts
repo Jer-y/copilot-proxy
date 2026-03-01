@@ -19,22 +19,22 @@ export const restart = defineCommand({
     }
 
     // Stop existing daemon if running
-    const pid = readPid()
-    if (pid !== null && isProcessRunning(pid)) {
-      consola.info(`Stopping daemon (PID: ${pid})...`)
+    const info = readPid()
+    if (info !== null && isProcessRunning(info.pid)) {
+      consola.info(`Stopping daemon (PID: ${info.pid})...`)
       try {
-        process.kill(pid, 'SIGTERM')
+        process.kill(info.pid, 'SIGTERM')
       }
       catch {}
 
       const deadline = Date.now() + 10_000
-      while (isProcessRunning(pid) && Date.now() < deadline) {
+      while (isProcessRunning(info.pid) && Date.now() < deadline) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
       }
 
-      if (isProcessRunning(pid)) {
+      if (isProcessRunning(info.pid)) {
         try {
-          process.kill(pid, 'SIGKILL')
+          process.kill(info.pid, 'SIGKILL')
         }
         catch {}
       }

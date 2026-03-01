@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import consola from 'consola'
 
 const TASK_NAME = 'CopilotProxy'
@@ -7,10 +7,18 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   const command = `"${execPath}" ${args.join(' ')}`
 
   try {
-    execSync(
-      `schtasks /create /tn "${TASK_NAME}" /tr "${command}" /sc onlogon /rl limited /f`,
-      { stdio: 'pipe' },
-    )
+    execFileSync('schtasks', [
+      '/create',
+      '/tn',
+      TASK_NAME,
+      '/tr',
+      command,
+      '/sc',
+      'onlogon',
+      '/rl',
+      'limited',
+      '/f',
+    ], { stdio: 'pipe' })
   }
   catch (error) {
     consola.error('Failed to create scheduled task:', error)
@@ -22,7 +30,7 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
 
 export async function uninstallAutoStart(): Promise<void> {
   try {
-    execSync(`schtasks /delete /tn "${TASK_NAME}" /f`, { stdio: 'pipe' })
+    execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
   }
   catch {}
 
