@@ -188,6 +188,12 @@ export const start = defineCommand({
       default: false,
       description: 'Initialize proxy from environment variables',
     },
+    'daemon': {
+      alias: 'd',
+      type: 'boolean',
+      default: false,
+      description: 'Run as a background daemon',
+    },
     '_supervisor': {
       type: 'boolean',
       default: false,
@@ -219,6 +225,30 @@ export const start = defineCommand({
       }
 
       return runAsSupervisor(() => runServer(options))
+    }
+
+    if (args.daemon) {
+      if (args['claude-code']) {
+        consola.error('Cannot use --claude-code with --daemon (interactive mode)')
+        process.exit(1)
+      }
+
+      const { daemonStart } = await import('~/daemon/start')
+      const rateLimitRaw = args['rate-limit']
+      const rateLimit = rateLimitRaw === undefined ? undefined : Number.parseInt(rateLimitRaw, 10)
+
+      daemonStart({
+        port: Number.parseInt(args.port, 10),
+        verbose: args.verbose,
+        accountType: args['account-type'],
+        manual: args.manual,
+        rateLimit,
+        rateLimitWait: args.wait,
+        githubToken: args['github-token'],
+        showToken: args['show-token'],
+        proxyEnv: args['proxy-env'],
+      })
+      return
     }
 
     const rateLimitRaw = args['rate-limit']
