@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -45,7 +45,7 @@ ${programArgs}
   fs.writeFileSync(PLIST_PATH, plist)
 
   try {
-    execSync(`launchctl load ${PLIST_PATH}`)
+    execFileSync('launchctl', ['load', PLIST_PATH])
   }
   catch {
     consola.warn('launchctl load failed. You may need to load it manually.')
@@ -55,16 +55,22 @@ ${programArgs}
   return true
 }
 
-export async function uninstallAutoStart(): Promise<void> {
+export async function uninstallAutoStart(): Promise<boolean> {
   try {
-    execSync(`launchctl unload ${PLIST_PATH}`, { stdio: 'pipe' })
+    execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
   }
   catch {}
 
   try {
     fs.unlinkSync(PLIST_PATH)
   }
-  catch {}
+  catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code !== 'ENOENT') {
+      consola.error('Failed to remove plist file:', error.message)
+      return false
+    }
+  }
 
   consola.success('Auto-start disabled')
+  return true
 }

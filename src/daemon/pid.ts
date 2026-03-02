@@ -10,7 +10,13 @@ export interface DaemonPidInfo {
 
 export function writePid(pid: number): void {
   fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
-  fs.writeFileSync(PATHS.DAEMON_PID, `${pid}\n${Date.now()}`, { mode: 0o644 })
+  const pidPath = PATHS.DAEMON_PID
+  fs.writeFileSync(pidPath, `${pid}\n${Date.now()}`, { mode: 0o600 })
+  // Ensure permissions are correct even if file already existed with wider perms
+  try {
+    fs.chmodSync(pidPath, 0o600)
+  }
+  catch {}
 }
 
 export function readPid(): DaemonPidInfo | null {

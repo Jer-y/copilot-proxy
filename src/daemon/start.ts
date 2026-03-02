@@ -90,6 +90,11 @@ export function daemonStart(config: DaemonConfig): void {
     const scriptPath = process.argv[1]
 
     const logStream = fs.openSync(PATHS.DAEMON_LOG, 'a', 0o600)
+    // Ensure permissions are correct even if file already existed with wider perms
+    try {
+      fs.fchmodSync(logStream, 0o600)
+    }
+    catch {}
 
     const child = spawn(execPath, [scriptPath, 'start', '--_supervisor'], {
       detached: true,

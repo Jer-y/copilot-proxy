@@ -14,10 +14,17 @@ export interface DaemonConfig {
   proxyEnv: boolean
 }
 
+const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise']
+
 export function saveDaemonConfig(config: DaemonConfig): void {
   const { githubToken: _removed, ...safeConfig } = config
   fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
   fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify(safeConfig, null, 2), { mode: 0o600 })
+  // Ensure permissions are correct even if file already existed with wider perms
+  try {
+    fs.chmodSync(PATHS.DAEMON_JSON, 0o600)
+  }
+  catch {}
 }
 
 export function loadDaemonConfig(): DaemonConfig | null {
@@ -30,7 +37,7 @@ export function loadDaemonConfig(): DaemonConfig | null {
       return null
     if (typeof data.verbose !== 'boolean')
       return null
-    if (typeof data.accountType !== 'string')
+    if (typeof data.accountType !== 'string' || !VALID_ACCOUNT_TYPES.includes(data.accountType))
       return null
     if (typeof data.manual !== 'boolean')
       return null

@@ -11,9 +11,11 @@ const SERVICE_DIR = path.join(os.homedir(), '.config', 'systemd', 'user')
 const SERVICE_PATH = path.join(SERVICE_DIR, `${SERVICE_NAME}.service`)
 
 function shellQuote(s: string): string {
-  if (/^[\w/.:-]+$/.test(s))
-    return s
-  return `"${s.replace(/"/g, '\\"')}"`
+  // Escape % for systemd (% is a specifier prefix in unit files)
+  const escaped = s.replace(/%/g, '%%')
+  if (/^[\w/.:-]+$/.test(escaped))
+    return escaped
+  return `"${escaped.replace(/"/g, '\\"')}"`
 }
 
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
@@ -34,8 +36,8 @@ After=network-online.target
 ExecStart=${shellQuote(execPath)} ${args.map(a => shellQuote(a)).join(' ')}
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:${PATHS.DAEMON_LOG}
-StandardError=append:${PATHS.DAEMON_LOG}
+StandardOutput=append:${PATHS.DAEMON_LOG.replace(/%/g, '%%')}
+StandardError=append:${PATHS.DAEMON_LOG.replace(/%/g, '%%')}
 
 [Install]
 WantedBy=default.target
@@ -74,22 +76,30 @@ WantedBy=default.target
   return true
 }
 
-export async function uninstallAutoStart(): Promise<void> {
+export async function uninstallAutoStart(): Promise<boolean> {
   try {
     execSync(`systemctl --user stop ${SERVICE_NAME}`, { stdio: 'pipe' })
     execSync(`systemctl --user disable ${SERVICE_NAME}`, { stdio: 'pipe' })
   }
-  catch {}
+  catch (error) {
+    consola.warn('Failed to stop/disable service:', error instanceof Error ? error.message : error)
+  }
 
   try {
     fs.unlinkSync(SERVICE_PATH)
   }
-  catch {}
+  catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code !== 'ENOENT') {
+      consola.error('Failed to remove service file:', error.message)
+      return false
+    }
+  }
 
   try {
-    execSync('systemctl --user daemon-reload')
+    execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
   }
   catch {}
 
   consola.success('Auto-start disabled')
+  return true
 }

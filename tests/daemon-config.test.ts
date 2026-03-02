@@ -64,4 +64,18 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, verbose: 'oops' }))
     expect(loadDaemonConfig()).toBeNull()
   })
+
+  test('returns null for config with invalid accountType', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, accountType: 'garbage' }))
+    expect(loadDaemonConfig()).toBeNull()
+  })
+
+  test('accepts valid accountType values', () => {
+    for (const accountType of ['individual', 'business', 'enterprise']) {
+      const config = { ...sampleConfig, accountType }
+      saveDaemonConfig(config)
+      expect(loadDaemonConfig()).toEqual(config)
+    }
+  })
 })

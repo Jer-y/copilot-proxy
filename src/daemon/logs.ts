@@ -62,19 +62,38 @@ function followLogsWatch(): void {
   process.stdout.write(content)
 
   let position = Buffer.byteLength(content)
-  fs.watchFile(PATHS.DAEMON_LOG, { interval: 500 }, () => {
-    const fd = fs.openSync(PATHS.DAEMON_LOG, 'r')
-    const stat = fs.fstatSync(fd)
-    if (stat.size < position) {
-      // File was truncated, reset
-      position = 0
+  let currentIno: number | bigint = 0
+  try {
+    currentIno = fs.statSync(PATHS.DAEMON_LOG).ino
+  }
+  catch {}
+
+  // Use polling interval to detect both content changes and file rotation
+  setInterval(() => {
+    try {
+      const stat = fs.statSync(PATHS.DAEMON_LOG)
+
+      // Detect file rotation (inode changed = new file)
+      if (stat.ino !== currentIno) {
+        currentIno = stat.ino
+        position = 0
+      }
+
+      if (stat.size < position) {
+        // File was truncated, reset
+        position = 0
+      }
+      if (stat.size > position) {
+        const fd = fs.openSync(PATHS.DAEMON_LOG, 'r')
+        const buffer = Buffer.alloc(stat.size - position)
+        fs.readSync(fd, buffer, 0, buffer.length, position)
+        fs.closeSync(fd)
+        process.stdout.write(buffer)
+        position = stat.size
+      }
     }
-    if (stat.size > position) {
-      const buffer = Buffer.alloc(stat.size - position)
-      fs.readSync(fd, buffer, 0, buffer.length, position)
-      process.stdout.write(buffer)
-      position = stat.size
+    catch {
+      // File may have been removed temporarily during rotation
     }
-    fs.closeSync(fd)
-  })
+  }, 500)
 }

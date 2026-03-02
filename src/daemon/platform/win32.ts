@@ -4,7 +4,9 @@ import consola from 'consola'
 const TASK_NAME = 'CopilotProxy'
 
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
-  const command = `"${execPath}" ${args.join(' ')}`
+  // Quote each argument that contains spaces
+  const quotedArgs = args.map(a => a.includes(' ') ? `"${a}"` : a)
+  const command = `"${execPath}" ${quotedArgs.join(' ')}`
 
   try {
     execFileSync('schtasks', [
@@ -29,11 +31,14 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   return true
 }
 
-export async function uninstallAutoStart(): Promise<void> {
+export async function uninstallAutoStart(): Promise<boolean> {
   try {
     execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
   }
-  catch {}
+  catch (error) {
+    consola.warn('Failed to delete scheduled task:', error instanceof Error ? error.message : error)
+  }
 
   consola.success('Auto-start disabled')
+  return true
 }
