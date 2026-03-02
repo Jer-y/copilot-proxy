@@ -10,9 +10,45 @@ function escapeXmlAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 }
 
+/**
+ * Quote a single argument for Windows CommandLineToArgvW parsing.
+ * See: https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments
+ */
+function winQuoteArg(arg: string): string {
+  if (arg.length > 0 && !/[\s"\\]/.test(arg))
+    return arg
+
+  let result = '"'
+  for (let i = 0; i < arg.length; i++) {
+    let numBackslashes = 0
+    while (i < arg.length && arg[i] === '\\') {
+      numBackslashes++
+      i++
+    }
+    if (i >= arg.length) {
+      // End of string: double all backslashes
+      result += '\\'.repeat(numBackslashes * 2)
+    }
+    else if (arg[i] === '"') {
+      // Before a quote: double backslashes, then escape the quote
+      result += '\\'.repeat(numBackslashes * 2 + 1)
+      result += '"'
+    }
+    else {
+      // Not before a quote: keep backslashes as-is
+      result += '\\'.repeat(numBackslashes)
+      result += arg[i]
+    }
+  }
+  result += '"'
+  return result
+}
+
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
   // Use XML task definition for reliable argument handling
-  const xmlArgs = args.join(' ')
+  // Each arg is individually quoted for CommandLineToArgvW parsing,
+  // then the whole string is XML-escaped for the task XML.
+  const xmlArgs = args.map(a => winQuoteArg(a)).join(' ')
   const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>

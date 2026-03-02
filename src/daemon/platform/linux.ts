@@ -119,9 +119,9 @@ export async function uninstallAutoStart(): Promise<boolean> {
 
   if (hadErrors) {
     consola.warn('Auto-start disabled with warnings')
+    return false
   }
-  else {
-    consola.success('Auto-start disabled')
-  }
+
+  consola.success('Auto-start disabled')
   return true
 }

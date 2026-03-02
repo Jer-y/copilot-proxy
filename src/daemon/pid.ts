@@ -124,12 +124,15 @@ function getProcessStartTime(pid: number): number | null {
         `wmic process where ProcessId=${pid} get CreationDate /format:list`,
         { stdio: 'pipe', encoding: 'utf8' },
       )
-      // Format: CreationDate=20260302123456.123456+480
-      const match = output.match(/CreationDate=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.(\d+)/)
+      // Format: CreationDate=20260302123456.123456+480 (offset is minutes from UTC)
+      const match = output.match(/CreationDate=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.\d+([+-]\d+)/)
       if (!match)
         return null
-      const [, y, m, d, h, min, s] = match
-      return new Date(`${y}-${m}-${d}T${h}:${min}:${s}Z`).getTime()
+      const [, y, m, d, h, min, s, offsetStr] = match
+      const offsetMinutes = Number.parseInt(offsetStr, 10)
+      // Parse as local time then adjust by the UTC offset
+      const localMs = new Date(`${y}-${m}-${d}T${h}:${min}:${s}Z`).getTime()
+      return localMs - offsetMinutes * 60 * 1000
     }
     else {
       // Linux: read /proc/<pid>/stat, field 22 is starttime in clock ticks since boot
