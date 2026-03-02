@@ -79,10 +79,16 @@ WantedBy=default.target
 export async function uninstallAutoStart(): Promise<boolean> {
   try {
     execSync(`systemctl --user stop ${SERVICE_NAME}`, { stdio: 'pipe' })
+  }
+  catch (error) {
+    consola.warn('Failed to stop service:', error instanceof Error ? error.message : error)
+  }
+
+  try {
     execSync(`systemctl --user disable ${SERVICE_NAME}`, { stdio: 'pipe' })
   }
   catch (error) {
-    consola.warn('Failed to stop/disable service:', error instanceof Error ? error.message : error)
+    consola.warn('Failed to disable service:', error instanceof Error ? error.message : error)
   }
 
   try {
@@ -98,7 +104,9 @@ export async function uninstallAutoStart(): Promise<boolean> {
   try {
     execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
   }
-  catch {}
+  catch (error) {
+    consola.warn('Failed to reload systemd:', error instanceof Error ? error.message : error)
+  }
 
   consola.success('Auto-start disabled')
   return true

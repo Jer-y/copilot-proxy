@@ -4,8 +4,8 @@ import consola from 'consola'
 const TASK_NAME = 'CopilotProxy'
 
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
-  // Quote each argument that contains spaces
-  const quotedArgs = args.map(a => a.includes(' ') ? `"${a}"` : a)
+  // Quote all arguments for Windows safety
+  const quotedArgs = args.map(a => `"${a}"`)
   const command = `"${execPath}" ${quotedArgs.join(' ')}`
 
   try {

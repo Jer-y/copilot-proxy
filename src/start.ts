@@ -122,6 +122,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     fetch: server.fetch as ServerHandler,
     port: options.port,
   })
+
+  // Keep the process alive — serve() is non-blocking.
+  // This promise never resolves, which is correct for a long-running server.
+  // The process exits via SIGTERM/SIGINT signal handlers.
+  await new Promise(() => {})
 }
 
 export const start = defineCommand({

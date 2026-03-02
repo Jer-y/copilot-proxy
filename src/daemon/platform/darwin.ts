@@ -61,7 +61,9 @@ export async function uninstallAutoStart(): Promise<boolean> {
   try {
     execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
   }
-  catch {}
+  catch (error) {
+    consola.warn('Failed to unload service:', error instanceof Error ? error.message : error)
+  }
 
   try {
     fs.unlinkSync(PLIST_PATH)

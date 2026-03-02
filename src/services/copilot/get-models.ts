@@ -5,35 +5,37 @@ import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 
 export async function getModels() {
-  // Try with copilot-developer-cli integration for extended model list
-  if (state.githubToken) {
-    try {
-      const cliHeaders = copilotHeaders(state)
-      cliHeaders.Authorization = `Bearer ${state.githubToken}`
-      cliHeaders['copilot-integration-id'] = 'copilot-developer-cli'
-      const response = await fetch(`${copilotBaseUrl(state)}/models`, {
-        headers: cliHeaders,
-      })
-      if (response.ok) {
-        return (await response.json()) as ModelsResponse
-      }
-      consola.warn(`copilot-developer-cli models request failed (${response.status} ${response.statusText}), falling back to standard auth`)
-    }
-    catch (e) {
-      consola.warn('copilot-developer-cli models request error, falling back:', e)
-    }
-  }
-
-  // Fallback: standard copilot token auth
+  // Primary: standard vscode-chat auth (consistent with all other API calls)
   const headers = copilotHeaders(state)
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
     headers,
   })
 
-  if (!response.ok)
-    throw new HTTPError('Failed to get models', response)
+  if (response.ok) {
+    return (await response.json()) as ModelsResponse
+  }
+  consola.warn(`vscode-chat models request failed (${response.status} ${response.statusText}), falling back to copilot-developer-cli`)
 
-  return (await response.json()) as ModelsResponse
+  // Fallback: copilot-developer-cli for extended model list
+  if (state.githubToken) {
+    try {
+      const cliHeaders = copilotHeaders(state)
+      cliHeaders.Authorization = `Bearer ${state.githubToken}`
+      cliHeaders['copilot-integration-id'] = 'copilot-developer-cli'
+      const cliResponse = await fetch(`${copilotBaseUrl(state)}/models`, {
+        headers: cliHeaders,
+      })
+      if (cliResponse.ok) {
+        return (await cliResponse.json()) as ModelsResponse
+      }
+      consola.warn(`copilot-developer-cli fallback also failed (${cliResponse.status} ${cliResponse.statusText})`)
+    }
+    catch (e) {
+      consola.warn('copilot-developer-cli fallback error:', e)
+    }
+  }
+
+  throw new HTTPError('Failed to get models', response)
 }
 
 export interface ModelsResponse {
