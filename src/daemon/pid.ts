@@ -161,6 +161,7 @@ function getProcessStartTime(pid: number): number | null {
         const output = execSync(`ps -p ${pid} -o lstart=`, {
           stdio: 'pipe',
           encoding: 'utf8',
+          env: { ...process.env, LC_ALL: 'C' },
         }).trim()
         if (!output)
           return null
