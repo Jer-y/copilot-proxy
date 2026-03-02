@@ -1,7 +1,7 @@
 import process from 'node:process'
 import consola from 'consola'
 
-import { removePidFile, writePid } from '~/daemon/pid'
+import { readPid, removePidFile, writePid } from '~/daemon/pid'
 
 const MAX_BACKOFF_MS = 60_000
 const STABLE_THRESHOLD_MS = 60_000
@@ -31,8 +31,14 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
   }
 
   while (true) {
-    // Self-heal: re-write PID file if it was deleted externally
-    writePid(process.pid)
+    // Self-heal: restore PID file only if it was deleted externally.
+    // Do NOT call writePid unconditionally — it refreshes startTime with
+    // Date.now(), which would drift from the OS process start time and
+    // cause isDaemonRunning() to reject us after a crash-restart.
+    const existing = readPid()
+    if (existing === null || existing.pid !== process.pid) {
+      writePid(process.pid)
+    }
     lastStartTime = Date.now()
     try {
       await runFn()
