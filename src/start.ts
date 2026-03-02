@@ -215,8 +215,8 @@ export const start = defineCommand({
 
     const rateLimitRaw = args['rate-limit']
     const rateLimit = rateLimitRaw === undefined ? undefined : Number.parseInt(rateLimitRaw, 10)
-    if (rateLimitRaw !== undefined && (Number.isNaN(rateLimit!) || rateLimit! <= 0 || String(rateLimit) !== rateLimitRaw)) {
-      consola.error(`Invalid rate-limit: ${rateLimitRaw}`)
+    if (rateLimitRaw !== undefined && (Number.isNaN(rateLimit!) || rateLimit! <= 0 || rateLimit! > 86400 || String(rateLimit) !== rateLimitRaw)) {
+      consola.error(`Invalid rate-limit: ${rateLimitRaw} (must be 1-86400)`)
       process.exit(1)
     }
 

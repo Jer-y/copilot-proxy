@@ -77,11 +77,18 @@ WantedBy=default.target
 }
 
 export async function uninstallAutoStart(): Promise<boolean> {
+  if (!fs.existsSync(SERVICE_PATH)) {
+    consola.info('Auto-start service is not installed')
+    return true
+  }
+
+  let hadErrors = false
+
   try {
     execSync(`systemctl --user stop ${SERVICE_NAME}`, { stdio: 'pipe' })
   }
-  catch (error) {
-    consola.warn('Failed to stop service:', error instanceof Error ? error.message : error)
+  catch {
+    // Service may not be running, that's fine
   }
 
   try {
@@ -89,6 +96,7 @@ export async function uninstallAutoStart(): Promise<boolean> {
   }
   catch (error) {
     consola.warn('Failed to disable service:', error instanceof Error ? error.message : error)
+    hadErrors = true
   }
 
   try {
@@ -106,8 +114,14 @@ export async function uninstallAutoStart(): Promise<boolean> {
   }
   catch (error) {
     consola.warn('Failed to reload systemd:', error instanceof Error ? error.message : error)
+    hadErrors = true
   }
 
-  consola.success('Auto-start disabled')
+  if (hadErrors) {
+    consola.warn('Auto-start disabled with warnings')
+  }
+  else {
+    consola.success('Auto-start disabled')
+  }
   return true
 }

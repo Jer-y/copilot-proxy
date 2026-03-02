@@ -47,7 +47,7 @@ export function loadDaemonConfig(): DaemonConfig | null {
       return null
     if (typeof data.proxyEnv !== 'boolean')
       return null
-    if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0))
+    if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400))
       return null
 
     return data as unknown as DaemonConfig
