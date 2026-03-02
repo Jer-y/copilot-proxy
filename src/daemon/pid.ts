@@ -9,10 +9,10 @@ export interface DaemonPidInfo {
   startTime: number
 }
 
-export function writePid(pid: number): void {
+export function writePid(pid: number, startTime?: number): void {
   fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
   const pidPath = PATHS.DAEMON_PID
-  fs.writeFileSync(pidPath, `${pid}\n${Date.now()}`, { mode: 0o600 })
+  fs.writeFileSync(pidPath, `${pid}\n${startTime ?? Date.now()}`, { mode: 0o600 })
   // Ensure permissions are correct even if file already existed with wider perms
   try {
     fs.chmodSync(pidPath, 0o600)
