@@ -7,6 +7,7 @@ import consola from 'consola'
 import { saveDaemonConfig } from '~/daemon/config'
 import { isDaemonRunning, removePidFile, writePid } from '~/daemon/pid'
 import { PATHS } from '~/lib/paths'
+import { checkPortAvailable, isPortInUseError } from '~/lib/port'
 
 const LOCK_PATH = `${PATHS.DAEMON_PID}.lock`
 
@@ -68,7 +69,7 @@ function ensureLock(): void {
   }
 }
 
-export function daemonStart(config: DaemonConfig): void {
+export async function daemonStart(config: DaemonConfig): Promise<void> {
   // Acquire lock to prevent concurrent starts.
   // ensureLock() calls process.exit() before lock is held,
   // so no cleanup needed in that path.
@@ -86,6 +87,18 @@ export function daemonStart(config: DaemonConfig): void {
   if (daemon.running) {
     consola.error(`Daemon is already running (PID: ${daemon.pid})`)
     exitWithLock(1)
+  }
+
+  // Pre-check port availability so the user gets immediate feedback
+  try {
+    await checkPortAvailable(config.port)
+  }
+  catch (error) {
+    if (isPortInUseError(error)) {
+      consola.error(`Port ${config.port} is already in use`)
+      exitWithLock(1)
+    }
+    throw error
   }
 
   // Save config for restart/enable

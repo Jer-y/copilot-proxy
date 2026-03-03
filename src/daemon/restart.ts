@@ -12,7 +12,7 @@ export const restart = defineCommand({
     name: 'restart',
     description: 'Restart the background daemon',
   },
-  run() {
+  async run() {
     const config = loadDaemonConfig()
     if (!config) {
       consola.error('No daemon config found. Start the daemon first with `start -d`')
@@ -29,6 +29,6 @@ export const restart = defineCommand({
     }
 
     // Start with saved config
-    daemonStart(config)
+    await daemonStart(config)
   },
 })

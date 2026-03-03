@@ -2,6 +2,7 @@ import process from 'node:process'
 import consola from 'consola'
 
 import { readPid, removePidFile, writePid } from '~/daemon/pid'
+import { isPortInUseError } from '~/lib/port'
 
 const MAX_BACKOFF_MS = 60_000
 const STABLE_THRESHOLD_MS = 60_000
@@ -52,6 +53,12 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
       break
     }
     catch (error) {
+      if (isPortInUseError(error)) {
+        consola.error('Port is already in use, not retrying')
+        removePidFile()
+        process.exit(1)
+      }
+
       const uptime = Date.now() - lastStartTime
       consola.error('Server crashed:', error)
 

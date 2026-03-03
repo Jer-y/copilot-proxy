@@ -10,6 +10,7 @@ import { serve } from 'srvx'
 import invariant from 'tiny-invariant'
 
 import { ensurePaths } from './lib/paths'
+import { exitWithPortInUse, isPortInUseError } from './lib/port'
 import { initProxyFromEnv } from './lib/proxy'
 import { generateEnvScript } from './lib/shell'
 import { state } from './lib/state'
@@ -28,6 +29,7 @@ export interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  exitOnPortInUse?: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -119,10 +121,18 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     `🌐 Usage Viewer: https://jer-y.github.io/copilot-proxy?endpoint=${serverUrl}/usage`,
   )
 
-  serve({
-    fetch: server.fetch as ServerHandler,
-    port: options.port,
-  })
+  try {
+    serve({
+      fetch: server.fetch as ServerHandler,
+      port: options.port,
+    })
+  }
+  catch (error) {
+    if (isPortInUseError(error) && (options.exitOnPortInUse ?? true)) {
+      exitWithPortInUse(options.port)
+    }
+    throw error
+  }
 
   // Keep the process alive — serve() is non-blocking.
   // This promise never resolves, which is correct for a long-running server.
@@ -257,6 +267,7 @@ export const start = defineCommand({
       const options: RunServerOptions = {
         ...configResult.config,
         claudeCode: false,
+        exitOnPortInUse: false,
       }
 
       return runAsSupervisor(() => runServer(options))
@@ -270,7 +281,7 @@ export const start = defineCommand({
 
       const { daemonStart } = await import('~/daemon/start')
 
-      daemonStart({
+      await daemonStart({
         port,
         verbose: args.verbose,
         accountType: args['account-type'],
