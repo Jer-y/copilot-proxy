@@ -9,6 +9,59 @@ import { isDaemonRunning, removePidFile, writePid } from '~/daemon/pid'
 import { PATHS } from '~/lib/paths'
 import { checkPortAvailable, isPortInUseError } from '~/lib/port'
 
+const DAEMON_ENV_ALLOWLIST = [
+  // System essentials
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  // Node/Bun runtime
+  'NODE_ENV',
+  'NODE_OPTIONS',
+  'NODE_EXTRA_CA_CERTS',
+  'BUN_INSTALL',
+  // Proxy configuration
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  // XDG directories
+  'XDG_DATA_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_STATE_HOME',
+  // GitHub token (if user passes via env)
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  // Platform-specific (Windows)
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+  'SystemRoot',
+  'COMSPEC',
+]
+
+export function filterEnvForDaemon(env: Record<string, string | undefined>): Record<string, string> {
+  const filtered: Record<string, string> = {}
+  for (const key of DAEMON_ENV_ALLOWLIST) {
+    if (key in env && env[key] !== undefined) {
+      filtered[key] = env[key]!
+    }
+  }
+  return filtered
+}
+
 const LOCK_PATH = `${PATHS.DAEMON_PID}.lock`
 
 function acquireLock(): boolean {
@@ -129,7 +182,7 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
   const child = spawn(execPath, [scriptPath, 'start', '--_supervisor'], {
     detached: true,
     stdio: ['ignore', logStream, logStream],
-    env: process.env,
+    env: filterEnvForDaemon(process.env as Record<string, string | undefined>),
   })
 
   if (child.pid === undefined) {
