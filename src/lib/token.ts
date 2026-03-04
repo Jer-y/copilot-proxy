@@ -7,6 +7,7 @@ import { getDeviceCode } from '~/services/github/get-device-code'
 import { getGitHubUser } from '~/services/github/get-user'
 import { pollAccessToken } from '~/services/github/poll-access-token'
 
+import { TOKEN_MAX_RETRIES as MAX_RETRIES, TOKEN_RETRY_DELAYS as RETRY_DELAYS } from './constants'
 import { HTTPError } from './error'
 import { state } from './state'
 import { sleep } from './utils'
@@ -17,8 +18,6 @@ function writeGithubToken(token: string) {
   return fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
 }
 
-const MAX_RETRIES = 3
-const RETRY_DELAYS = [1_000, 5_000, 15_000]
 let consecutiveFailures = 0
 
 export async function refreshTokenWithRetry(): Promise<void> {

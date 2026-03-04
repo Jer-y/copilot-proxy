@@ -2,13 +2,16 @@ import process from 'node:process'
 import consola from 'consola'
 
 import { readPid, removePidFile, writePid } from '~/daemon/pid'
+import {
+  SUPERVISOR_MAX_BACKOFF_MS as MAX_BACKOFF_MS,
+  SUPERVISOR_STABLE_THRESHOLD_MS as STABLE_THRESHOLD_MS,
+  SUPERVISOR_INITIAL_BACKOFF_MS,
+} from '~/lib/constants'
+
 import { isPortInUseError } from '~/lib/port'
 
-const MAX_BACKOFF_MS = 60_000
-const STABLE_THRESHOLD_MS = 60_000
-
 export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void> {
-  let backoffMs = 1000
+  let backoffMs = SUPERVISOR_INITIAL_BACKOFF_MS
   let lastStartTime = Date.now()
 
   // Capture a fixed start time once. All subsequent writePid calls
@@ -63,7 +66,7 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
       consola.error('Server crashed:', error)
 
       if (uptime > STABLE_THRESHOLD_MS) {
-        backoffMs = 1000
+        backoffMs = SUPERVISOR_INITIAL_BACKOFF_MS
       }
 
       consola.info(`Restarting in ${backoffMs / 1000}s...`)
