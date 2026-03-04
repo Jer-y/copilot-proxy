@@ -7,8 +7,10 @@ import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { awaitApproval } from '~/lib/approval'
 import { checkRateLimit } from '~/lib/rate-limit'
+import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
 import { state } from '~/lib/state'
+import { validateBody } from '~/lib/validate'
 import {
 
   createChatCompletions,
@@ -17,13 +19,13 @@ import {
   translateToAnthropic,
   translateToOpenAI,
 } from './non-stream-translation'
-import { translateChunkToAnthropicEvents } from './stream-translation'
+import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from './stream-translation'
 
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicBeta = c.req.header('anthropic-beta')
-  const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
   consola.debug('Anthropic request payload:', JSON.stringify(anthropicPayload))
 
   const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
@@ -70,7 +72,19 @@ export async function handleCompletion(c: Context) {
         continue
       }
 
-      const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+      let chunk: ChatCompletionChunk
+      try {
+        chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+      }
+      catch {
+        consola.error('Failed to parse streaming chunk:', rawEvent.data)
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify(translateErrorToAnthropicErrorEvent()),
+        })
+        return
+      }
+
       const events = translateChunkToAnthropicEvents(chunk, streamState)
 
       for (const event of events) {

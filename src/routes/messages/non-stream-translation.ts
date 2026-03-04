@@ -1,6 +1,7 @@
 import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, AnthropicMessage, AnthropicMessagesPayload, AnthropicResponse, AnthropicTextBlock, AnthropicThinkingBlock, AnthropicTool, AnthropicToolResultBlock, AnthropicToolUseBlock, AnthropicUserContentBlock, AnthropicUserMessage } from './anthropic-types'
 
 import type { ChatCompletionResponse, ChatCompletionsPayload, ContentPart, Message, TextPart, Tool, ToolCall } from '~/services/copilot/create-chat-completions'
+import consola from 'consola'
 import { getModelConfig } from '~/lib/model-config'
 import { mapOpenAIStopReasonToAnthropic } from './utils'
 
@@ -430,10 +431,20 @@ function getAnthropicToolUseBlocks(
   if (!toolCalls) {
     return []
   }
-  return toolCalls.map(toolCall => ({
-    type: 'tool_use',
-    id: toolCall.id,
-    name: toolCall.function.name,
-    input: JSON.parse(toolCall.function.arguments) as Record<string, unknown>,
-  }))
+  return toolCalls.map((toolCall) => {
+    let parsedInput: Record<string, unknown>
+    try {
+      parsedInput = JSON.parse(toolCall.function.arguments) as Record<string, unknown>
+    }
+    catch {
+      consola.warn('Failed to parse tool call arguments:', toolCall.function.arguments)
+      parsedInput = {}
+    }
+    return {
+      type: 'tool_use' as const,
+      id: toolCall.id,
+      name: toolCall.function.name,
+      input: parsedInput,
+    }
+  })
 }

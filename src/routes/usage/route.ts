@@ -1,3 +1,4 @@
+import consola from 'consola'
 import { Hono } from 'hono'
 
 import { getCopilotUsage } from '~/services/github/get-copilot-usage'
@@ -10,7 +11,7 @@ usageRoute.get('/', async (c) => {
     return c.json(usage)
   }
   catch (error) {
-    console.error('Error fetching Copilot usage:', error)
+    consola.error('Error fetching Copilot usage:', error)
     return c.json({ error: 'Failed to fetch Copilot usage' }, 500)
   }
 })

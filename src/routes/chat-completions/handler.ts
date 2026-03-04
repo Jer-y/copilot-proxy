@@ -7,9 +7,11 @@ import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { awaitApproval } from '~/lib/approval'
 import { checkRateLimit } from '~/lib/rate-limit'
+import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
 import { isNullish } from '~/lib/utils'
+import { validateBody } from '~/lib/validate'
 import {
 
   createChatCompletions,
@@ -18,7 +20,7 @@ import {
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
-  let payload = await c.req.json<ChatCompletionsPayload>()
+  let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
   consola.debug('Request payload:', JSON.stringify(payload).slice(-400))
 
   // Find the selected model

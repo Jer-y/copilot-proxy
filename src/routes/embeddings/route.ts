@@ -2,6 +2,8 @@ import type { EmbeddingRequest } from '~/services/copilot/create-embeddings'
 
 import { Hono } from 'hono'
 import { forwardError } from '~/lib/error'
+import { EmbeddingRequestSchema } from '~/lib/schemas'
+import { validateBody } from '~/lib/validate'
 import {
   createEmbeddings,
 
@@ -11,8 +13,8 @@ export const embeddingRoutes = new Hono()
 
 embeddingRoutes.post('/', async (c) => {
   try {
-    const paylod = await c.req.json<EmbeddingRequest>()
-    const response = await createEmbeddings(paylod)
+    const payload = await validateBody<EmbeddingRequest>(c, EmbeddingRequestSchema)
+    const response = await createEmbeddings(payload)
 
     return c.json(response)
   }

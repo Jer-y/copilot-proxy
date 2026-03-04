@@ -9,11 +9,48 @@ import { pollAccessToken } from '~/services/github/poll-access-token'
 
 import { HTTPError } from './error'
 import { state } from './state'
+import { sleep } from './utils'
 
 const readGithubToken = () => fs.readFile(PATHS.GITHUB_TOKEN_PATH, 'utf8')
 
 function writeGithubToken(token: string) {
   return fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
+}
+
+const MAX_RETRIES = 3
+const RETRY_DELAYS = [1_000, 5_000, 15_000]
+let consecutiveFailures = 0
+
+async function refreshTokenWithRetry(): Promise<void> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { token } = await getCopilotToken()
+      state.copilotToken = token
+      consola.debug('Copilot token refreshed')
+      if (state.showToken) {
+        consola.info('Refreshed Copilot token:', token)
+      }
+      if (consecutiveFailures > 0) {
+        consola.info(`Token refresh recovered after ${consecutiveFailures} consecutive failure(s)`)
+      }
+      consecutiveFailures = 0
+      return
+    }
+    catch (error) {
+      if (attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAYS[attempt] ?? RETRY_DELAYS.at(-1)!
+        consola.warn(`Token refresh attempt ${attempt + 1} failed, retrying in ${delay}ms...`, error)
+        await sleep(delay)
+      }
+    }
+  }
+
+  consecutiveFailures++
+  consola.error(
+    `Token refresh failed after ${MAX_RETRIES + 1} attempts`
+    + ` (${consecutiveFailures} consecutive interval failure(s)).`
+    + ` Service may be using a stale token.`,
+  )
 }
 
 export async function setupCopilotToken() {
@@ -34,17 +71,7 @@ export async function setupCopilotToken() {
     : 60_000
   setInterval(async () => {
     consola.debug('Refreshing Copilot token')
-    try {
-      const { token } = await getCopilotToken()
-      state.copilotToken = token
-      consola.debug('Copilot token refreshed')
-      if (state.showToken) {
-        consola.info('Refreshed Copilot token:', token)
-      }
-    }
-    catch (error) {
-      consola.error('Failed to refresh Copilot token, will retry next cycle:', error)
-    }
+    await refreshTokenWithRetry()
   }, refreshInterval)
 }
 

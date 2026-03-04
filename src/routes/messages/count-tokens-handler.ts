@@ -4,9 +4,12 @@ import type { AnthropicMessagesPayload } from './anthropic-types'
 
 import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
+import { HTTPError } from '~/lib/error'
+import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
-
 import { getTokenCount } from '~/lib/tokenizer'
+import { validateBody } from '~/lib/validate'
+
 import { parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
 
 /**
@@ -48,7 +51,7 @@ export async function handleCountTokens(c: Context) {
   try {
     const anthropicBeta = c.req.header('anthropic-beta')
 
-    const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+    const anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
 
     const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
 
@@ -96,6 +99,9 @@ export async function handleCountTokens(c: Context) {
     })
   }
   catch (error) {
+    if (error instanceof HTTPError) {
+      throw error
+    }
     consola.error('Error counting tokens:', error)
     return c.json({
       input_tokens: 1,

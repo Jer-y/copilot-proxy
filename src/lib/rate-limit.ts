@@ -35,12 +35,16 @@ export async function checkRateLimit(state: State) {
     )
   }
 
+  // Update timestamp immediately to prevent concurrent requests from
+  // bypassing the rate limit during the sleep (Bun is single-threaded
+  // but yields at await boundaries)
+  state.lastRequestTimestamp = now
+
   const waitTimeMs = waitTimeSeconds * 1000
   consola.warn(
     `Rate limit reached. Waiting ${waitTimeSeconds} seconds before proceeding...`,
   )
   await sleep(waitTimeMs)
 
-  state.lastRequestTimestamp = now
   consola.info('Rate limit wait completed, proceeding with request')
 }

@@ -7,13 +7,15 @@ import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { awaitApproval } from '~/lib/approval'
 import { checkRateLimit } from '~/lib/rate-limit'
+import { ResponsesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
+import { validateBody } from '~/lib/validate'
 import { createResponses } from '~/services/copilot/create-responses'
 
 export async function handleResponses(c: Context) {
   await checkRateLimit(state)
 
-  const payload = await c.req.json<ResponsesPayload>()
+  const payload = await validateBody<ResponsesPayload>(c, ResponsesPayloadSchema)
   consola.debug('Responses API request payload:', JSON.stringify(payload).slice(-400))
 
   if (state.manualApprove) {
