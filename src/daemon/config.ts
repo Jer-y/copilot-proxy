@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import consola from 'consola'
 import { PATHS } from '~/lib/paths'
 
 export interface DaemonConfig {
@@ -69,7 +70,8 @@ export function loadDaemonConfigWithRecovery(fallbackConfig: DaemonConfig): Daem
       }
       reason = 'invalid'
     }
-    catch {
+    catch (error) {
+      consola.debug('Failed to parse daemon config JSON:', error)
       reason = 'invalid'
     }
 
@@ -96,7 +98,8 @@ export function loadDaemonConfigWithRecovery(fallbackConfig: DaemonConfig): Daem
       backupPath,
     }
   }
-  catch {
+  catch (error) {
+    consola.warn('Failed to persist recovered daemon config:', error)
     return {
       config: fallbackConfig,
       recovered: true,
