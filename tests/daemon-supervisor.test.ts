@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { readPid, removePidFile } from '../src/daemon/pid'
 import { runAsSupervisor } from '../src/daemon/supervisor'
 
-type SignalHandler = (...args: Array<unknown>) => void
+type SignalHandler = NodeJS.SignalsListener
+type ExitHandler = NodeJS.ExitListener
 
 const TEST_EXIT_PREFIX = '__TEST_EXIT__'
 
@@ -15,11 +16,20 @@ function createPortInUseError(): NodeJS.ErrnoException {
   return error
 }
 
-function cleanupExtraListeners(signal: NodeJS.Signals | 'exit', baseline: SignalHandler[]): void {
-  const current = process.listeners(signal) as SignalHandler[]
+function cleanupExtraSignalListeners(signal: NodeJS.Signals, baseline: SignalHandler[]): void {
+  const current = process.listeners(signal)
   for (const handler of current) {
     if (!baseline.includes(handler)) {
-      process.removeListener(signal, handler as (...args: never[]) => void)
+      process.removeListener(signal, handler)
+    }
+  }
+}
+
+function cleanupExtraExitListeners(baseline: ExitHandler[]): void {
+  const current = process.listeners('exit')
+  for (const handler of current) {
+    if (!baseline.includes(handler)) {
+      process.removeListener('exit', handler)
     }
   }
 }
@@ -28,21 +38,21 @@ describe('runAsSupervisor', () => {
   let originalExit: typeof process.exit
   let baselineSigterm: SignalHandler[]
   let baselineSigint: SignalHandler[]
-  let baselineExit: SignalHandler[]
+  let baselineExit: ExitHandler[]
 
   beforeEach(() => {
     originalExit = process.exit
     baselineSigterm = process.listeners('SIGTERM') as SignalHandler[]
     baselineSigint = process.listeners('SIGINT') as SignalHandler[]
-    baselineExit = process.listeners('exit') as SignalHandler[]
+    baselineExit = process.listeners('exit')
     removePidFile()
   })
 
   afterEach(() => {
     process.exit = originalExit
-    cleanupExtraListeners('SIGTERM', baselineSigterm)
-    cleanupExtraListeners('SIGINT', baselineSigint)
-    cleanupExtraListeners('exit', baselineExit)
+    cleanupExtraSignalListeners('SIGTERM', baselineSigterm)
+    cleanupExtraSignalListeners('SIGINT', baselineSigint)
+    cleanupExtraExitListeners(baselineExit)
     removePidFile()
   })
 
