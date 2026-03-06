@@ -29,6 +29,35 @@ export interface DaemonConfigRecoveryResult {
   backupPath?: string
 }
 
+export function mergeDaemonConfigWithExplicitFlags(
+  fileConfig: DaemonConfig,
+  cliConfig: DaemonConfig,
+  rawArgs: string[],
+): DaemonConfig {
+  const merged: DaemonConfig = { ...fileConfig }
+
+  if (wasCliOptionPassed(rawArgs, 'port', 'p'))
+    merged.port = cliConfig.port
+  if (wasCliOptionPassed(rawArgs, 'verbose', 'v', true))
+    merged.verbose = cliConfig.verbose
+  if (wasCliOptionPassed(rawArgs, 'account-type', 'a'))
+    merged.accountType = cliConfig.accountType
+  if (wasCliOptionPassed(rawArgs, 'manual', undefined, true))
+    merged.manual = cliConfig.manual
+  if (wasCliOptionPassed(rawArgs, 'rate-limit', 'r'))
+    merged.rateLimit = cliConfig.rateLimit
+  if (wasCliOptionPassed(rawArgs, 'wait', 'w', true))
+    merged.rateLimitWait = cliConfig.rateLimitWait
+  if (wasCliOptionPassed(rawArgs, 'github-token', 'g'))
+    merged.githubToken = cliConfig.githubToken
+  if (wasCliOptionPassed(rawArgs, 'show-token', undefined, true))
+    merged.showToken = cliConfig.showToken
+  if (wasCliOptionPassed(rawArgs, 'proxy-env', undefined, true))
+    merged.proxyEnv = cliConfig.proxyEnv
+
+  return merged
+}
+
 export function saveDaemonConfig(config: DaemonConfig): void {
   const { githubToken: _removed, ...safeConfig } = config
   fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
@@ -108,6 +137,37 @@ export function loadDaemonConfigWithRecovery(fallbackConfig: DaemonConfig): Daem
       backupPath,
     }
   }
+}
+
+function wasCliOptionPassed(
+  rawArgs: string[],
+  name: string,
+  alias?: string,
+  booleanFlag = false,
+): boolean {
+  const longFlag = `--${name}`
+  const negatedLongFlag = `--no-${name}`
+  const shortFlag = alias ? `-${alias}` : undefined
+
+  for (const arg of rawArgs) {
+    if (arg === '--') {
+      break
+    }
+
+    if (arg === longFlag || arg.startsWith(`${longFlag}=`)) {
+      return true
+    }
+
+    if (booleanFlag && (arg === negatedLongFlag || arg.startsWith(`${negatedLongFlag}=`))) {
+      return true
+    }
+
+    if (shortFlag && (arg === shortFlag || arg.startsWith(`${shortFlag}=`))) {
+      return true
+    }
+  }
+
+  return false
 }
 
 function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | null {

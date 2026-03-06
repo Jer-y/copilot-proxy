@@ -199,7 +199,7 @@ export const start = defineCommand({
     }
 
     if (args._supervisor) {
-      const { loadDaemonConfigWithRecovery } = await import('~/daemon/config')
+      const { loadDaemonConfigWithRecovery, mergeDaemonConfigWithExplicitFlags } = await import('~/daemon/config')
       const fallbackConfig: DaemonConfig = {
         port,
         verbose: args.verbose,
@@ -224,9 +224,15 @@ export const start = defineCommand({
         }
       }
 
+      const mergedConfig = mergeDaemonConfigWithExplicitFlags(
+        configResult.config,
+        fallbackConfig,
+        process.argv.slice(2),
+      )
+
       const { runAsSupervisor } = await import('~/daemon/supervisor')
       const options: RunServerOptions = {
-        ...configResult.config,
+        ...mergedConfig,
         claudeCode: false,
         exitOnPortInUse: false,
       }
