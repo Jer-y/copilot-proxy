@@ -64,3 +64,23 @@ test('sets X-Initiator to user if only user messages are present', async () => {
   const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers
   expect(headers['X-Initiator']).toBe('user')
 })
+
+test('treats typed message items as messages for vision detection', async () => {
+  const payload: ResponsesPayload = {
+    model: 'gpt-test',
+    input: [
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_image', image_url: 'https://example.com/cat.png', detail: 'high' },
+        ],
+      },
+    ],
+  }
+
+  await createResponses(payload)
+  const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers
+  expect(headers['X-Initiator']).toBe('user')
+  expect(headers['copilot-vision-request']).toBe('true')
+})

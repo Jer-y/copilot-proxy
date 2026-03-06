@@ -16,6 +16,7 @@ import type {
   ResponsesFunctionCallItem,
   ResponsesFunctionCallOutputItem,
   ResponsesInputItem,
+  ResponsesMessageInputItem,
   ResponsesOutputItem,
   ResponsesPayload,
   ResponsesResponse,
@@ -23,6 +24,7 @@ import type {
 } from '~/services/copilot/create-responses'
 
 import consola from 'consola'
+import { JSONResponseError } from '~/lib/error'
 import { mapCCFinishReasonToResponsesStatus, translateResponsesContentPartsToCC } from './utils'
 
 // ─── T4: Responses Request → CC Request ─────────────────────────
@@ -110,6 +112,10 @@ function translateResponsesInputToCCMessages(
         content: item.output,
       })
       continue
+    }
+
+    if (!isMessageInputItem(item)) {
+      throwUnsupportedResponsesInputItem(item)
     }
 
     const role = item.role === 'developer' ? 'developer' : item.role
@@ -238,4 +244,23 @@ function isFunctionCallItem(item: ResponsesInputItem): item is ResponsesFunction
 
 function isFunctionCallOutputItem(item: ResponsesInputItem): item is ResponsesFunctionCallOutputItem {
   return 'type' in item && item.type === 'function_call_output'
+}
+
+function isMessageInputItem(item: ResponsesInputItem): item is ResponsesMessageInputItem {
+  return 'role' in item
+    && typeof item.role === 'string'
+    && 'content' in item
+    && (item.type === undefined || item.type === 'message')
+}
+
+function throwUnsupportedResponsesInputItem(item: ResponsesInputItem): never {
+  const itemType = item.type ?? 'unknown'
+  const message = `Unsupported Responses input item type "${itemType}" for chat-completions translation`
+
+  throw new JSONResponseError(message, 400, {
+    error: {
+      message,
+      type: 'invalid_request_error',
+    },
+  })
 }

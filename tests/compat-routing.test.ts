@@ -65,4 +65,27 @@ describe('compat routing fallback', () => {
       'https://api.githubcopilot.com/responses',
     ])
   })
+
+  test('/v1/responses accepts typed input items when routing directly to responses', async () => {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        input: [
+          {
+            type: 'reasoning',
+            encrypted_content: 'opaque-reasoning-state',
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+
+    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
+    expect(calledUrls).toEqual([
+      'https://api.githubcopilot.com/responses',
+    ])
+  })
 })

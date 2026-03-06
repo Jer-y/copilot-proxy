@@ -635,6 +635,18 @@ describe('content part compatibility', () => {
     ])
   })
 
+  test('unsupported Responses input items fail with a clear translation error', () => {
+    expect(() => translateResponsesRequestToCC({
+      model: 'claude-opus-4.6',
+      input: [
+        {
+          type: 'reasoning',
+          encrypted_content: 'opaque-reasoning-state',
+        },
+      ],
+    })).toThrow('Unsupported Responses input item type "reasoning" for chat-completions translation')
+  })
+
   test('failed Responses response throws instead of looking successful', () => {
     expect(() => translateResponsesResponseToCC({
       id: 'resp_failed',

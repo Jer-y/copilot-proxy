@@ -62,10 +62,15 @@ const ResponsesFunctionCallOutputInputSchema = z.object({
   output: z.string(),
 }).passthrough()
 
+const ResponsesTypedInputSchema = z.object({
+  type: z.string(),
+}).passthrough()
+
 const ResponsesInputItemSchema = z.union([
   ResponsesFunctionCallInputSchema,
   ResponsesFunctionCallOutputInputSchema,
   ResponsesMessageInputSchema,
+  ResponsesTypedInputSchema,
 ])
 
 export const ResponsesPayloadSchema = z.object({

@@ -7,7 +7,10 @@ import { state } from '~/lib/state'
 
 /** Type guard: is a message input item (has role, not a function_call/output) */
 function isMessageInput(item: ResponsesInputItem): item is ResponsesMessageInputItem {
-  return 'role' in item && !('type' in item)
+  return 'role' in item
+    && typeof item.role === 'string'
+    && 'content' in item
+    && (item.type === undefined || item.type === 'message')
 }
 
 export async function createResponses(payload: ResponsesPayload) {
@@ -93,8 +96,14 @@ export interface ResponsesPayload {
 // Input item types (discriminated union)
 
 export interface ResponsesMessageInputItem {
+  type?: 'message'
   role: 'user' | 'assistant' | 'system' | 'developer'
   content: string | Array<{ type: string, [key: string]: unknown }>
+  [key: string]: unknown
+}
+
+export interface ResponsesOtherInputItem {
+  type: string
   [key: string]: unknown
 }
 
@@ -117,6 +126,7 @@ export type ResponsesInputItem
   = | ResponsesMessageInputItem
     | ResponsesFunctionCallItem
     | ResponsesFunctionCallOutputItem
+    | ResponsesOtherInputItem
 
 export interface ResponsesTool {
   type: 'function'
