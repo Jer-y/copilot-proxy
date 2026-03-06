@@ -38,6 +38,7 @@
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。
+- **API Key 认证**：可选地通过 `--api-key` 为代理入口添加 API Key 校验。支持 `Authorization: Bearer <key>` 和 `x-api-key: <key>` 两种请求头。仅对模型请求路由生效，管理接口（`/models`、`/usage`、`/token`）不受影响。使用常量时间比较防止时序攻击。
 - **手动审核**：通过 `--manual` 对每个请求进行人工确认。
 - **Token 可视化**：`--show-token` 显示 GitHub/Copilot token 便于调试。
 - **灵活认证**：支持交互式登录或直接传入 GitHub token，适用于 CI/CD。
@@ -213,6 +214,7 @@ Copilot API 使用子命令结构，主要命令如下：
 | --claude-code  | 生成 Claude Code 配置命令                                               | false       | -c   |
 | --show-token   | 在获取/刷新时显示 GitHub/Copilot token                                 | false       | 无   |
 | --proxy-env    | 从环境变量初始化代理（HTTP_PROXY/HTTPS_PROXY 等）                      | false       | 无   |
+| --api-key      | 启用 API Key 认证。不带值或传 `auto` 自动生成随机 key，也可手动指定   | 无          | -k   |
 | --daemon       | 作为后台守护进程运行，支持崩溃自动恢复                                  | false       | -d   |
 
 ### auth 参数
@@ -318,6 +320,12 @@ npx @jer-y/copilot-proxy@latest debug --json
 # 从环境变量初始化代理
 npx @jer-y/copilot-proxy@latest start --proxy-env
 
+# 启用 API Key 认证（自动生成随机 key）
+npx @jer-y/copilot-proxy@latest start --api-key
+
+# 启用 API Key 认证（指定自定义 key）
+npx @jer-y/copilot-proxy@latest start --api-key my-secret-key
+
 # 后台守护进程模式启动
 npx @jer-y/copilot-proxy@latest start -d
 
@@ -379,7 +387,13 @@ npx @jer-y/copilot-proxy@latest disable
 npx @jer-y/copilot-proxy@latest start --claude-code
 ```
 
-会提示选择主要模型与“快速模型”，随后把 Claude Code 所需的环境变量命令复制到剪贴板，粘贴执行即可。
+如果同时使用 `--api-key`，生成的环境变量会自动将真实 key 设为 `ANTHROPIC_AUTH_TOKEN`：
+
+```sh
+npx @jer-y/copilot-proxy@latest start --claude-code --api-key
+```
+
+会提示选择主要模型与”快速模型”，随后把 Claude Code 所需的环境变量命令复制到剪贴板，粘贴执行即可。
 
 ### 手动配置 `settings.json`
 
