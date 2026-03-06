@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
+import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { server } from '~/server'
 
@@ -28,16 +29,13 @@ describe('messages error paths', () => {
     expect(json.error.type).toBe('invalid_request_error')
   })
 
-  test('missing "max_tokens" field returns 400', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4', messages: [{ role: 'user', content: 'hi' }] }),
+  test('missing "max_tokens" field is accepted by schema for compatibility', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'hi' }],
     })
 
-    expect(res.status).toBe(400)
-    const json = await res.json() as { error: { type: string } }
-    expect(json.error.type).toBe('invalid_request_error')
+    expect(result.success).toBe(true)
   })
 
   test('missing "messages" field returns 400', async () => {
