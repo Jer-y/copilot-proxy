@@ -205,8 +205,11 @@ export const start = defineCommand({
     }
 
     // Resolve API key: --api-key (no value) or --api-key auto → generate UUID
-    let apiKey = args['api-key']
-    if (apiKey !== undefined) {
+    // citty may return boolean `true` when a string flag is passed without a value,
+    // so we normalise to string before checking.
+    let apiKey: string | undefined = typeof args['api-key'] === 'string' ? args['api-key'] : undefined
+    const apiKeyArgRaw = args['api-key']
+    if (apiKeyArgRaw !== undefined) {
       if (!apiKey || apiKey === 'auto') {
         const { randomUUID } = await import('node:crypto')
         apiKey = randomUUID()

@@ -10,6 +10,11 @@ import { state } from '~/lib/state'
  * - Accepts key via `Authorization: Bearer <key>` or `x-api-key: <key>`.
  * - Uses constant-time comparison to prevent timing attacks.
  * - Returns errors in the format matching the target API (OpenAI vs Anthropic).
+ *
+ * Note: auth failures short-circuit before the handler-level rate limiter.
+ * This is intentional — the rate limiter protects upstream Copilot quota,
+ * not the auth layer. If brute-force protection is needed in the future,
+ * add a separate per-IP throttle here.
  */
 export async function apiKeyAuth(c: Context, next: Next): Promise<Response | void> {
   const expected = state.apiKey
@@ -26,18 +31,30 @@ export async function apiKeyAuth(c: Context, next: Next): Promise<Response | voi
     return authError(c, 'Invalid API key')
   }
 
+  // Strip proxy auth headers so they are never forwarded to upstream services.
+  // Downstream handlers use their own Copilot token; keeping these around
+  // would leak the proxy key if a future handler naively forwards headers.
+  c.req.raw.headers.delete('authorization')
+  c.req.raw.headers.delete('x-api-key')
+
   return next()
 }
 
 /**
+ * Routes that follow the Anthropic error contract.
+ * Keep in sync with the Anthropic-compatible route registrations in server.ts.
+ */
+const ANTHROPIC_ROUTE_PREFIXES = ['/v1/messages']
+
+/**
  * Return a 401 error in the format matching the target API convention.
  *
- * - Anthropic routes (`/v1/messages`): `{ type: "error", error: { type, message } }`
+ * - Anthropic routes: `{ type: "error", error: { type, message } }`
  * - OpenAI-compatible routes: `{ error: { message, type } }`
  */
 function authError(c: Context, message: string): Response {
   const path = c.req.path
-  if (path.startsWith('/v1/messages')) {
+  if (ANTHROPIC_ROUTE_PREFIXES.some(prefix => path.startsWith(prefix))) {
     return c.json(
       {
         type: 'error',
