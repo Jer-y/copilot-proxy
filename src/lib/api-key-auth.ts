@@ -9,6 +9,7 @@ import { state } from '~/lib/state'
  * - If `state.apiKey` is undefined, the middleware is a no-op (backward compatible).
  * - Accepts key via `Authorization: Bearer <key>` or `x-api-key: <key>`.
  * - Uses constant-time comparison to prevent timing attacks.
+ * - Returns errors in the format matching the target API (OpenAI vs Anthropic).
  */
 export async function apiKeyAuth(c: Context, next: Next): Promise<Response | void> {
   const expected = state.apiKey
@@ -18,14 +19,46 @@ export async function apiKeyAuth(c: Context, next: Next): Promise<Response | voi
 
   const provided = extractApiKey(c)
   if (!provided) {
-    return c.json({ error: 'Unauthorized', message: 'Missing API key. Provide via Authorization: Bearer <key> or x-api-key: <key>' }, 401)
+    return authError(c, 'Missing API key. Provide via Authorization: Bearer <key> or x-api-key: <key>')
   }
 
   if (!safeEqual(expected, provided)) {
-    return c.json({ error: 'Unauthorized', message: 'Invalid API key' }, 401)
+    return authError(c, 'Invalid API key')
   }
 
   return next()
+}
+
+/**
+ * Return a 401 error in the format matching the target API convention.
+ *
+ * - Anthropic routes (`/v1/messages`): `{ type: "error", error: { type, message } }`
+ * - OpenAI-compatible routes: `{ error: { message, type } }`
+ */
+function authError(c: Context, message: string): Response {
+  const path = c.req.path
+  if (path.startsWith('/v1/messages')) {
+    return c.json(
+      {
+        type: 'error',
+        error: {
+          type: 'authentication_error',
+          message,
+        },
+      },
+      401,
+    )
+  }
+
+  return c.json(
+    {
+      error: {
+        message,
+        type: 'invalid_request_error',
+      },
+    },
+    401,
+  )
 }
 
 function extractApiKey(c: Context): string | undefined {

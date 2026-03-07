@@ -67,34 +67,46 @@ describe('apiKeyAuth middleware — key configured', () => {
     }
   })
 
-  test('model routes return 401 without key', async () => {
-    for (const path of ['/v1/chat/completions', '/chat/completions', '/v1/messages', '/v1/embeddings', '/v1/responses', '/responses']) {
+  test('OpenAI-compatible routes return 401 in OpenAI error format without key', async () => {
+    for (const path of ['/v1/chat/completions', '/chat/completions', '/v1/embeddings', '/v1/responses', '/responses']) {
       const res = await app.fetch(new Request(`http://localhost${path}`, { method: 'POST' }))
       expect(res.status).toBe(401)
-      const body = await res.json() as Record<string, string>
-      expect(body.error).toBe('Unauthorized')
-      expect(body.message).toContain('Missing API key')
+      const body = await res.json() as { error: { message: string, type: string } }
+      expect(body.error.type).toBe('invalid_request_error')
+      expect(body.error.message).toContain('Missing API key')
     }
   })
 
-  test('model routes return 401 with wrong Bearer key', async () => {
+  test('Anthropic routes return 401 in Anthropic error format without key', async () => {
+    const res = await app.fetch(new Request('http://localhost/v1/messages', { method: 'POST' }))
+    expect(res.status).toBe(401)
+    const body = await res.json() as { type: string, error: { type: string, message: string } }
+    expect(body.type).toBe('error')
+    expect(body.error.type).toBe('authentication_error')
+    expect(body.error.message).toContain('Missing API key')
+  })
+
+  test('OpenAI routes return 401 with wrong Bearer key', async () => {
     const res = await app.fetch(new Request('http://localhost/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: 'Bearer wrong-key' },
     }))
     expect(res.status).toBe(401)
-    const body = await res.json() as Record<string, string>
-    expect(body.message).toBe('Invalid API key')
+    const body = await res.json() as { error: { message: string, type: string } }
+    expect(body.error.message).toBe('Invalid API key')
+    expect(body.error.type).toBe('invalid_request_error')
   })
 
-  test('model routes return 401 with wrong x-api-key', async () => {
+  test('Anthropic routes return 401 with wrong x-api-key', async () => {
     const res = await app.fetch(new Request('http://localhost/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': 'wrong-key' },
     }))
     expect(res.status).toBe(401)
-    const body = await res.json() as Record<string, string>
-    expect(body.message).toBe('Invalid API key')
+    const body = await res.json() as { type: string, error: { type: string, message: string } }
+    expect(body.type).toBe('error')
+    expect(body.error.type).toBe('authentication_error')
+    expect(body.error.message).toBe('Invalid API key')
   })
 
   test('model routes pass with correct Authorization: Bearer key', async () => {

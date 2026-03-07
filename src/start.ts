@@ -36,13 +36,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const serverUrl = `http://localhost:${options.port}`
 
-  if (options.apiKey) {
-    consola.box(`🔒 API Key: ${options.apiKey}`)
-  }
-  else {
-    consola.warn('No API key set — proxy is open to all requests')
-  }
-
   if (options.claudeCode) {
     invariant(state.models, 'Models should be loaded by now')
 
