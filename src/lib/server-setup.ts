@@ -30,6 +30,7 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
+  state.apiKey = options.apiKey
 
   await ensurePaths()
   await cacheVSCodeVersion()

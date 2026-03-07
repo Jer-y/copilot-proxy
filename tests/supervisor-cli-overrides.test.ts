@@ -105,4 +105,54 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
       proxyEnv: true,
     })
   })
+
+  test('lets explicit --api-key override saved daemon config', () => {
+    const cliConfig: DaemonConfig = {
+      ...savedConfig,
+      apiKey: 'cli-key-123',
+    }
+
+    const merged = mergeDaemonConfigWithExplicitFlags(
+      savedConfig,
+      cliConfig,
+      ['start', '--_supervisor', '--api-key', 'cli-key-123'],
+    )
+
+    expect(merged.apiKey).toBe('cli-key-123')
+    expect(merged.port).toBe(savedConfig.port)
+  })
+
+  test('lets explicit -k alias override saved daemon config', () => {
+    const cliConfig: DaemonConfig = {
+      ...savedConfig,
+      apiKey: 'short-key',
+    }
+
+    const merged = mergeDaemonConfigWithExplicitFlags(
+      savedConfig,
+      cliConfig,
+      ['start', '--_supervisor', '-k', 'short-key'],
+    )
+
+    expect(merged.apiKey).toBe('short-key')
+  })
+
+  test('does not override apiKey when --api-key is not passed', () => {
+    const configWithKey: DaemonConfig = {
+      ...savedConfig,
+      apiKey: 'saved-key',
+    }
+    const cliConfig: DaemonConfig = {
+      ...savedConfig,
+      apiKey: 'cli-key',
+    }
+
+    const merged = mergeDaemonConfigWithExplicitFlags(
+      configWithKey,
+      cliConfig,
+      ['start', '--_supervisor', '--port', '4411'],
+    )
+
+    expect(merged.apiKey).toBe('saved-key')
+  })
 })

@@ -12,6 +12,9 @@ export interface State {
   rateLimitWait: boolean
   showToken: boolean
 
+  // API key authentication — if set, proxy entrance requires this key
+  apiKey?: string
+
   // Rate limiting configuration
   rateLimitSeconds?: number
   lastRequestTimestamp?: number

@@ -28,6 +28,8 @@ export function buildSupervisorStartArgs(scriptPath: string, config: DaemonConfi
     args.push('--show-token')
   if (config.proxyEnv)
     args.push('--proxy-env')
+  if (config.apiKey !== undefined)
+    args.push('--api-key', config.apiKey)
 
   return args
 }

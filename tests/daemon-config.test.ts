@@ -82,6 +82,25 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     expect(loadDaemonConfig()).toBeNull()
   })
 
+  test('returns null for config with non-string apiKey', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, apiKey: 12345 }))
+    expect(loadDaemonConfig()).toBeNull()
+  })
+
+  test('saves and loads config with apiKey', () => {
+    const config = { ...sampleConfig, apiKey: 'my-secret-key' }
+    saveDaemonConfig(config)
+    expect(loadDaemonConfig()).toEqual(config)
+  })
+
+  test('persists apiKey in daemon.json file', () => {
+    const config = { ...sampleConfig, apiKey: 'persisted-key' }
+    saveDaemonConfig(config)
+    const raw = fs.readFileSync(PATHS.DAEMON_JSON, 'utf8')
+    expect(raw).toContain('persisted-key')
+  })
+
   test('accepts valid accountType values', () => {
     for (const accountType of ['individual', 'business', 'enterprise']) {
       const config = { ...sampleConfig, accountType }

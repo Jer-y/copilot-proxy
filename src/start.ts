@@ -28,6 +28,7 @@ export interface RunServerOptions {
   showToken: boolean
   proxyEnv: boolean
   exitOnPortInUse?: boolean
+  apiKey?: string
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -57,7 +58,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     const command = generateEnvScript(
       {
         ANTHROPIC_BASE_URL: serverUrl,
-        ANTHROPIC_AUTH_TOKEN: 'dummy',
+        ANTHROPIC_AUTH_TOKEN: options.apiKey ?? 'dummy',
         ANTHROPIC_MODEL: selectedModel,
         ANTHROPIC_DEFAULT_SONNET_MODEL: selectedModel,
         ANTHROPIC_SMALL_FAST_MODEL: selectedSmallModel,
@@ -167,6 +168,11 @@ export const start = defineCommand({
       default: false,
       description: 'Initialize proxy from environment variables',
     },
+    'api-key': {
+      alias: 'k',
+      type: 'string',
+      description: 'Enable API key authentication. Omit value or use "auto" to generate a random key, or provide your own key.',
+    },
     'daemon': {
       alias: 'd',
       type: 'boolean',
@@ -198,6 +204,18 @@ export const start = defineCommand({
       process.exit(1)
     }
 
+    // Resolve API key: --api-key (no value) or --api-key auto → generate UUID
+    // citty may return boolean `true` when a string flag is passed without a value,
+    // so we normalise to string before checking.
+    let apiKey: string | undefined = typeof args['api-key'] === 'string' ? args['api-key'] : undefined
+    const apiKeyArgRaw = args['api-key']
+    if (apiKeyArgRaw !== undefined) {
+      if (!apiKey || apiKey === 'auto') {
+        const { randomUUID } = await import('node:crypto')
+        apiKey = randomUUID()
+      }
+    }
+
     if (args._supervisor) {
       const { loadDaemonConfigWithRecovery, mergeDaemonConfigWithExplicitFlags } = await import('~/daemon/config')
       const fallbackConfig: DaemonConfig = {
@@ -210,6 +228,7 @@ export const start = defineCommand({
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
+        apiKey,
       }
       const configResult = loadDaemonConfigWithRecovery(fallbackConfig)
 
@@ -248,6 +267,14 @@ export const start = defineCommand({
 
       const { daemonStart } = await import('~/daemon/start')
 
+      // Print API key to terminal before spawning daemon (daemon stdout goes to log file)
+      if (apiKey) {
+        consola.box(`🔒 API Key: ${apiKey}`)
+      }
+      else {
+        consola.warn('No API key set — proxy is open to all requests')
+      }
+
       await daemonStart({
         port,
         verbose: args.verbose,
@@ -258,6 +285,7 @@ export const start = defineCommand({
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
+        apiKey,
       })
       return
     }
@@ -273,6 +301,7 @@ export const start = defineCommand({
       claudeCode: args['claude-code'],
       showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
+      apiKey,
     })
   },
 })

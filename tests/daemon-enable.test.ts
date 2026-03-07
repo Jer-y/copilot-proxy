@@ -38,6 +38,7 @@ describe('buildSupervisorStartArgs', () => {
       showToken: true,
       proxyEnv: true,
       githubToken: 'ghu_secret_should_not_be_in_args',
+      apiKey: 'my-proxy-key',
     }
 
     const args = buildSupervisorStartArgs('/tmp/main.js', config)
@@ -56,8 +57,15 @@ describe('buildSupervisorStartArgs', () => {
       '--wait',
       '--show-token',
       '--proxy-env',
+      '--api-key',
+      'my-proxy-key',
     ])
     expect(args).not.toContain('--github-token')
     expect(args).not.toContain(config.githubToken!)
+  })
+
+  test('does not include --api-key when apiKey is undefined', () => {
+    const args = buildSupervisorStartArgs('/tmp/main.js', baseConfig)
+    expect(args).not.toContain('--api-key')
   })
 })
