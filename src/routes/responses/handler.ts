@@ -16,13 +16,16 @@ import { state } from '~/lib/state'
 import { createCCToResponsesStreamState, translateCCResponseToResponses, translateCCStreamChunkToResponses, translateResponsesRequestToCC } from '~/lib/translation'
 import { validateBody } from '~/lib/validate'
 import { createChatCompletions } from '~/services/copilot/create-chat-completions'
-import { createResponses } from '~/services/copilot/create-responses'
+import { createResponses, summarizeResponsesPayload } from '~/services/copilot/create-responses'
 
 export async function handleResponses(c: Context) {
   await checkRateLimit(state)
 
   const payload = await validateBody<ResponsesPayload>(c, ResponsesPayloadSchema)
-  consola.debug('Responses API request payload:', JSON.stringify(payload).slice(-400))
+  consola.debug('Responses API request summary:', {
+    ...summarizeResponsesPayload(payload),
+    contentLength: c.req.header('content-length') ?? undefined,
+  })
 
   if (state.manualApprove) {
     await awaitApproval()
