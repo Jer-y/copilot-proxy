@@ -5,7 +5,7 @@ import { state } from '~/lib/state'
 import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
-const fetchMock = mock(async (url: string, init?: RequestInit) => {
+const fetchMock = mock(async (url: string) => {
   if (url.endsWith('/responses')) {
     return new Response(JSON.stringify({
       id: 'resp_test',
