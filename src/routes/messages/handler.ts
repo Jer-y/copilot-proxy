@@ -15,6 +15,7 @@ import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
+import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
 import {
   createChatCompletions,
@@ -31,7 +32,7 @@ export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicBeta = c.req.header('anthropic-beta')
-  const anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
+  let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
   consola.debug('Anthropic request payload:', JSON.stringify(anthropicPayload))
 
   if (state.manualApprove) {
@@ -40,6 +41,16 @@ export async function handleCompletion(c: Context) {
 
   // Determine the effective model (with variant suffix) for routing
   const effectiveModel = applyModelVariant(anthropicPayload.model, anthropicPayload, anthropicBeta)
+
+  if (isNullish(anthropicPayload.max_tokens)) {
+    const selectedModel = findModelWithFallback(effectiveModel, state.models?.data)
+    anthropicPayload = {
+      ...anthropicPayload,
+      max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
+    }
+    consola.debug('Set anthropic max_tokens to:', JSON.stringify(anthropicPayload.max_tokens))
+  }
+
   const backend = resolveBackend(effectiveModel, 'chat-completions')
 
   if (backend === 'responses') {
@@ -58,6 +69,24 @@ export async function handleCompletion(c: Context) {
     }
     throw error
   }
+}
+
+function findModelWithFallback(modelId: string, models: typeof state.models extends { data: infer T } ? T : never): typeof state.models extends { data: infer T } ? T[number] | undefined : never {
+  if (!models) {
+    return undefined as never
+  }
+
+  const exact = models.find(model => model.id === modelId)
+  if (exact) {
+    return exact as never
+  }
+
+  const baseModel = modelId.replace(/-(fast|1m)$/, '')
+  if (baseModel !== modelId) {
+    return models.find(model => model.id === baseModel) as never
+  }
+
+  return undefined as never
 }
 
 /** Existing path: Anthropic → CC → Anthropic */

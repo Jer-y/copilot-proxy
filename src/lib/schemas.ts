@@ -24,7 +24,7 @@ export const AnthropicMessagesPayloadSchema = z.object({
     role: z.string(),
     content: z.union([z.string(), z.array(z.unknown())]),
   }).passthrough()),
-  max_tokens: z.number(),
+  max_tokens: z.number().optional(),
   stream: z.boolean().optional(),
   system: z.union([z.string(), z.array(z.unknown())]).optional(),
   tools: z.array(z.unknown()).optional(),
