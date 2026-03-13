@@ -4,6 +4,7 @@ import { defineCommand, runMain } from 'citty'
 
 import { auth } from './auth'
 import { checkUsage } from './check-usage'
+import { config } from './daemon/config-cmd'
 import { disable } from './daemon/disable'
 import { enable } from './daemon/enable'
 import { logs } from './daemon/logs'
@@ -19,7 +20,7 @@ const main = defineCommand({
     description:
       'A wrapper around GitHub Copilot API to make it OpenAI compatible, making it usable for other tools.',
   },
-  subCommands: { auth, start, 'check-usage': checkUsage, debug, stop, status, logs, restart, enable, disable },
+  subCommands: { auth, start, 'check-usage': checkUsage, debug, stop, status, logs, restart, enable, disable, config },
 })
 
 // eslint-disable-next-line antfu/no-top-level-await

@@ -38,7 +38,7 @@
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。
-- **API Key 认证**：可选地通过 `--api-key` 为代理入口添加 API Key 校验。支持 `Authorization: Bearer <key>` 和 `x-api-key: <key>` 两种请求头。仅对模型请求路由生效，管理接口（`/models`、`/usage`、`/token`）不受影响。使用常量时间比较防止时序攻击。
+- **API Key 认证**：可选地通过 `--api-key` 为代理入口添加 API Key 校验。支持 `Authorization: Bearer <key>` 和 `x-api-key: <key>` 两种请求头。模型请求路由和 `/token` 端点均受保护，仅 `/`、`/models`、`/usage` 等信息端点开放。使用常量时间比较防止时序攻击。可随时通过 `config` 命令管理密钥。
 - **手动审核**：通过 `--manual` 对每个请求进行人工确认。
 - **Token 可视化**：`--show-token` 显示 GitHub/Copilot token 便于调试。
 - **灵活认证**：支持交互式登录或直接传入 GitHub token，适用于 CI/CD。
@@ -194,6 +194,7 @@ Copilot API 使用子命令结构，主要命令如下：
 - `logs`：查看守护进程日志。使用 `-f` 实时跟踪。
 - `enable`：注册为系统自启动服务（systemd / launchd / 任务计划程序）。
 - `disable`：移除自启动服务注册。
+- `config`：查看或更新守护进程配置（如添加/轮换/移除 API Key）。若守护进程正在运行，会提示是否立即重启；否则更改在下次 `start -d` 时生效。
 - `auth`：仅进行 GitHub 认证，不启动服务，常用于生成 `--github-token`（CI/CD 场景）。
 - `check-usage`：直接查看 Copilot 使用量/配额（无需启动服务）。
 - `debug`：输出诊断信息，包括版本、运行环境、路径与认证状态。
@@ -352,6 +353,18 @@ npx @jer-y/copilot-proxy@latest enable
 
 # 移除开机自启
 npx @jer-y/copilot-proxy@latest disable
+
+# 查看当前守护进程配置（API Key 会脱敏显示）
+npx @jer-y/copilot-proxy@latest config --show
+
+# 为已有守护进程添加或轮换 API Key（运行中会提示重启）
+npx @jer-y/copilot-proxy@latest config --api-key
+
+# 设置指定 API Key（运行中会提示重启）
+npx @jer-y/copilot-proxy@latest config --api-key my-secret-key
+
+# 移除 API Key 认证（运行中会提示重启）
+npx @jer-y/copilot-proxy@latest config --api-key none
 ```
 
 ## 使用用量面板

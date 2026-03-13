@@ -38,7 +38,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as an Open
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
-- **API Key Authentication**: Optionally protect proxy access with an API key (`--api-key`). Supports `Authorization: Bearer <key>` and `x-api-key: <key>` headers. Only model request routes are gated; management endpoints (`/models`, `/usage`, `/token`) remain open. Uses constant-time comparison to prevent timing attacks.
+- **API Key Authentication**: Optionally protect proxy access with an API key (`--api-key`). Supports `Authorization: Bearer <key>` and `x-api-key: <key>` headers. Model request routes and the `/token` endpoint are gated; only informational endpoints (`/`, `/models`, `/usage`) remain open. Uses constant-time comparison to prevent timing attacks. Manage keys at any time with the `config` command.
 - **Manual Request Approval**: Manually approve or deny each API request for fine-grained control over usage (`--manual`).
 - **Token Visibility**: Option to display GitHub and Copilot tokens during authentication and refresh for debugging (`--show-token`).
 - **Flexible Authentication**: Authenticate interactively or provide a GitHub token directly, suitable for CI/CD environments.
@@ -196,6 +196,7 @@ Copilot API now uses a subcommand structure with these main commands:
 - `logs`: View daemon logs. Use `-f` to follow in real time.
 - `enable`: Register the proxy as an auto-start service (systemd/launchd/Task Scheduler).
 - `disable`: Remove the auto-start service registration.
+- `config`: View or update daemon configuration (e.g., add/rotate/remove an API key). If the daemon is running, you will be prompted to restart it immediately; otherwise changes take effect on the next `start -d`.
 - `auth`: Run GitHub authentication flow without starting the server. This is typically used if you need to generate a token for use with the `--github-token` option, especially in non-interactive environments.
 - `check-usage`: Show your current GitHub Copilot usage and quota information directly in the terminal (no server required).
 - `debug`: Display diagnostic information including version, runtime details, file paths, and authentication status. Useful for troubleshooting and support.
@@ -360,6 +361,18 @@ npx @jer-y/copilot-proxy@latest enable
 
 # Remove auto-start registration
 npx @jer-y/copilot-proxy@latest disable
+
+# View current daemon config (API key is masked)
+npx @jer-y/copilot-proxy@latest config --show
+
+# Add or rotate an API key for an existing daemon (prompts to restart if running)
+npx @jer-y/copilot-proxy@latest config --api-key
+
+# Set a specific API key (prompts to restart if running)
+npx @jer-y/copilot-proxy@latest config --api-key my-secret-key
+
+# Remove API key authentication (prompts to restart if running)
+npx @jer-y/copilot-proxy@latest config --api-key none
 ```
 
 ## Using the Usage Viewer

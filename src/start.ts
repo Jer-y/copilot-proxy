@@ -290,6 +290,11 @@ export const start = defineCommand({
       return
     }
 
+    // Print API key in foreground mode so the user knows how to authenticate
+    if (apiKey) {
+      consola.box(`🔒 API Key: ${apiKey}`)
+    }
+
     return runServer({
       port,
       verbose: args.verbose,

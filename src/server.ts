@@ -25,6 +25,9 @@ server.use('/responses/*', apiKeyAuth)
 server.use('/v1/responses/*', apiKeyAuth)
 server.use('/v1/messages/*', apiKeyAuth)
 
+// Token route — also requires auth (exposes upstream Copilot token)
+server.use('/token/*', apiKeyAuth)
+
 // Management/info routes — no auth required
 server.get('/', c => c.text('Server running'))
 
