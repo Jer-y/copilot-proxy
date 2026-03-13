@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 
+import { apiKeyAuth } from './lib/api-key-auth'
 import { completionRoutes } from './routes/chat-completions/route'
 import { embeddingRoutes } from './routes/embeddings/route'
 import { messageRoutes } from './routes/messages/route'
@@ -15,6 +16,19 @@ export const server = new Hono()
 server.use(logger())
 server.use(cors())
 
+// Model request routes — require API key authentication
+server.use('/chat/completions/*', apiKeyAuth)
+server.use('/v1/chat/completions/*', apiKeyAuth)
+server.use('/embeddings/*', apiKeyAuth)
+server.use('/v1/embeddings/*', apiKeyAuth)
+server.use('/responses/*', apiKeyAuth)
+server.use('/v1/responses/*', apiKeyAuth)
+server.use('/v1/messages/*', apiKeyAuth)
+
+// Token route — also requires auth (exposes upstream Copilot token)
+server.use('/token/*', apiKeyAuth)
+
+// Management/info routes — no auth required
 server.get('/', c => c.text('Server running'))
 
 server.route('/chat/completions', completionRoutes)

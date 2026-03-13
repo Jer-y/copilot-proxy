@@ -28,6 +28,10 @@ export function buildSupervisorStartArgs(scriptPath: string, config: DaemonConfi
     args.push('--show-token')
   if (config.proxyEnv)
     args.push('--proxy-env')
+  // Note: apiKey is intentionally NOT passed via command-line arguments.
+  // The supervisor already recovers it from daemon.json at startup, and
+  // putting it in argv would persist the secret into systemd units /
+  // launchd plists / Windows scheduled task XML.
 
   return args
 }

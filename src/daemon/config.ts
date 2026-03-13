@@ -14,6 +14,7 @@ export interface DaemonConfig {
   githubToken?: string
   showToken: boolean
   proxyEnv: boolean
+  apiKey?: string
 }
 
 const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise']
@@ -54,6 +55,8 @@ export function mergeDaemonConfigWithExplicitFlags(
     merged.showToken = cliConfig.showToken
   if (wasCliOptionPassed(rawArgs, 'proxy-env', undefined, true))
     merged.proxyEnv = cliConfig.proxyEnv
+  if (wasCliOptionPassed(rawArgs, 'api-key', 'k'))
+    merged.apiKey = cliConfig.apiKey
 
   return merged
 }
@@ -189,6 +192,8 @@ function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | nul
   if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400))
     return null
   if (data.githubToken !== undefined && typeof data.githubToken !== 'string')
+    return null
+  if (data.apiKey !== undefined && typeof data.apiKey !== 'string')
     return null
 
   return data as unknown as DaemonConfig
