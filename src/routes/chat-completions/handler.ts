@@ -26,7 +26,9 @@ export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
-  consola.debug('Request payload:', JSON.stringify(payload).slice(-400))
+  if (consola.level >= 4) {
+    consola.debug('Request payload:', JSON.stringify(payload).slice(-400))
+  }
 
   // Find the selected model
   const selectedModel = state.models?.data.find(
@@ -55,7 +57,9 @@ export async function handleCompletion(c: Context) {
       ...payload,
       max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
     }
-    consola.debug('Set max_tokens to:', JSON.stringify(payload.max_tokens))
+    if (consola.level >= 4) {
+      consola.debug('Set max_tokens to:', JSON.stringify(payload.max_tokens))
+    }
   }
 
   // Resolve which backend API to use
@@ -84,14 +88,18 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
   const response = await createChatCompletions(payload)
 
   if (isCCNonStreaming(response)) {
-    consola.debug('Non-streaming response:', JSON.stringify(response))
+    if (consola.level >= 4) {
+      consola.debug('Non-streaming response:', JSON.stringify(response))
+    }
     return c.json(response)
   }
 
   consola.debug('Streaming response')
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
-      consola.debug('Streaming chunk:', JSON.stringify(chunk))
+      if (consola.level >= 4) {
+        consola.debug('Streaming chunk:', JSON.stringify(chunk))
+      }
       await stream.writeSSE(chunk as SSEMessage)
     }
   })
@@ -100,12 +108,16 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
 /** Translation path: model only supports responses API, translate CC ↔ Responses */
 async function handleViaResponses(c: Context, payload: ChatCompletionsPayload) {
   const responsesPayload = translateCCRequestToResponses(payload)
-  consola.debug('Translated CC→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
+  if (consola.level >= 4) {
+    consola.debug('Translated CC→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
+  }
 
   const response = await createResponses(responsesPayload)
 
   if (isResponsesNonStreaming(response)) {
-    consola.debug('Non-streaming responses (translated):', JSON.stringify(response))
+    if (consola.level >= 4) {
+      consola.debug('Non-streaming responses (translated):', JSON.stringify(response))
+    }
     const ccResponse = translateResponsesResponseToCC(response)
     return c.json(ccResponse)
   }

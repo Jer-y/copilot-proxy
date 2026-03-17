@@ -40,9 +40,22 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
   })
 
   test('saves config with optional fields', () => {
-    const config = { ...sampleConfig, rateLimit: 5, githubToken: 'ghu_xxx' }
+    const config = {
+      ...sampleConfig,
+      rateLimit: 5,
+      headersTimeoutMs: 600000,
+      bodyTimeoutMs: 900000,
+      connectTimeoutMs: 15000,
+      githubToken: 'ghu_xxx',
+    }
     saveDaemonConfig(config)
-    expect(loadDaemonConfig()).toEqual({ ...sampleConfig, rateLimit: 5 })
+    expect(loadDaemonConfig()).toEqual({
+      ...sampleConfig,
+      rateLimit: 5,
+      headersTimeoutMs: 600000,
+      bodyTimeoutMs: 900000,
+      connectTimeoutMs: 15000,
+    })
   })
 
   test('does not persist githubToken in file', () => {
@@ -107,6 +120,9 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
       accountType: 'business',
       rateLimit: 8,
       rateLimitWait: true,
+      headersTimeoutMs: 600000,
+      bodyTimeoutMs: 900000,
+      connectTimeoutMs: 15000,
       showToken: true,
       proxyEnv: true,
     }
@@ -154,6 +170,18 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     expect(typeof result.backupPath).toBe('string')
     expect(fs.existsSync(result.backupPath!)).toBe(true)
     expect(loadDaemonConfig()).toEqual(sampleConfig)
+  })
+
+  test('returns null for config with negative timeout values', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, headersTimeoutMs: -1 }))
+    expect(loadDaemonConfig()).toBeNull()
+  })
+
+  test('returns null for config with non-integer connect timeout values', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, connectTimeoutMs: 1.5 }))
+    expect(loadDaemonConfig()).toBeNull()
   })
 
   test('prunes old backup files and keeps only latest N', () => {

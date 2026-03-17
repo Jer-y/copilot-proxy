@@ -60,6 +60,8 @@ const anthropicStreamEventSchema = z.looseObject({
     'content_block_stop',
     'message_delta',
     'message_stop',
+    'ping',
+    'error',
   ]),
 })
 

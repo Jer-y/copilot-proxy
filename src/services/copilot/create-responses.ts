@@ -4,6 +4,7 @@ import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
 /** Type guard: is a message input item (has role, not a function_call/output) */
 function isMessageInput(item: ResponsesInputItem): item is ResponsesMessageInputItem {
@@ -44,10 +45,17 @@ export async function createResponses(payload: ResponsesPayload) {
     bodyChars: body.length,
   })
 
+  const requestStartedAt = Date.now()
   const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
     method: 'POST',
     headers,
     body,
+  })
+  logUpstreamHeadersReceived({
+    endpoint: '/responses',
+    requestStartedAt,
+    status: response.status,
+    stream: Boolean(payload.stream),
   })
 
   if (!response.ok) {
@@ -71,10 +79,18 @@ export async function createResponses(payload: ResponsesPayload) {
   }
 
   if (payload.stream) {
-    return events(response)
+    return instrumentCopilotEventStream(events(response), {
+      endpoint: '/responses',
+      requestStartedAt,
+    })
   }
 
-  return (await response.json()) as ResponsesResponse
+  const json = (await response.json()) as ResponsesResponse
+  logUpstreamRequestCompleted({
+    endpoint: '/responses',
+    requestStartedAt,
+  })
+  return json
 }
 
 function hasVisionInput(input: Array<ResponsesInputItem>): boolean {
@@ -93,11 +109,23 @@ function parseUpstreamError(errorText: string): ResponsesResponseError | undefin
       return undefined
     }
 
-    if ('error' in parsed && parsed.error) {
-      return parsed.error
+    if ('error' in parsed && parsed.error && typeof parsed.error === 'object') {
+      const error = parsed.error as Record<string, unknown>
+      if (typeof error.message === 'string') {
+        return {
+          message: error.message,
+          type: typeof error.type === 'string' ? error.type : undefined,
+          code: typeof error.code === 'string' && error.code.length > 0 ? error.code : undefined,
+        }
+      }
     }
+
     if ('message' in parsed && typeof parsed.message === 'string') {
-      return parsed
+      return {
+        message: parsed.message,
+        type: 'type' in parsed && typeof parsed.type === 'string' ? parsed.type : undefined,
+        code: 'code' in parsed && typeof parsed.code === 'string' && parsed.code.length > 0 ? parsed.code : undefined,
+      }
     }
   }
   catch {

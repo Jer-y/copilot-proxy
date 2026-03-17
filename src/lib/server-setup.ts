@@ -2,7 +2,7 @@ import type { RunServerOptions } from '~/start'
 import consola from 'consola'
 
 import { ensurePaths } from '~/lib/paths'
-import { initProxyFromEnv } from '~/lib/proxy'
+import { initializeNodeHttpClient } from '~/lib/proxy'
 import { state } from '~/lib/state'
 import { setupCopilotToken, setupGitHubToken } from '~/lib/token'
 import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
@@ -12,14 +12,17 @@ import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
  * proxy, logging, state, auth, model caching.
  */
 export async function initializeServer(options: RunServerOptions): Promise<void> {
-  if (options.proxyEnv) {
-    initProxyFromEnv()
-  }
-
   if (options.verbose) {
     consola.level = 5
     consola.info('Verbose logging enabled')
   }
+
+  initializeNodeHttpClient({
+    proxyEnv: options.proxyEnv,
+    headersTimeoutMs: options.headersTimeoutMs,
+    bodyTimeoutMs: options.bodyTimeoutMs,
+    connectTimeoutMs: options.connectTimeoutMs,
+  })
 
   state.accountType = options.accountType
   if (options.accountType !== 'individual') {

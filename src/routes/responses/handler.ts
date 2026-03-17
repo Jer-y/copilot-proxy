@@ -67,14 +67,18 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
   const response = await createResponses(payload)
 
   if (isResponsesNonStreaming(response)) {
-    consola.debug('Non-streaming responses:', JSON.stringify(response))
+    if (consola.level >= 4) {
+      consola.debug('Non-streaming responses:', JSON.stringify(response))
+    }
     return c.json(response)
   }
 
   consola.debug('Streaming responses')
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
-      consola.debug('Responses streaming chunk:', JSON.stringify(chunk))
+      if (consola.level >= 4) {
+        consola.debug('Responses streaming chunk:', JSON.stringify(chunk))
+      }
       await stream.writeSSE(chunk as SSEMessage)
     }
   })
@@ -83,12 +87,16 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
 /** Translation path: model only supports chat-completions, translate Responses ↔ CC */
 async function handleViaChatCompletions(c: Context, payload: ResponsesPayload) {
   const ccPayload = translateResponsesRequestToCC(payload)
-  consola.debug('Translated Responses→CC payload:', JSON.stringify(ccPayload).slice(-400))
+  if (consola.level >= 4) {
+    consola.debug('Translated Responses→CC payload:', JSON.stringify(ccPayload).slice(-400))
+  }
 
   const response = await createChatCompletions(ccPayload)
 
   if (isCCNonStreaming(response)) {
-    consola.debug('Non-streaming CC response (translated):', JSON.stringify(response))
+    if (consola.level >= 4) {
+      consola.debug('Non-streaming CC response (translated):', JSON.stringify(response))
+    }
     const responsesResponse = translateCCResponseToResponses(response)
     return c.json(responsesResponse)
   }

@@ -9,7 +9,7 @@ import consola from 'consola'
 import { serve } from 'srvx'
 import invariant from 'tiny-invariant'
 
-import { validateAccountType, validatePort, validateRateLimit } from './lib/cli-validators'
+import { validateAccountType, validatePort, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
 import { initializeServer } from './lib/server-setup'
 import { generateEnvScript } from './lib/shell'
@@ -23,6 +23,9 @@ export interface RunServerOptions {
   manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
+  headersTimeoutMs?: number
+  bodyTimeoutMs?: number
+  connectTimeoutMs?: number
   githubToken?: string
   claudeCode: boolean
   showToken: boolean
@@ -144,6 +147,18 @@ export const start = defineCommand({
       description:
         'Wait instead of error when rate limit is hit. Has no effect if rate limit is not set',
     },
+    'headers-timeout-ms': {
+      type: 'string',
+      description: 'Upstream HTTP response headers timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
+    },
+    'body-timeout-ms': {
+      type: 'string',
+      description: 'Upstream HTTP response body timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
+    },
+    'connect-timeout-ms': {
+      type: 'string',
+      description: 'Upstream HTTP connect timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
+    },
     'github-token': {
       alias: 'g',
       type: 'string',
@@ -193,6 +208,27 @@ export const start = defineCommand({
     }
     const rateLimit = rateLimitResult.value
 
+    const headersTimeoutResult = validateTimeoutMs(args['headers-timeout-ms'])
+    if (!headersTimeoutResult.valid) {
+      consola.error(`Invalid headers-timeout-ms: ${args['headers-timeout-ms']} (must be 0 or greater)`)
+      process.exit(1)
+    }
+    const headersTimeoutMs = headersTimeoutResult.value
+
+    const bodyTimeoutResult = validateTimeoutMs(args['body-timeout-ms'])
+    if (!bodyTimeoutResult.valid) {
+      consola.error(`Invalid body-timeout-ms: ${args['body-timeout-ms']} (must be 0 or greater)`)
+      process.exit(1)
+    }
+    const bodyTimeoutMs = bodyTimeoutResult.value
+
+    const connectTimeoutResult = validateTimeoutMs(args['connect-timeout-ms'])
+    if (!connectTimeoutResult.valid) {
+      consola.error(`Invalid connect-timeout-ms: ${args['connect-timeout-ms']} (must be 0 or greater)`)
+      process.exit(1)
+    }
+    const connectTimeoutMs = connectTimeoutResult.value
+
     if (!validateAccountType(args['account-type'])) {
       consola.error(`Invalid account-type: ${args['account-type']} (must be one of: individual, business, enterprise)`)
       process.exit(1)
@@ -207,6 +243,9 @@ export const start = defineCommand({
         manual: args.manual,
         rateLimit,
         rateLimitWait: args.wait,
+        headersTimeoutMs,
+        bodyTimeoutMs,
+        connectTimeoutMs,
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
@@ -255,6 +294,9 @@ export const start = defineCommand({
         manual: args.manual,
         rateLimit,
         rateLimitWait: args.wait,
+        headersTimeoutMs,
+        bodyTimeoutMs,
+        connectTimeoutMs,
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
@@ -269,6 +311,9 @@ export const start = defineCommand({
       manual: args.manual,
       rateLimit,
       rateLimitWait: args.wait,
+      headersTimeoutMs,
+      bodyTimeoutMs,
+      connectTimeoutMs,
       githubToken: args['github-token'],
       claudeCode: args['claude-code'],
       showToken: args['show-token'],

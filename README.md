@@ -38,6 +38,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as an Open
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
+- **Upstream Resilience Controls**: Use built-in longer Copilot upstream timeouts, tune header/body/connect timeout overrides, and emit Anthropic SSE keepalive `ping` events while waiting for the first translated stream event.
 - **Manual Request Approval**: Manually approve or deny each API request for fine-grained control over usage (`--manual`).
 - **Token Visibility**: Option to display GitHub and Copilot tokens during authentication and refresh for debugging (`--show-token`).
 - **Flexible Authentication**: Authenticate interactively or provide a GitHub token directly, suitable for CI/CD environments.
@@ -213,11 +214,16 @@ The following command line options are available for the `start` command:
 | --manual       | Enable manual request approval                                                | false      | none  |
 | --rate-limit   | Rate limit in seconds between requests                                        | none       | -r    |
 | --wait         | Wait instead of error when rate limit is hit                                  | false      | -w    |
+| --headers-timeout-ms | Upstream HTTP response headers timeout in milliseconds (`0` disables timeout) | auto*  | none  |
+| --body-timeout-ms | Upstream HTTP response body timeout in milliseconds (`0` disables timeout) | auto*      | none  |
+| --connect-timeout-ms | Upstream HTTP connect timeout in milliseconds (`0` disables timeout) | auto*      | none  |
 | --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none       | -g    |
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
 | --daemon       | Run as a background daemon with crash recovery                                | false      | -d    |
+
+`auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.
 
 ### Auth Command Options
 
@@ -325,6 +331,9 @@ npx @jer-y/copilot-proxy@latest debug --json
 
 # Initialize proxy from environment variables (HTTP_PROXY, HTTPS_PROXY, etc.)
 npx @jer-y/copilot-proxy@latest start --proxy-env
+
+# Increase upstream timeouts for slower model start-up
+npx @jer-y/copilot-proxy@latest start --headers-timeout-ms 600000 --body-timeout-ms 600000
 
 # Start as a background daemon
 npx @jer-y/copilot-proxy@latest start -d

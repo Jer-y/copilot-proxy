@@ -116,7 +116,7 @@ describe('messages error paths', () => {
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
     expect(forwardedPayload.max_tokens).toBe(8192)
   })
@@ -151,7 +151,7 @@ describe('messages error paths', () => {
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/responses')
 
     const forwardedPayload = JSON.parse(String(init?.body)) as { max_output_tokens?: number, model?: string }

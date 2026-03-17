@@ -38,6 +38,7 @@
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。
+- **上游稳健性控制**：内置更长的 Copilot 上游 timeout，可按需覆盖 headers/body/connect timeout，并在等待首个 Anthropic 流事件时发送 SSE keepalive `ping`。
 - **手动审核**：通过 `--manual` 对每个请求进行人工确认。
 - **Token 可视化**：`--show-token` 显示 GitHub/Copilot token 便于调试。
 - **灵活认证**：支持交互式登录或直接传入 GitHub token，适用于 CI/CD。
@@ -209,11 +210,16 @@ Copilot API 使用子命令结构，主要命令如下：
 | --manual       | 手动审批每个请求                                                        | false       | 无   |
 | --rate-limit   | 两次请求之间的最小间隔（秒）                                            | 无          | -r   |
 | --wait         | 触发限流时等待，而非直接报错                                            | false       | -w   |
+| --headers-timeout-ms | upstream 响应头超时（毫秒，`0` 表示禁用）                         | 自动*       | 无   |
+| --body-timeout-ms | upstream 响应体超时（毫秒，`0` 表示禁用）                           | 自动*       | 无   |
+| --connect-timeout-ms | upstream 建连超时（毫秒，`0` 表示禁用）                           | 自动*       | 无   |
 | --github-token | 直接传入 GitHub token（需通过 `auth` 命令生成）                         | 无          | -g   |
 | --claude-code  | 生成 Claude Code 配置命令                                               | false       | -c   |
 | --show-token   | 在获取/刷新时显示 GitHub/Copilot token                                 | false       | 无   |
 | --proxy-env    | 从环境变量初始化代理（HTTP_PROXY/HTTPS_PROXY 等）                      | false       | 无   |
 | --daemon       | 作为后台守护进程运行，支持崩溃自动恢复                                  | false       | -d   |
+
+`自动*` 表示在 Node.js 运行时，如果没有显式覆盖，发往 `githubcopilot.com` 的请求会默认使用 `900000ms` 响应头 timeout、`900000ms` 响应体 timeout 和 `30000ms` 建连 timeout。其他域名仍沿用 Node/undici 默认值，除非你显式传参覆盖。
 
 ### auth 参数
 
@@ -317,6 +323,9 @@ npx @jer-y/copilot-proxy@latest debug --json
 
 # 从环境变量初始化代理
 npx @jer-y/copilot-proxy@latest start --proxy-env
+
+# 针对较慢模型启动拉长 upstream timeout
+npx @jer-y/copilot-proxy@latest start --headers-timeout-ms 600000 --body-timeout-ms 600000
 
 # 后台守护进程模式启动
 npx @jer-y/copilot-proxy@latest start -d

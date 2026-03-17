@@ -4,6 +4,7 @@ import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
 export async function createChatCompletions(payload: ChatCompletionsPayload) {
   if (!state.copilotToken)
@@ -27,10 +28,18 @@ export async function createChatCompletions(payload: ChatCompletionsPayload) {
     'X-Initiator': isAgentCall ? 'agent' : 'user',
   }
 
+  const requestStartedAt = Date.now()
+  const body = JSON.stringify(payload)
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(payload),
+    body,
+  })
+  logUpstreamHeadersReceived({
+    endpoint: '/chat/completions',
+    requestStartedAt,
+    status: response.status,
+    stream: Boolean(payload.stream),
   })
 
   if (!response.ok) {
@@ -39,10 +48,18 @@ export async function createChatCompletions(payload: ChatCompletionsPayload) {
   }
 
   if (payload.stream) {
-    return events(response)
+    return instrumentCopilotEventStream(events(response), {
+      endpoint: '/chat/completions',
+      requestStartedAt,
+    })
   }
 
-  return (await response.json()) as ChatCompletionResponse
+  const json = (await response.json()) as ChatCompletionResponse
+  logUpstreamRequestCompleted({
+    endpoint: '/chat/completions',
+    requestStartedAt,
+  })
+  return json
 }
 
 // Streaming types

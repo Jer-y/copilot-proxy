@@ -11,6 +11,9 @@ export interface DaemonConfig {
   manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
+  headersTimeoutMs?: number
+  bodyTimeoutMs?: number
+  connectTimeoutMs?: number
   githubToken?: string
   showToken: boolean
   proxyEnv: boolean
@@ -48,6 +51,12 @@ export function mergeDaemonConfigWithExplicitFlags(
     merged.rateLimit = cliConfig.rateLimit
   if (wasCliOptionPassed(rawArgs, 'wait', 'w', true))
     merged.rateLimitWait = cliConfig.rateLimitWait
+  if (wasCliOptionPassed(rawArgs, 'headers-timeout-ms'))
+    merged.headersTimeoutMs = cliConfig.headersTimeoutMs
+  if (wasCliOptionPassed(rawArgs, 'body-timeout-ms'))
+    merged.bodyTimeoutMs = cliConfig.bodyTimeoutMs
+  if (wasCliOptionPassed(rawArgs, 'connect-timeout-ms'))
+    merged.connectTimeoutMs = cliConfig.connectTimeoutMs
   if (wasCliOptionPassed(rawArgs, 'github-token', 'g'))
     merged.githubToken = cliConfig.githubToken
   if (wasCliOptionPassed(rawArgs, 'show-token', undefined, true))
@@ -187,6 +196,12 @@ function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | nul
   if (typeof data.proxyEnv !== 'boolean')
     return null
   if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400))
+    return null
+  if (data.headersTimeoutMs !== undefined && (typeof data.headersTimeoutMs !== 'number' || !Number.isInteger(data.headersTimeoutMs) || data.headersTimeoutMs < 0))
+    return null
+  if (data.bodyTimeoutMs !== undefined && (typeof data.bodyTimeoutMs !== 'number' || !Number.isInteger(data.bodyTimeoutMs) || data.bodyTimeoutMs < 0))
+    return null
+  if (data.connectTimeoutMs !== undefined && (typeof data.connectTimeoutMs !== 'number' || !Number.isInteger(data.connectTimeoutMs) || data.connectTimeoutMs < 0))
     return null
   if (data.githubToken !== undefined && typeof data.githubToken !== 'string')
     return null

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { validateAccountType, validatePort, validateRateLimit } from '~/lib/cli-validators'
+import { validateAccountType, validatePort, validateRateLimit, validateTimeoutMs } from '~/lib/cli-validators'
 
 describe('validatePort', () => {
   test('valid port returns number', () => {
@@ -64,5 +64,31 @@ describe('validateAccountType', () => {
   })
   test('unknown type is invalid', () => {
     expect(validateAccountType('team')).toBe(false)
+  })
+})
+
+describe('validateTimeoutMs', () => {
+  test('undefined returns valid with undefined value', () => {
+    expect(validateTimeoutMs(undefined)).toEqual({ valid: true, value: undefined })
+  })
+
+  test('zero is valid', () => {
+    expect(validateTimeoutMs('0')).toEqual({ valid: true, value: 0 })
+  })
+
+  test('positive integer is valid', () => {
+    expect(validateTimeoutMs('600000')).toEqual({ valid: true, value: 600000 })
+  })
+
+  test('negative integer is invalid', () => {
+    expect(validateTimeoutMs('-1')).toEqual({ valid: false, value: undefined })
+  })
+
+  test('non-integer string is invalid', () => {
+    expect(validateTimeoutMs('3.14')).toEqual({ valid: false, value: undefined })
+  })
+
+  test('non-numeric string is invalid', () => {
+    expect(validateTimeoutMs('abc')).toEqual({ valid: false, value: undefined })
   })
 })

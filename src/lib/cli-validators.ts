@@ -21,6 +21,24 @@ export function validateRateLimit(raw: string | undefined): { valid: boolean, va
   return { valid: true, value: rateLimit }
 }
 
+export function validateTimeoutMs(raw: string | undefined): { valid: boolean, value: number | undefined } {
+  if (raw === undefined) {
+    return { valid: true, value: undefined }
+  }
+
+  const timeoutMs = Number.parseInt(raw, 10)
+  if (
+    Number.isNaN(timeoutMs)
+    || timeoutMs < 0
+    || !Number.isSafeInteger(timeoutMs)
+    || String(timeoutMs) !== raw
+  ) {
+    return { valid: false, value: undefined }
+  }
+
+  return { valid: true, value: timeoutMs }
+}
+
 export function validateAccountType(value: string): value is AccountType {
   return (VALID_ACCOUNT_TYPES as readonly string[]).includes(value)
 }
