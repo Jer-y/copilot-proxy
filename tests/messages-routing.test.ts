@@ -293,6 +293,47 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.type).toBe('invalid_request_error')
     expect(body.error?.message).toContain('document blocks')
   })
+
+  test('count_tokens document blocks fail locally with Anthropic invalid_request_error', async () => {
+    const res = await server.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4.6',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                title: 'report.pdf',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: 'JVBERi0xLjQK',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const body = await res.json() as {
+      type?: string
+      error?: {
+        type?: string
+        message?: string
+      }
+    }
+
+    expect(body.type).toBe('error')
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('document blocks')
+  })
 })
 
 afterEach(() => {

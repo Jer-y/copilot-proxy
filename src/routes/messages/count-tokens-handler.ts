@@ -4,7 +4,7 @@ import type { AnthropicMessagesPayload } from './anthropic-types'
 
 import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
-import { HTTPError } from '~/lib/error'
+import { HTTPError, JSONResponseError } from '~/lib/error'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
@@ -103,7 +103,7 @@ export async function handleCountTokens(c: Context) {
     })
   }
   catch (error) {
-    if (error instanceof HTTPError) {
+    if (error instanceof HTTPError || error instanceof JSONResponseError) {
       throw error
     }
     consola.error('Error counting tokens:', error)
