@@ -34,7 +34,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as an Open
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
 - **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for thinking-mode models like `gpt-5`, `gpt-5.1-codex`, `gpt-5.2-codex`, `o3-mini`, and `o4-mini`.
 - **Codex Ready**: Works with OpenAI Codex CLI/SDK by pointing its base URL to this proxy.
-- **Model-Aware Translation**: Automatically applies model-specific optimizations — prompt caching (`copilot_cache_control`) for Claude models, `reasoning_effort` mapping from Anthropic's `thinking.budget_tokens`, and intelligent model name normalization (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
+- **Model-Aware Translation**: Automatically applies model-specific optimizations — prompt caching (`copilot_cache_control`) for Claude models, adaptive-thinking / `output_config.effort` compatibility with legacy `thinking.budget_tokens` mapping, and intelligent model name normalization (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.

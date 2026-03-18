@@ -34,7 +34,7 @@
 - **OpenAI & Anthropic 兼容**：提供 OpenAI 兼容端点（`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`）与 Anthropic 兼容端点（`/v1/messages`）。
 - **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.1-codex`、`gpt-5.2-codex`、`o3-mini`、`o4-mini` 等思考型模型。
 - **Codex 可用**：将 OpenAI Codex CLI/SDK 的 base URL 指向本代理即可使用。
-- **模型感知翻译**：自动应用模型优化 —— Claude 的提示缓存（`copilot_cache_control`）、Anthropic `thinking.budget_tokens` → `reasoning_effort` 映射，以及模型名归一化（如 `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`）。
+- **模型感知翻译**：自动应用模型优化 —— Claude 的提示缓存（`copilot_cache_control`）、`adaptive thinking` / `output_config.effort` 兼容并保留历史 `thinking.budget_tokens` 映射，以及模型名归一化（如 `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`）。
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。

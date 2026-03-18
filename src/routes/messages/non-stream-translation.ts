@@ -3,6 +3,7 @@ import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, Anthrop
 import type { ChatCompletionResponse, ChatCompletionsPayload, ContentPart, Message, TextPart, Tool, ToolCall } from '~/services/copilot/create-chat-completions'
 import consola from 'consola'
 import { getModelConfig } from '~/lib/model-config'
+import { logIgnoredAnthropicParameter, logLossyAnthropicCompatibility, mapAnthropicCacheControl, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { mapAnthropicOutputFormatToChatCompletions } from '~/lib/translation/anthropic-output-format'
 import { mapAnthropicReasoningToChatCompletions, resolveAnthropicReasoningEffort } from '~/lib/translation/anthropic-reasoning'
 import { mapOpenAIStopReasonToAnthropic } from './utils'
@@ -68,24 +69,35 @@ export function translateToOpenAI(
   const modelConfig = getModelConfig(model)
   const enableCacheControl = modelConfig.enableCacheControl === true
 
+  if (payload.top_k !== undefined) {
+    logIgnoredAnthropicParameter(
+      'top_k',
+      'Chat Completions does not expose an OpenAI-compatible top_k field.',
+    )
+  }
+
+  logIgnoredMessageBlockCacheControl(payload, enableCacheControl)
+
   const messages = translateAnthropicMessagesToOpenAI(
     payload.messages,
     payload.system,
   )
+  const explicitSystemCacheControl = resolveSystemMessageCacheControl(
+    payload.system,
+    enableCacheControl,
+  )
 
   // Add copilot_cache_control to the system message for Claude models
-  if (enableCacheControl) {
-    const systemMessage = messages.find(m => m.role === 'system')
-    if (systemMessage) {
-      systemMessage.copilot_cache_control = { type: 'ephemeral' }
-    }
+  const systemMessage = messages.find(m => m.role === 'system')
+  if (systemMessage && (enableCacheControl || explicitSystemCacheControl)) {
+    systemMessage.copilot_cache_control = explicitSystemCacheControl ?? { type: 'ephemeral' }
   }
 
-  const tools = translateAnthropicToolsToOpenAI(payload.tools)
+  const tools = translateAnthropicToolsToOpenAI(payload.tools, enableCacheControl)
 
   // Add copilot_cache_control to the last tool for Claude models
   if (enableCacheControl && tools && tools.length > 0) {
-    tools[tools.length - 1].copilot_cache_control = { type: 'ephemeral' }
+    tools[tools.length - 1].copilot_cache_control ??= { type: 'ephemeral' }
   }
 
   const reasoning_effort = mapAnthropicReasoningToChatCompletions(
@@ -125,7 +137,7 @@ function translateModelName(model: string): string {
     return datedModelMatch[1]
   }
 
-  const hyphenVersionMatch = model.match(/^(claude-(?:sonnet|opus|haiku)-\d+)-(5|6)(?:-\d{8,})?$/)
+  const hyphenVersionMatch = model.match(/^(claude-(?:sonnet|opus|haiku)-\d+)-(\d)(?:-\d{8,})?$/)
   if (hyphenVersionMatch) {
     return `${hyphenVersionMatch[1]}.${hyphenVersionMatch[2]}`
   }
@@ -221,6 +233,14 @@ function handleAssistantMessage(
   const textBlocks = message.content.filter(
     (block): block is AnthropicTextBlock => block.type === 'text',
   )
+  const thinkingBlocks = message.content.filter(block => block.type === 'thinking')
+
+  if (thinkingBlocks.length > 0) {
+    logLossyAnthropicCompatibility(
+      'assistant thinking replay',
+      'Copilot Chat Completions cannot replay Anthropic thinking blocks, so only visible text/tool_use content is forwarded.',
+    )
+  }
 
   const assistantContent = textBlocks.length > 0
     ? mapContent(textBlocks)
@@ -263,6 +283,12 @@ function mapContent(
     return null
   }
 
+  if (content.some(block => block.type === 'document')) {
+    throwAnthropicInvalidRequestError(
+      'GitHub Copilot does not support Anthropic document blocks yet. Extract the document text or convert the document into supported text/image inputs before sending it through the proxy.',
+    )
+  }
+
   const hasImage = content.some(block => block.type === 'image')
   if (!hasImage) {
     return content
@@ -302,18 +328,34 @@ function mapContent(
 
 function translateAnthropicToolsToOpenAI(
   anthropicTools: Array<AnthropicTool> | undefined,
+  enableCacheControl: boolean,
 ): Array<Tool> | undefined {
   if (!anthropicTools) {
     return undefined
   }
-  return anthropicTools.map(tool => ({
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input_schema,
-    },
-  }))
+  return anthropicTools.map((tool, index) => {
+    if (tool.cache_control && !enableCacheControl) {
+      logIgnoredAnthropicParameter(
+        `tools[${index}].cache_control`,
+        'Current Copilot cache hints are only enabled on Claude-routed models.',
+      )
+    }
+
+    return {
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema,
+      },
+      ...(enableCacheControl && tool.cache_control && {
+        copilot_cache_control: mapAnthropicCacheControl(
+          tool.cache_control,
+          `tools[${index}]`,
+        ),
+      }),
+    }
+  })
 }
 
 function translateAnthropicToolChoiceToOpenAI(
@@ -344,6 +386,81 @@ function translateAnthropicToolChoiceToOpenAI(
     }
     default: {
       return undefined
+    }
+  }
+}
+
+function resolveSystemMessageCacheControl(
+  system: string | Array<AnthropicTextBlock> | undefined,
+  enableCacheControl: boolean,
+): Message['copilot_cache_control'] | undefined {
+  if (!Array.isArray(system)) {
+    return undefined
+  }
+
+  const cacheControlBlocks = system
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => block.cache_control)
+
+  if (cacheControlBlocks.length === 0) {
+    return undefined
+  }
+
+  if (!enableCacheControl) {
+    logIgnoredAnthropicParameter(
+      'system[].cache_control',
+      'Current Copilot cache hints are only enabled on Claude-routed models.',
+    )
+    return undefined
+  }
+
+  if (cacheControlBlocks.length > 1) {
+    logLossyAnthropicCompatibility(
+      'system cache_control',
+      'Multiple Anthropic system block cache hints are collapsed into one Copilot system message hint.',
+    )
+  }
+
+  const lastBlock = cacheControlBlocks[cacheControlBlocks.length - 1]
+  return mapAnthropicCacheControl(
+    lastBlock?.block.cache_control,
+    `system[${lastBlock.index}]`,
+  )
+}
+
+function logIgnoredMessageBlockCacheControl(
+  payload: AnthropicMessagesPayload,
+  enableCacheControl: boolean,
+): void {
+  let foundIgnoredCacheControl = false
+
+  for (const [messageIndex, message] of payload.messages.entries()) {
+    if (!Array.isArray(message.content)) {
+      continue
+    }
+
+    for (const block of message.content) {
+      if ('cache_control' in block && block.cache_control) {
+        foundIgnoredCacheControl = true
+        break
+      }
+
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        if (block.content.some(contentBlock => 'cache_control' in contentBlock && contentBlock.cache_control)) {
+          foundIgnoredCacheControl = true
+          break
+        }
+      }
+    }
+
+    if (foundIgnoredCacheControl) {
+      logIgnoredAnthropicParameter(
+        `messages[${messageIndex}].content[].cache_control`,
+        enableCacheControl
+          ? 'Fine-grained Anthropic message block cache hints cannot be represented on the Copilot Chat Completions wire format.'
+          : 'Current Copilot cache hints are only enabled on Claude-routed models.',
+      )
+      return
     }
   }
 }

@@ -8,6 +8,7 @@ import { HTTPError } from '~/lib/error'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
+import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
 import { validateBody } from '~/lib/validate'
 
 import { parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
@@ -52,6 +53,7 @@ export async function handleCountTokens(c: Context) {
     const anthropicBeta = c.req.header('anthropic-beta')
 
     const anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
+    assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 
     const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
 
@@ -86,6 +88,8 @@ export async function handleCountTokens(c: Context) {
 
     let finalTokenCount = tokenCount.input + tokenCount.output
     if (anthropicPayload.model.startsWith('claude')) {
+      // Claude count_tokens compatibility remains an empirically tuned heuristic
+      // until we have a live accuracy corpus for different content types.
       finalTokenCount = Math.round(finalTokenCount * 1.15)
     }
     else if (anthropicPayload.model.startsWith('grok')) {

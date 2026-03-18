@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 
-import type { AnthropicMessagesPayload, AnthropicStreamState, AnthropicToolResultBlock, AnthropicUserContentBlock } from './anthropic-types'
+import type { AnthropicMessagesPayload, AnthropicStreamState } from './anthropic-types'
 import type { ChatCompletionChunk, ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesResponse } from '~/services/copilot/create-responses'
 import type { Model } from '~/services/copilot/get-models'
@@ -9,13 +9,14 @@ import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { isUnsupportedApiError, recordProbeResult } from '~/lib/api-probe'
 import { awaitApproval } from '~/lib/approval'
-import { HTTPError, JSONResponseError } from '~/lib/error'
+import { HTTPError } from '~/lib/error'
 import { resolveBackend } from '~/lib/model-config'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
+import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
 import {
@@ -150,7 +151,9 @@ async function handleViaChatCompletions(
         }
         catch {
           consola.error('Failed to parse streaming chunk:', rawEvent.data)
-          await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent())
+          await anthropicWriter.writeEvent(
+            translateErrorToAnthropicErrorEvent('Failed to parse a streaming chunk from the Copilot upstream response.'),
+          )
           return
         }
 
@@ -163,6 +166,13 @@ async function handleViaChatCompletions(
           await anthropicWriter.writeEvent(event)
         }
       }
+    }
+    catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'An unexpected error occurred while translating the Copilot stream.'
+      consola.error('Chat Completions stream translation failed:', error)
+      await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
     }
     finally {
       await anthropicWriter.close()
@@ -213,7 +223,9 @@ async function handleViaResponses(
         }
         catch {
           consola.error('Failed to parse Responses stream event:', rawEvent.data)
-          await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent())
+          await anthropicWriter.writeEvent(
+            translateErrorToAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Responses upstream response.'),
+          )
           return
         }
 
@@ -227,6 +239,13 @@ async function handleViaResponses(
         }
       }
     }
+    catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'An unexpected error occurred while translating the Copilot Responses stream.'
+      consola.error('Responses stream translation failed:', error)
+      await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
+    }
     finally {
       await anthropicWriter.close()
     }
@@ -239,51 +258,4 @@ function isCCNonStreaming(response: Awaited<ReturnType<typeof createChatCompleti
 
 function isResponsesNonStreaming(response: Awaited<ReturnType<typeof createResponses>>): response is ResponsesResponse {
   return Object.hasOwn(response, 'output')
-}
-
-function assertCopilotCompatibleAnthropicRequest(
-  payload: AnthropicMessagesPayload,
-): void {
-  for (const message of payload.messages) {
-    if (message.role !== 'user' || !Array.isArray(message.content)) {
-      continue
-    }
-
-    for (const block of message.content) {
-      if (hasExternalImageUrl(block)) {
-        throwAnthropicInvalidRequestError(
-          'GitHub Copilot does not support external image URLs for Anthropic image blocks. Use base64 image data instead.',
-        )
-      }
-    }
-  }
-}
-
-function hasExternalImageUrl(block: AnthropicUserContentBlock): boolean {
-  if (block.type === 'image') {
-    return block.source.type === 'url'
-  }
-
-  if (block.type === 'tool_result') {
-    return hasExternalImageUrlInToolResult(block)
-  }
-
-  return false
-}
-
-function hasExternalImageUrlInToolResult(block: AnthropicToolResultBlock): boolean {
-  return Array.isArray(block.content)
-    && block.content.some(contentBlock =>
-      contentBlock.type === 'image' && contentBlock.source.type === 'url',
-    )
-}
-
-function throwAnthropicInvalidRequestError(message: string): never {
-  throw new JSONResponseError(message, 400, {
-    type: 'error',
-    error: {
-      type: 'invalid_request_error',
-      message,
-    },
-  })
 }

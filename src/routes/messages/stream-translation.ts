@@ -38,6 +38,8 @@ export function translateChunkToAnthropicEvents(
         stop_reason: null,
         stop_sequence: null,
         usage: {
+          // Many OpenAI-compatible streaming backends only emit usage on the
+          // final chunk, so message_start may have 0 input tokens here.
           input_tokens:
             (chunk.usage?.prompt_tokens ?? 0)
             - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
@@ -174,12 +176,14 @@ export function translateChunkToAnthropicEvents(
   return events
 }
 
-export function translateErrorToAnthropicErrorEvent(): AnthropicStreamEventData {
+export function translateErrorToAnthropicErrorEvent(
+  message?: string,
+): AnthropicStreamEventData {
   return {
     type: 'error',
     error: {
       type: 'api_error',
-      message: 'An unexpected error occurred during streaming.',
+      message: message ?? 'An unexpected error occurred during streaming.',
     },
   }
 }

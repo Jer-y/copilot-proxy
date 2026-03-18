@@ -197,7 +197,11 @@ export function translateResponsesResponseToCC(response: ResponsesResponse): Cha
 
   const textContent = extractTextFromResponsesOutput(response.output)
   const toolCalls = extractToolCallsFromResponsesOutput(response.output)
-  const finishReason = mapResponsesStatusToCCFinishReason(response.status, response.output)
+  const finishReason = mapResponsesStatusToCCFinishReason(
+    response.status,
+    response.output,
+    response.incomplete_details,
+  )
 
   return {
     id: response.id,

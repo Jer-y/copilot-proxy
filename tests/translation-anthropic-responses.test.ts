@@ -203,6 +203,33 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
+  test('Claude tool cache_control is forwarded to Responses tools when supported', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      tools: [
+        {
+          name: 'get_weather',
+          description: 'Get weather info',
+          input_schema: { type: 'object', properties: { city: { type: 'string' } } },
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.tools).toEqual([
+      {
+        type: 'function',
+        name: 'get_weather',
+        description: 'Get weather info',
+        parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        copilot_cache_control: { type: 'ephemeral' },
+      },
+    ])
+  })
+
   test('tool_choice mappings', () => {
     const base: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -529,6 +556,25 @@ describe('translateResponsesResponseToAnthropic', () => {
     expect(result.stop_reason).toBe('max_tokens')
   })
 
+  test('content_filter incomplete status maps to refusal stop_reason', () => {
+    const response: ResponsesResponse = {
+      id: 'resp_refusal',
+      object: 'response',
+      model: 'gpt-5.4',
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: 'Filtered...' }],
+        },
+      ],
+      status: 'incomplete',
+      incomplete_details: { reason: 'content_filter' },
+    }
+
+    const result = translateResponsesResponseToAnthropic(response)
+    expect(result.stop_reason).toBe('refusal')
+  })
+
   test('mixed text and function_call output', () => {
     const response: ResponsesResponse = {
       id: 'resp_mix',
@@ -557,7 +603,7 @@ describe('translateResponsesResponseToAnthropic', () => {
     expect(result.stop_reason).toBe('tool_use')
   })
 
-  test('reasoning output is translated into Anthropic thinking blocks', () => {
+  test('reasoning summaries are omitted instead of replaying unsigned Anthropic thinking blocks', () => {
     const response: ResponsesResponse = {
       id: 'resp_reason',
       object: 'response',
@@ -577,7 +623,6 @@ describe('translateResponsesResponseToAnthropic', () => {
 
     const result = translateResponsesResponseToAnthropic(response)
     expect(result.content).toEqual([
-      { type: 'thinking', thinking: 'Thinking about it...' },
       { type: 'text', text: 'The answer is 42.' },
     ])
   })

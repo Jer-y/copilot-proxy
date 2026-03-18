@@ -38,7 +38,7 @@ const anthropicMessageResponseSchema = z.object({
     ]),
   ),
   model: z.string(),
-  stop_reason: z.enum(['end_turn', 'max_tokens', 'stop_sequence', 'tool_use']),
+  stop_reason: z.enum(['end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'refusal']),
   stop_sequence: z.string().nullable(),
   usage: anthropicUsageSchema,
 })
@@ -192,6 +192,35 @@ describe('OpenAI to Anthropic Non-Streaming Response Translation', () => {
 
     expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
     expect(anthropicResponse.stop_reason).toBe('max_tokens')
+  })
+
+  test('should translate content_filter to refusal', () => {
+    const openAIResponse: ChatCompletionResponse = {
+      id: 'chatcmpl-refusal',
+      object: 'chat.completion',
+      created: 1677652288,
+      model: 'gpt-4o-2024-05-13',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: 'The response was filtered.',
+          },
+          finish_reason: 'content_filter',
+          logprobs: null,
+        },
+      ],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 1,
+        total_tokens: 11,
+      },
+    }
+
+    const anthropicResponse = translateToAnthropic(openAIResponse)
+    expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    expect(anthropicResponse.stop_reason).toBe('refusal')
   })
 })
 

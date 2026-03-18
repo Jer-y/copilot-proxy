@@ -119,7 +119,11 @@ export function translateResponsesStreamEventToCC(
         choices: [{
           index: 0,
           delta: {},
-          finish_reason: mapResponsesStatusToCCFinishReason(event.response.status, event.response.output),
+          finish_reason: mapResponsesStatusToCCFinishReason(
+            event.response.status,
+            event.response.output,
+            event.response.incomplete_details,
+          ),
           logprobs: null,
         }],
         usage: event.response.usage
@@ -564,6 +568,7 @@ export function translateResponsesStreamEventToAnthropic(
       const stopReason = mapResponsesStatusToAnthropicStopReason(
         event.response.status,
         event.response.output,
+        event.response.incomplete_details,
       )
 
       events.push(

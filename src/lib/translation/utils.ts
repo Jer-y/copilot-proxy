@@ -23,12 +23,16 @@ type ResponsesMessageContentPart = NonNullable<Exclude<ResponsesMessageInputItem
 export function mapResponsesStatusToCCFinishReason(
   status: ResponsesResponse['status'],
   output: Array<ResponsesOutputItem>,
+  incompleteDetails?: ResponsesResponse['incomplete_details'],
 ): CCFinishReason {
   if (status === 'failed') {
     throw new Error('Cannot map failed Responses status to chat-completions finish_reason')
   }
 
   if (status === 'incomplete') {
+    if (incompleteDetails?.reason === 'content_filter') {
+      return 'content_filter'
+    }
     return 'length'
   }
 
@@ -76,7 +80,7 @@ export function mapOpenAIStopReasonToAnthropic(
     stop: 'end_turn',
     length: 'max_tokens',
     tool_calls: 'tool_use',
-    content_filter: 'end_turn',
+    content_filter: 'refusal',
   } as const
   return stopReasonMap[finishReason]
 }
@@ -87,12 +91,16 @@ export function mapOpenAIStopReasonToAnthropic(
 export function mapResponsesStatusToAnthropicStopReason(
   status: ResponsesResponse['status'],
   output: Array<ResponsesOutputItem>,
+  incompleteDetails?: ResponsesResponse['incomplete_details'],
 ): AnthropicResponse['stop_reason'] {
   if (status === 'failed') {
     throw new Error('Cannot map failed Responses status to Anthropic stop_reason')
   }
 
   if (status === 'incomplete') {
+    if (incompleteDetails?.reason === 'content_filter') {
+      return 'refusal'
+    }
     return 'max_tokens'
   }
 

@@ -7,8 +7,10 @@ import type {
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
+  AnthropicTool,
   AnthropicToolResultBlock,
   AnthropicToolUseBlock,
+  AnthropicUserContentBlock,
   AnthropicUserMessage,
 } from './types'
 import type {
@@ -21,6 +23,7 @@ import type {
   ResponsesToolChoice,
 } from '~/services/copilot/create-responses'
 import { getModelConfig } from '~/lib/model-config'
+import { logIgnoredAnthropicParameter, logLossyAnthropicCompatibility, mapAnthropicCacheControl, throwAnthropicInvalidRequestError } from './anthropic-compat'
 import { mapAnthropicOutputFormatToResponses } from './anthropic-output-format'
 import { mapAnthropicReasoningToResponses, resolveAnthropicReasoningEffort } from './anthropic-reasoning'
 
@@ -34,9 +37,22 @@ export function translateAnthropicRequestToResponses(
 ): ResponsesPayload {
   const model = options?.model ?? payload.model
   const modelConfig = getModelConfig(model)
+
+  if (payload.top_k !== undefined) {
+    logIgnoredAnthropicParameter(
+      'top_k',
+      'Responses does not expose an OpenAI-compatible top_k field.',
+    )
+  }
+
+  logIgnoredMessageBlockCacheControl(payload, modelConfig.enableCacheControl === true)
+
   const instructions = translateSystemToInstructions(payload.system)
   const input = translateAnthropicMessagesToResponsesInput(payload.messages)
-  const tools = translateAnthropicToolsToResponses(payload.tools)
+  const tools = translateAnthropicToolsToResponses(
+    payload.tools,
+    modelConfig.enableCacheControl === true,
+  )
   const toolChoice = modelConfig.supportsToolChoice
     ? translateAnthropicToolChoiceToResponses(payload.tool_choice)
     : undefined
@@ -74,6 +90,16 @@ function translateSystemToInstructions(
 
   if (typeof system === 'string')
     return system
+
+  const cacheControlBlocks = system
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => block.cache_control)
+  if (cacheControlBlocks.length > 0) {
+    logLossyAnthropicCompatibility(
+      'system cache_control',
+      'Anthropic system block cache hints are collapsed into Responses instructions and cannot be forwarded precisely.',
+    )
+  }
 
   const text = system.map(block => block.text).join('\n\n')
   return text || undefined
@@ -122,21 +148,7 @@ function handleUserMessage(
   }
 
   if (otherBlocks.length > 0) {
-    const content = otherBlocks.map((block) => {
-      if (block.type === 'image') {
-        return block.source.type === 'base64'
-          ? {
-              type: 'input_image' as const,
-              source: block.source,
-            }
-          : {
-              type: 'input_image' as const,
-              image_url: block.source.url,
-            }
-      }
-
-      return { type: 'input_text' as const, text: block.text }
-    })
+    const content = otherBlocks.map(translateUserBlockToResponsesContent)
     input.push({
       role: 'user',
       content,
@@ -163,6 +175,14 @@ function handleAssistantMessage(
     (b): b is AnthropicTextBlock =>
       b.type === 'text',
   )
+  const thinkingBlocks = msg.content.filter(block => block.type === 'thinking')
+
+  if (thinkingBlocks.length > 0) {
+    logLossyAnthropicCompatibility(
+      'assistant thinking replay',
+      'Responses cannot replay Anthropic thinking blocks, so only visible assistant text/tool_use content is forwarded.',
+    )
+  }
 
   if (textBlocks.length > 0) {
     const textContent = textBlocks
@@ -190,17 +210,35 @@ function handleAssistantMessage(
 }
 
 function translateAnthropicToolsToResponses(
-  tools: Array<{ name: string, description?: string, input_schema: Record<string, unknown> }> | undefined,
+  tools: Array<AnthropicTool> | undefined,
+  enableCacheControl: boolean,
 ): Array<ResponsesTool> | undefined {
   if (!tools || tools.length === 0)
     return undefined
 
-  return tools.map(tool => ({
-    type: 'function' as const,
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.input_schema,
-  }))
+  return tools.map((tool, index) => {
+    if ('cache_control' in tool && tool.cache_control && !enableCacheControl) {
+      logIgnoredAnthropicParameter(
+        `tools[${index}].cache_control`,
+        'Current Copilot cache hints are only enabled on Claude-routed models.',
+      )
+    }
+
+    return {
+      type: 'function' as const,
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema,
+      ...(enableCacheControl
+        && 'cache_control' in tool
+        && tool.cache_control && {
+        copilot_cache_control: mapAnthropicCacheControl(
+          tool.cache_control,
+          `tools[${index}]`,
+        ),
+      }),
+    }
+  })
 }
 
 function translateAnthropicToolChoiceToResponses(
@@ -245,4 +283,58 @@ function serializeToolResultContent(
   // Responses function_call_output currently accepts a string payload, not rich
   // content parts, so preserve mixed/image tool results losslessly as JSON.
   return JSON.stringify(content)
+}
+
+function translateUserBlockToResponsesContent(
+  block: Exclude<AnthropicUserContentBlock, AnthropicToolResultBlock>,
+) {
+  switch (block.type) {
+    case 'image':
+      return block.source.type === 'base64'
+        ? {
+            type: 'input_image' as const,
+            source: block.source,
+          }
+        : {
+            type: 'input_image' as const,
+            image_url: block.source.url,
+          }
+    case 'text':
+      return { type: 'input_text' as const, text: block.text }
+    case 'document':
+      throwAnthropicInvalidRequestError(
+        'GitHub Copilot does not support Anthropic document blocks yet. Extract the document text or convert the document into supported text/image inputs before sending it through the proxy.',
+      )
+  }
+}
+
+function logIgnoredMessageBlockCacheControl(
+  payload: AnthropicMessagesPayload,
+  enableCacheControl: boolean,
+): void {
+  for (const [messageIndex, message] of payload.messages.entries()) {
+    if (!Array.isArray(message.content)) {
+      continue
+    }
+
+    const hasBlockCacheControl = message.content.some((block) => {
+      if ('cache_control' in block && block.cache_control) {
+        return true
+      }
+
+      return block.type === 'tool_result'
+        && Array.isArray(block.content)
+        && block.content.some(contentBlock => 'cache_control' in contentBlock && contentBlock.cache_control)
+    })
+
+    if (hasBlockCacheControl) {
+      logIgnoredAnthropicParameter(
+        `messages[${messageIndex}].content[].cache_control`,
+        enableCacheControl
+          ? 'Fine-grained Anthropic message block cache hints cannot be represented on the Copilot Responses wire format.'
+          : 'Current Copilot cache hints are only enabled on Claude-routed models.',
+      )
+      return
+    }
+  }
 }

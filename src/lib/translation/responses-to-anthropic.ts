@@ -6,7 +6,6 @@ import type {
   AnthropicAssistantContentBlock,
   AnthropicResponse,
   AnthropicTextBlock,
-  AnthropicThinkingBlock,
   AnthropicToolUseBlock,
 } from './types'
 import type {
@@ -15,6 +14,7 @@ import type {
 } from '~/services/copilot/create-responses'
 
 import consola from 'consola'
+import { logLossyAnthropicCompatibility } from './anthropic-compat'
 import {
   mapResponsesStatusToAnthropicStopReason,
   throwAnthropicErrorFromFailedResponses,
@@ -28,7 +28,11 @@ export function translateResponsesResponseToAnthropic(
   }
 
   const content = extractAnthropicContent(response.output)
-  const stopReason = mapResponsesStatusToAnthropicStopReason(response.status, response.output)
+  const stopReason = mapResponsesStatusToAnthropicStopReason(
+    response.status,
+    response.output,
+    response.incomplete_details,
+  )
 
   return {
     id: response.id,
@@ -52,6 +56,7 @@ function extractAnthropicContent(
   output: Array<ResponsesOutputItem>,
 ): Array<AnthropicAssistantContentBlock> {
   const content: Array<AnthropicAssistantContentBlock> = []
+  let omittedReasoningSummary = false
 
   for (const item of output) {
     switch (item.type) {
@@ -93,11 +98,16 @@ function extractAnthropicContent(
       case 'reasoning': {
         if (item.summary) {
           for (const summary of item.summary) {
-            if (summary.type === 'summary_text' && summary.text) {
-              content.push({
-                type: 'thinking',
-                thinking: summary.text,
-              } as AnthropicThinkingBlock)
+            if (
+              summary.type === 'summary_text'
+              && summary.text
+              && !omittedReasoningSummary
+            ) {
+              logLossyAnthropicCompatibility(
+                'responses reasoning summaries',
+                'Responses reasoning summaries are advisory text without Anthropic thinking signatures, so they are omitted instead of being replayed as unsigned thinking blocks.',
+              )
+              omittedReasoningSummary = true
             }
           }
         }

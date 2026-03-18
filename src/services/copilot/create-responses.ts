@@ -334,6 +334,7 @@ export interface ResponsesTool {
   description?: string
   parameters?: Record<string, unknown> | null
   strict?: boolean
+  copilot_cache_control?: { type: 'ephemeral' } | null
 }
 
 // Response types

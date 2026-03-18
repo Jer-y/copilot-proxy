@@ -280,9 +280,9 @@ describe('Model name normalization via translateToOpenAI', () => {
     expect(result.model).toBe('claude-sonnet-4')
   })
 
-  test('should leave claude-sonnet-4-7 unchanged (unsupported minor)', () => {
+  test('should normalize claude-sonnet-4-7 to claude-sonnet-4.7', () => {
     const result = translateToOpenAI(makePayload('claude-sonnet-4-7'))
-    expect(result.model).toBe('claude-sonnet-4-7')
+    expect(result.model).toBe('claude-sonnet-4.7')
   })
 
   test('should leave claude-sonnet-4-5-foo unchanged (malformed suffix)', () => {
@@ -352,6 +352,31 @@ describe('copilot_cache_control injection for Claude models', () => {
     }
     const result = translateToOpenAI(payload)
     expect(result.tools![0].copilot_cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  test('should preserve explicit Anthropic tool cache_control on Claude models', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tools: [
+        {
+          name: 'tool_a',
+          description: 'Cached tool',
+          input_schema: { type: 'object' },
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+        {
+          name: 'tool_b',
+          description: 'Auto cached last tool',
+          input_schema: { type: 'object' },
+        },
+      ],
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.tools![0].copilot_cache_control).toEqual({ type: 'ephemeral' })
+    expect(result.tools![1].copilot_cache_control).toEqual({ type: 'ephemeral' })
   })
 
   test('should NOT add copilot_cache_control for non-Claude models', () => {

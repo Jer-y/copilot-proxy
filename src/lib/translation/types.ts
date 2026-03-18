@@ -1,5 +1,10 @@
 // Anthropic API Types
 
+export interface AnthropicCacheControl {
+  type: 'ephemeral'
+  ttl?: string
+}
+
 export interface AnthropicMessagesPayload {
   model: string
   messages: Array<AnthropicMessage>
@@ -41,6 +46,7 @@ export interface AnthropicMessagesPayload {
 export interface AnthropicTextBlock {
   type: 'text'
   text: string
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicImageBlock {
@@ -55,12 +61,30 @@ export interface AnthropicImageBlock {
       type: 'url'
       url: string
     }
+  cache_control?: AnthropicCacheControl
+}
+
+export interface AnthropicDocumentBlock {
+  type: 'document'
+  source:
+    | {
+      type: 'base64'
+      media_type: string
+      data: string
+    }
+    | {
+      type: 'url'
+      url: string
+    }
+  title?: string
+  context?: string
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicToolResultBlock {
   type: 'tool_result'
   tool_use_id: string
-  content: string | Array<AnthropicTextBlock | AnthropicImageBlock>
+  content: string | Array<AnthropicTextBlock | AnthropicImageBlock | AnthropicDocumentBlock>
   is_error?: boolean
 }
 
@@ -74,11 +98,13 @@ export interface AnthropicToolUseBlock {
 export interface AnthropicThinkingBlock {
   type: 'thinking'
   thinking: string
+  signature?: string
 }
 
 export type AnthropicUserContentBlock
   = | AnthropicTextBlock
     | AnthropicImageBlock
+    | AnthropicDocumentBlock
     | AnthropicToolResultBlock
 
 export type AnthropicAssistantContentBlock
@@ -102,6 +128,7 @@ export interface AnthropicTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicResponse {

@@ -251,6 +251,48 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.message).toContain('external image URLs')
     expect(body.error?.message).toContain('base64')
   })
+
+  test('document blocks fail locally with Anthropic invalid_request_error', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                title: 'report.pdf',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: 'JVBERi0xLjQK',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const body = await res.json() as {
+      type?: string
+      error?: {
+        type?: string
+        message?: string
+      }
+    }
+
+    expect(body.type).toBe('error')
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('document blocks')
+  })
 })
 
 afterEach(() => {

@@ -86,6 +86,54 @@ describe('messages error paths', () => {
     expect(result.success).toBe(true)
   })
 
+  test('assistant thinking blocks with signatures are accepted by schema', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.6',
+      max_tokens: 100,
+      messages: [
+        { role: 'user', content: 'hi' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'thinking',
+              thinking: 'internal reasoning',
+              signature: 'sig_123',
+            },
+            { type: 'text', text: 'visible answer' },
+          ],
+        },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+  })
+
+  test('invalid thinking.budget_tokens type returns 400', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: {
+          type: 'enabled',
+          budget_tokens: 'oops',
+        },
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    const json = await res.json() as {
+      type: string
+      error: { type: string, message: string }
+    }
+    expect(json.type).toBe('error')
+    expect(json.error.type).toBe('invalid_request_error')
+    expect(json.error.message).toContain('thinking.budget_tokens')
+  })
+
   test('missing "max_tokens" is backfilled from model limits before forwarding', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'

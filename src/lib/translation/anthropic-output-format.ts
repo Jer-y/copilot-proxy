@@ -1,6 +1,7 @@
 import type { AnthropicMessagesPayload } from './types'
 import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
+import consola from 'consola'
 
 function getAnthropicOutputFormatType(
   outputConfig: AnthropicMessagesPayload['output_config'],
@@ -12,8 +13,14 @@ function getAnthropicOutputFormatType(
 export function mapAnthropicOutputFormatToChatCompletions(
   outputConfig: AnthropicMessagesPayload['output_config'],
 ): ChatCompletionsPayload['response_format'] | undefined {
-  if (getAnthropicOutputFormatType(outputConfig) === 'json_object') {
+  const formatType = getAnthropicOutputFormatType(outputConfig)
+
+  if (formatType === 'json_object') {
     return { type: 'json_object' }
+  }
+
+  if (formatType) {
+    consola.debug(`Ignoring Anthropic output_config.format.type=${formatType} on Chat Completions until Copilot support is validated.`)
   }
 
   return undefined
@@ -22,10 +29,15 @@ export function mapAnthropicOutputFormatToChatCompletions(
 export function mapAnthropicOutputFormatToResponses(
   outputConfig: AnthropicMessagesPayload['output_config'],
 ): ResponsesPayload['text'] | undefined {
-  if (getAnthropicOutputFormatType(outputConfig) === 'json_object') {
+  const formatType = getAnthropicOutputFormatType(outputConfig)
+
+  if (formatType === 'json_object') {
     return { format: { type: 'json_object' } }
   }
 
-  // Keep schema-like formats as a no-op until Copilot support is validated.
+  if (formatType) {
+    consola.debug(`Ignoring Anthropic output_config.format.type=${formatType} on Responses until Copilot support is validated.`)
+  }
+
   return undefined
 }
