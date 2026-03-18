@@ -1,8 +1,10 @@
-import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, AnthropicMessage, AnthropicMessagesPayload, AnthropicResponse, AnthropicTextBlock, AnthropicThinkingBlock, AnthropicTool, AnthropicToolResultBlock, AnthropicToolUseBlock, AnthropicUserContentBlock, AnthropicUserMessage } from './anthropic-types'
+import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, AnthropicMessage, AnthropicMessagesPayload, AnthropicResponse, AnthropicTextBlock, AnthropicTool, AnthropicToolResultBlock, AnthropicToolUseBlock, AnthropicUserContentBlock, AnthropicUserMessage } from './anthropic-types'
 
 import type { ChatCompletionResponse, ChatCompletionsPayload, ContentPart, Message, TextPart, Tool, ToolCall } from '~/services/copilot/create-chat-completions'
 import consola from 'consola'
 import { getModelConfig } from '~/lib/model-config'
+import { mapAnthropicOutputFormatToChatCompletions } from '~/lib/translation/anthropic-output-format'
+import { mapAnthropicReasoningToChatCompletions, resolveAnthropicReasoningEffort } from '~/lib/translation/anthropic-reasoning'
 import { mapOpenAIStopReasonToAnthropic } from './utils'
 
 // Payload translation
@@ -11,7 +13,7 @@ export interface TranslateOptions {
   anthropicBeta?: string
 }
 
-/** Models that support variant suffixes (e.g. -fast, -1m) */
+/** Models that support Claude routing variants such as -fast and -1m. */
 const MODEL_VARIANTS: Record<string, Set<string>> = {
   'claude-opus-4.6': new Set(['fast', '1m']),
 }
@@ -24,7 +26,11 @@ export function parseBetaFeatures(anthropicBeta: string | undefined): Set<string
   return new Set(anthropicBeta.split(',').map(s => s.trim()).filter(Boolean))
 }
 
-/** Apply model variant suffix based on speed field and beta header signals */
+/**
+ * Resolve the Anthropic request model to the effective Copilot model ID.
+ * Claude fast/1m requests stay as distinct variant IDs, but inherit the same
+ * backend and capability support as the base Opus 4.6 model.
+ */
 export function applyModelVariant(
   model: string,
   payload: AnthropicMessagesPayload,
@@ -38,14 +44,13 @@ export function applyModelVariant(
 
   const betaFeatures = parseBetaFeatures(anthropicBeta)
 
-  // Fast mode takes priority: speed body field or beta header
+  // Fast mode takes priority when both signals are present.
   if (variants.has('fast')) {
     if (payload.speed === 'fast' || betaFeatures.has('fast-mode-2026-02-01')) {
       return `${normalizedModel}-fast`
     }
   }
 
-  // 1M context window
   if (variants.has('1m')) {
     if (betaFeatures.has('context-1m-2025-08-07')) {
       return `${normalizedModel}-1m`
@@ -83,14 +88,18 @@ export function translateToOpenAI(
     tools[tools.length - 1].copilot_cache_control = { type: 'ephemeral' }
   }
 
-  // Map Anthropic thinking budget_tokens to reasoning_effort
-  let reasoning_effort: 'low' | 'medium' | 'high' | undefined
-  if (payload.thinking?.budget_tokens) {
-    reasoning_effort = 'high'
-  }
-  else if (modelConfig.reasoningMode !== 'thinking' && modelConfig.defaultReasoningEffort) {
-    reasoning_effort = modelConfig.defaultReasoningEffort
-  }
+  const reasoning_effort = mapAnthropicReasoningToChatCompletions(
+    resolveAnthropicReasoningEffort(payload, modelConfig),
+    modelConfig,
+  )
+  const tool_choice = modelConfig.supportsToolChoice
+    ? translateAnthropicToolChoiceToOpenAI(payload.tool_choice)
+    : undefined
+  const response_format = mapAnthropicOutputFormatToChatCompletions(payload.output_config)
+  const parallel_tool_calls = payload.tool_choice?.disable_parallel_tool_use === true
+    && modelConfig.supportsParallelToolCalls
+    ? false
+    : undefined
 
   return {
     model,
@@ -102,36 +111,23 @@ export function translateToOpenAI(
     top_p: payload.top_p,
     user: payload.metadata?.user_id,
     tools,
-    tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
+    ...(response_format && { response_format }),
+    ...(tool_choice !== undefined && { tool_choice }),
+    ...(parallel_tool_calls !== undefined && { parallel_tool_calls }),
     snippy: { enabled: false },
     ...(reasoning_effort && { reasoning_effort }),
   }
 }
 
 function translateModelName(model: string): string {
-  // Claude subagent requests use specific version suffixes that Copilot doesn't support
-  // e.g., claude-sonnet-4-20250514 → claude-sonnet-4
-  const hyphenVersionMatch = model.match(
-    /^(claude-(?:sonnet|opus|haiku)-4)-(5|6)(?:-\d{8,})?$/,
-  )
+  const datedModelMatch = model.match(/^(claude-(?:sonnet|opus|haiku)-\d+(?:\.\d+)?)-\d{8,}$/)
+  if (datedModelMatch) {
+    return datedModelMatch[1]
+  }
+
+  const hyphenVersionMatch = model.match(/^(claude-(?:sonnet|opus|haiku)-\d+)-(5|6)(?:-\d{8,})?$/)
   if (hyphenVersionMatch) {
     return `${hyphenVersionMatch[1]}.${hyphenVersionMatch[2]}`
-  }
-  const claudePatterns = [
-    /^(claude-sonnet-4)-\d{8,}$/,
-    /^(claude-opus-4)-\d{8,}$/,
-    /^(claude-haiku-4)-\d{8,}$/,
-    /^(claude-sonnet-4\.5)-\d{8,}$/,
-    /^(claude-opus-4\.5)-\d{8,}$/,
-    /^(claude-opus-4\.6)-\d{8,}$/,
-    /^(claude-haiku-4\.5)-\d{8,}$/,
-  ]
-
-  for (const pattern of claudePatterns) {
-    const match = model.match(pattern)
-    if (match) {
-      return match[1]
-    }
   }
 
   return model
@@ -226,21 +222,15 @@ function handleAssistantMessage(
     (block): block is AnthropicTextBlock => block.type === 'text',
   )
 
-  const thinkingBlocks = message.content.filter(
-    (block): block is AnthropicThinkingBlock => block.type === 'thinking',
-  )
-
-  // Combine text and thinking blocks, as OpenAI doesn't have separate thinking blocks
-  const allTextContent = [
-    ...textBlocks.map(b => b.text),
-    ...thinkingBlocks.map(b => b.thinking),
-  ].join('\n\n')
+  const assistantContent = textBlocks.length > 0
+    ? mapContent(textBlocks)
+    : null
 
   return toolUseBlocks.length > 0
     ? [
         {
           role: 'assistant',
-          content: allTextContent || null,
+          content: assistantContent,
           tool_calls: toolUseBlocks.map(toolUse => ({
             id: toolUse.id,
             type: 'function',
@@ -251,12 +241,14 @@ function handleAssistantMessage(
           })),
         },
       ]
-    : [
-        {
-          role: 'assistant',
-          content: mapContent(message.content),
-        },
-      ]
+    : assistantContent === null
+      ? []
+      : [
+          {
+            role: 'assistant',
+            content: assistantContent,
+          },
+        ]
 }
 
 function mapContent(
@@ -275,10 +267,10 @@ function mapContent(
   if (!hasImage) {
     return content
       .filter(
-        (block): block is AnthropicTextBlock | AnthropicThinkingBlock =>
-          block.type === 'text' || block.type === 'thinking',
+        (block): block is AnthropicTextBlock =>
+          block.type === 'text',
       )
-      .map(block => (block.type === 'text' ? block.text : block.thinking))
+      .map(block => block.text)
       .join('\n\n')
   }
 
@@ -290,16 +282,13 @@ function mapContent(
 
         break
       }
-      case 'thinking': {
-        contentParts.push({ type: 'text', text: block.thinking })
-
-        break
-      }
       case 'image': {
         contentParts.push({
           type: 'image_url',
           image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`,
+            url: block.source.type === 'base64'
+              ? `data:${block.source.media_type};base64,${block.source.data}`
+              : block.source.url,
           },
         })
 

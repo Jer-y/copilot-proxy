@@ -50,6 +50,8 @@ const chatCompletionRequestSchema = z.object({
   tools: z.array(z.any()).optional(),
   tool_choice: z.union([z.string(), z.object({})]).optional(),
   user: z.string().optional(),
+  reasoning_effort: z.enum(['low', 'medium', 'high', 'max']).optional().nullable(),
+  parallel_tool_calls: z.boolean().optional().nullable(),
 })
 
 /**
@@ -150,10 +152,7 @@ describe('Anthropic to OpenAI translation logic', () => {
     const assistantMessage = openAIPayload.messages.find(
       m => m.role === 'assistant',
     )
-    expect(assistantMessage?.content).toContain(
-      'Let me think about this simple math problem...',
-    )
-    expect(assistantMessage?.content).toContain('2+2 equals 4.')
+    expect(assistantMessage?.content).toBe('2+2 equals 4.')
   })
 
   test('should handle thinking blocks with tool calls', () => {
@@ -188,12 +187,7 @@ describe('Anthropic to OpenAI translation logic', () => {
     const assistantMessage = openAIPayload.messages.find(
       m => m.role === 'assistant',
     )
-    expect(assistantMessage?.content).toContain(
-      'I need to call the weather API',
-    )
-    expect(assistantMessage?.content).toContain(
-      'I\'ll check the weather for you.',
-    )
+    expect(assistantMessage?.content).toBe('I\'ll check the weather for you.')
     expect(assistantMessage?.tool_calls).toHaveLength(1)
     expect(assistantMessage?.tool_calls?.[0].function.name).toBe('get_weather')
   })
@@ -383,9 +377,9 @@ describe('copilot_cache_control injection for Claude models', () => {
 })
 
 describe('reasoning_effort mapping', () => {
-  test('should map thinking budget_tokens to reasoning_effort high', () => {
+  test('should map small thinking budget_tokens to reasoning_effort low', () => {
     const payload: AnthropicMessagesPayload = {
-      model: 'claude-sonnet-4',
+      model: 'claude-opus-4.6',
       messages: [{ role: 'user', content: 'Hello!' }],
       max_tokens: 100,
       thinking: {
@@ -394,40 +388,297 @@ describe('reasoning_effort mapping', () => {
       },
     }
     const result = translateToOpenAI(payload)
-    expect(result.reasoning_effort).toBe('high')
+    expect(result.reasoning_effort).toBe('low')
   })
 
-  test('should use model default reasoning_effort when thinking is not set', () => {
+  test('should map medium thinking budget_tokens to reasoning_effort medium', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'claude-opus-4.6',
       messages: [{ role: 'user', content: 'Hello!' }],
       max_tokens: 100,
+      thinking: {
+        type: 'enabled',
+        budget_tokens: 8192,
+      },
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBe('medium')
+  })
+
+  test('should map large thinking budget_tokens to reasoning_effort high', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      thinking: {
+        type: 'enabled',
+        budget_tokens: 32768,
+      },
     }
     const result = translateToOpenAI(payload)
     expect(result.reasoning_effort).toBe('high')
   })
 
-  test('should not include reasoning_effort when thinking is not set', () => {
+  test('should use model default reasoning_effort for adaptive thinking', () => {
     const payload: AnthropicMessagesPayload = {
-      model: 'claude-sonnet-4',
+      model: 'claude-opus-4.6',
       messages: [{ role: 'user', content: 'Hello!' }],
       max_tokens: 100,
+      thinking: {
+        type: 'adaptive',
+      },
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBe('high')
+  })
+
+  test('should use model default reasoning_effort for adaptive thinking on claude-sonnet-4.6', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      thinking: {
+        type: 'adaptive',
+      },
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBe('high')
+  })
+
+  test('should map output_config.effort max to Claude chat-completions reasoning_effort max', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      output_config: {
+        effort: 'max',
+      },
+    }
+    const result = translateToOpenAI(payload)
+    expect(result.reasoning_effort).toBe('max')
+  })
+
+  test('should not include reasoning_effort when thinking is disabled', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      thinking: {
+        type: 'disabled',
+      },
     }
     const result = translateToOpenAI(payload)
     expect(result.reasoning_effort).toBeUndefined()
   })
 
-  test('should not include reasoning_effort when thinking has no budget_tokens', () => {
+  test('should not include reasoning_effort when model support is unknown', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'claude-sonnet-4',
       messages: [{ role: 'user', content: 'Hello!' }],
       max_tokens: 100,
-      thinking: {
-        type: 'enabled',
+      output_config: {
+        effort: 'high',
       },
     }
     const result = translateToOpenAI(payload)
     expect(result.reasoning_effort).toBeUndefined()
+  })
+})
+
+describe('tool choice and parallel tool calls mapping', () => {
+  test('should forward tool_choice for Claude models validated on chat-completions', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tool_choice: { type: 'any' },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.tool_choice).toBe('required')
+  })
+
+  test('should forward tool_choice for claude-sonnet-4.6', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tool_choice: { type: 'any' },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.tool_choice).toBe('required')
+  })
+
+  test('should omit tool_choice for Claude models without validated support', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tool_choice: { type: 'any' },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.tool_choice).toBeUndefined()
+  })
+
+  test('should map disable_parallel_tool_use to parallel_tool_calls false when supported', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tool_choice: {
+        type: 'auto',
+        disable_parallel_tool_use: true,
+      },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.parallel_tool_calls).toBe(false)
+  })
+
+  test('should map disable_parallel_tool_use to parallel_tool_calls false for claude-sonnet-4.6', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4.6',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tool_choice: {
+        type: 'auto',
+        disable_parallel_tool_use: true,
+      },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.parallel_tool_calls).toBe(false)
+  })
+
+  test('should omit parallel_tool_calls when the model has no validated support', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'Hello!' }],
+      max_tokens: 100,
+      tool_choice: {
+        type: 'auto',
+        disable_parallel_tool_use: true,
+      },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.parallel_tool_calls).toBeUndefined()
+  })
+})
+
+describe('structured output mapping', () => {
+  test('should map output_config.format json_object to chat-completions response_format', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Return JSON.' }],
+      max_tokens: 100,
+      output_config: {
+        format: {
+          type: 'json_object',
+        },
+      },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.response_format).toEqual({ type: 'json_object' })
+  })
+
+  test('should ignore schema-like output_config.format on chat-completions path', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [{ role: 'user', content: 'Return JSON.' }],
+      max_tokens: 100,
+      output_config: {
+        format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'sample',
+            schema: {
+              type: 'object',
+            },
+          },
+        },
+      },
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.response_format).toBeUndefined()
+  })
+})
+
+describe('rich content mapping', () => {
+  test('should map URL-based Anthropic images to OpenAI image_url parts', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'url',
+                url: 'https://example.com/cat.png',
+              },
+            },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.messages[0]?.content).toEqual([
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'https://example.com/cat.png',
+        },
+      },
+    ])
+  })
+
+  test('should preserve structured tool_result content for tool messages', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4.6',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_1',
+              content: [
+                { type: 'text', text: 'Screenshot attached' },
+                {
+                  type: 'image',
+                  source: {
+                    type: 'url',
+                    url: 'https://example.com/result.png',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    }
+
+    const result = translateToOpenAI(payload)
+    expect(result.messages[0]).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'toolu_1',
+      content: [
+        { type: 'text', text: 'Screenshot attached' },
+        {
+          type: 'image_url',
+          image_url: { url: 'https://example.com/result.png' },
+        },
+      ],
+    })
   })
 })
 
@@ -636,6 +887,24 @@ describe('Model variant routing', () => {
   test('speed field is not present in OpenAI output', () => {
     const result = translateToOpenAI(makePayload('claude-opus-4.6', { speed: 'fast' }))
     expect((result as unknown as Record<string, unknown>).speed).toBeUndefined()
+  })
+
+  test('fast variant inherits opus 4.6 capability mapping', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.6', {
+      speed: 'fast',
+      tool_choice: {
+        type: 'auto',
+        disable_parallel_tool_use: true,
+      },
+      output_config: {
+        effort: 'max',
+      },
+    }))
+
+    expect(result.model).toBe('claude-opus-4.6-fast')
+    expect(result.tool_choice).toBe('auto')
+    expect(result.parallel_tool_calls).toBe(false)
+    expect(result.reasoning_effort).toBe('max')
   })
 
   test('model with date suffix is normalized before applying variant', () => {

@@ -12,9 +12,9 @@ export interface ModelConfig {
   /** Whether to add copilot_cache_control headers for prompt caching */
   enableCacheControl?: boolean
   /** Default reasoning effort level */
-  defaultReasoningEffort?: 'low' | 'medium' | 'high'
+  defaultReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Supported reasoning effort levels */
-  supportedReasoningEfforts?: Array<'low' | 'medium' | 'high' | 'xhigh'>
+  supportedReasoningEfforts?: Array<'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   /** Whether the model supports tool_choice parameter */
   supportsToolChoice?: boolean
   /** Whether the model supports parallel tool calls */
@@ -37,6 +37,14 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsToolChoice: false,
     supportsParallelToolCalls: false,
   },
+  'claude-sonnet-4.6': {
+    supportedApis: ['chat-completions'],
+    enableCacheControl: true,
+    defaultReasoningEffort: 'high',
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+    supportsToolChoice: true,
+    supportsParallelToolCalls: true,
+  },
   'claude-opus-4.5': {
     supportedApis: ['chat-completions'],
     enableCacheControl: true,
@@ -48,8 +56,8 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportedApis: ['chat-completions'],
     enableCacheControl: true,
     defaultReasoningEffort: 'high',
-    supportedReasoningEfforts: ['low', 'medium', 'high'],
-    supportsToolChoice: false,
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+    supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },
 
@@ -99,6 +107,8 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   'gpt-5.4': {
     supportedApis: ['responses'],
     reasoningMode: 'thinking',
+    defaultReasoningEffort: 'high',
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },

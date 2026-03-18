@@ -14,7 +14,7 @@ import { parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
 
 /**
  * Find a model in the models list, falling back to the base model
- * when a variant suffix (-fast, -1m) doesn't have its own entry.
+ * when a Claude variant suffix (-fast, -1m) doesn't have its own entry.
  */
 export function findModelWithFallback(
   modelId: string,
@@ -27,7 +27,7 @@ export function findModelWithFallback(
   if (exact) {
     return exact
   }
-  // Strip variant suffix and retry
+  // Strip the variant suffix and retry.
   const baseModel = modelId.replace(/-(fast|1m)$/, '')
   if (baseModel !== modelId) {
     return models.find(m => m.id === baseModel)

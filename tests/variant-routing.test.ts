@@ -95,6 +95,26 @@ describe('Variant routing integration', () => {
     )
     expect(result.model).toBe('claude-sonnet-4.6')
   })
+
+  test('fast variant inherits opus 4.6 feature support', () => {
+    const result = translateToOpenAI(
+      makePayload('claude-opus-4.6', {
+        speed: 'fast',
+        tool_choice: {
+          type: 'any',
+          disable_parallel_tool_use: true,
+        },
+        output_config: {
+          effort: 'max',
+        },
+      }),
+    )
+
+    expect(result.model).toBe('claude-opus-4.6-fast')
+    expect(result.tool_choice).toBe('required')
+    expect(result.parallel_tool_calls).toBe(false)
+    expect(result.reasoning_effort).toBe('max')
+  })
 })
 
 describe('findModelWithFallback', () => {

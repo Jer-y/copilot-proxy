@@ -110,7 +110,7 @@ interface Choice {
 
 export interface ChatCompletionResponse {
   id: string
-  object: 'chat.completion'
+  object?: 'chat.completion'
   created: number
   model: string
   choices: Array<ChoiceNonStreaming>
@@ -164,7 +164,8 @@ export interface ChatCompletionsPayload {
     | { type: 'function', function: { name: string } }
     | null
   user?: string | null
-  reasoning_effort?: 'low' | 'medium' | 'high' | null
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'max' | null
+  parallel_tool_calls?: boolean | null
   snippy?: { enabled: boolean } | null
 }
 

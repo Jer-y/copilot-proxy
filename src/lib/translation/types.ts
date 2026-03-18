@@ -17,10 +17,22 @@ export interface AnthropicMessagesPayload {
   tool_choice?: {
     type: 'auto' | 'any' | 'tool' | 'none'
     name?: string
+    disable_parallel_tool_use?: boolean
   }
-  thinking?: {
-    type: 'enabled'
-    budget_tokens?: number
+  thinking?:
+    | {
+      type: 'enabled'
+      budget_tokens?: number
+    }
+    | {
+      type: 'adaptive'
+    }
+    | {
+      type: 'disabled'
+    }
+  output_config?: {
+    effort?: 'low' | 'medium' | 'high' | 'max'
+    format?: Record<string, unknown>
   }
   service_tier?: 'auto' | 'standard_only'
   speed?: 'fast' | 'normal'
@@ -33,17 +45,22 @@ export interface AnthropicTextBlock {
 
 export interface AnthropicImageBlock {
   type: 'image'
-  source: {
-    type: 'base64'
-    media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
-    data: string
-  }
+  source:
+    | {
+      type: 'base64'
+      media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+      data: string
+    }
+    | {
+      type: 'url'
+      url: string
+    }
 }
 
 export interface AnthropicToolResultBlock {
   type: 'tool_result'
   tool_use_id: string
-  content: string
+  content: string | Array<AnthropicTextBlock | AnthropicImageBlock>
   is_error?: boolean
 }
 

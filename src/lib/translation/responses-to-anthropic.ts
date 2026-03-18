@@ -6,6 +6,7 @@ import type {
   AnthropicAssistantContentBlock,
   AnthropicResponse,
   AnthropicTextBlock,
+  AnthropicThinkingBlock,
   AnthropicToolUseBlock,
 } from './types'
 import type {
@@ -90,6 +91,16 @@ function extractAnthropicContent(
       }
 
       case 'reasoning': {
+        if (item.summary) {
+          for (const summary of item.summary) {
+            if (summary.type === 'summary_text' && summary.text) {
+              content.push({
+                type: 'thinking',
+                thinking: summary.text,
+              } as AnthropicThinkingBlock)
+            }
+          }
+        }
         break
       }
       // No default

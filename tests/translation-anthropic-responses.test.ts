@@ -152,6 +152,32 @@ describe('translateAnthropicRequestToResponses', () => {
     })
   })
 
+  test('assistant thinking blocks are not merged into visible assistant text', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        { role: 'user', content: 'Hi' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'Internal reasoning that should stay hidden.' },
+            { type: 'text', text: 'Visible answer.' },
+          ],
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      { role: 'user', content: 'Hi' },
+      {
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Visible answer.' }],
+      },
+    ])
+  })
+
   test('tools translated (input_schema → parameters)', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -190,16 +216,55 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(translateAnthropicRequestToResponses({ ...base, tool_choice: { type: 'tool', name: 'foo' } }).tool_choice).toEqual({ type: 'function', name: 'foo' })
   })
 
-  test('thinking budget_tokens → reasoning.effort high', () => {
+  test('disable_parallel_tool_use → parallel_tool_calls false', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
       max_tokens: 1024,
       messages: [{ role: 'user', content: 'Hi' }],
-      thinking: { type: 'enabled', budget_tokens: 10000 },
+      tool_choice: {
+        type: 'auto',
+        disable_parallel_tool_use: true,
+      },
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.parallel_tool_calls).toBe(false)
+  })
+
+  test('adaptive thinking uses the model default reasoning effort', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      thinking: { type: 'adaptive' },
     }
 
     const result = translateAnthropicRequestToResponses(payload)
     expect(result.reasoning).toEqual({ effort: 'high' })
+  })
+
+  test('Anthropic max effort is adapted to Responses xhigh', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      output_config: { effort: 'max' },
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.reasoning).toEqual({ effort: 'xhigh' })
+  })
+
+  test('disabled thinking omits reasoning hints', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      thinking: { type: 'disabled' },
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.reasoning).toBeUndefined()
   })
 
   test('user message with mixed text and tool_result', () => {
@@ -223,6 +288,163 @@ describe('translateAnthropicRequestToResponses', () => {
       { type: 'function_call_output', call_id: 'toolu_1', output: 'result1' },
       { role: 'user', content: [{ type: 'input_text', text: 'And also...' }] },
     ])
+  })
+
+  test('URL-based images are translated to input_image.image_url', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'url',
+                url: 'https://example.com/cat.png',
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            image_url: 'https://example.com/cat.png',
+          },
+        ],
+      },
+    ])
+  })
+
+  test('structured text-only tool_result content is flattened for function_call_output', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_1',
+              content: [
+                { type: 'text', text: 'Part one' },
+                { type: 'text', text: 'Part two' },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_1',
+        output: 'Part one\n\nPart two',
+      },
+    ])
+  })
+
+  test('mixed tool_result content falls back to JSON for function_call_output', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_2',
+              content: [
+                { type: 'text', text: 'Screenshot attached' },
+                {
+                  type: 'image',
+                  source: {
+                    type: 'url',
+                    url: 'https://example.com/result.png',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_2',
+        output: JSON.stringify([
+          { type: 'text', text: 'Screenshot attached' },
+          {
+            type: 'image',
+            source: {
+              type: 'url',
+              url: 'https://example.com/result.png',
+            },
+          },
+        ]),
+      },
+    ])
+  })
+
+  test('output_config.format json_object is mapped to Responses text.format', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      output_config: {
+        effort: 'high',
+        format: {
+          type: 'json_object',
+        },
+      },
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.reasoning).toEqual({ effort: 'high' })
+    expect(result.text).toEqual({ format: { type: 'json_object' } })
+  })
+
+  test('schema-like output_config.format is still ignored on the Responses path', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      output_config: {
+        effort: 'high',
+        format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'sample',
+            schema: {
+              type: 'object',
+              properties: {
+                answer: { type: 'string' },
+              },
+              required: ['answer'],
+            },
+          },
+        },
+      },
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.reasoning).toEqual({ effort: 'high' })
+    expect(result.text).toBeUndefined()
   })
 })
 
@@ -335,7 +557,7 @@ describe('translateResponsesResponseToAnthropic', () => {
     expect(result.stop_reason).toBe('tool_use')
   })
 
-  test('reasoning output is discarded', () => {
+  test('reasoning output is translated into Anthropic thinking blocks', () => {
     const response: ResponsesResponse = {
       id: 'resp_reason',
       object: 'response',
@@ -354,9 +576,10 @@ describe('translateResponsesResponseToAnthropic', () => {
     }
 
     const result = translateResponsesResponseToAnthropic(response)
-    // Reasoning blocks should be discarded
-    expect(result.content).toHaveLength(1)
-    expect(result.content[0]).toEqual({ type: 'text', text: 'The answer is 42.' })
+    expect(result.content).toEqual([
+      { type: 'thinking', thinking: 'Thinking about it...' },
+      { type: 'text', text: 'The answer is 42.' },
+    ])
   })
 
   test('cached tokens mapped to cache_read_input_tokens', () => {

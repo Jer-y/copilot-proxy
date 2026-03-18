@@ -48,7 +48,11 @@ export function translateCCRequestToResponses(payload: ChatCompletionsPayload): 
     ...(tools && { tools }),
     ...(toolChoice !== undefined && { tool_choice: toolChoice }),
     ...(payload.reasoning_effort && {
-      reasoning: { effort: payload.reasoning_effort },
+      reasoning: {
+        effort: payload.reasoning_effort === 'max'
+          ? 'xhigh'
+          : payload.reasoning_effort,
+      },
     }),
     ...(payload.response_format?.type === 'json_object' && {
       text: { format: { type: 'json_object' } },

@@ -180,6 +180,15 @@ describe('translateCCRequestToResponses', () => {
     expect(result.reasoning).toEqual({ effort: 'high' })
   })
 
+  test('reasoning_effort max is adapted to reasoning.effort xhigh', () => {
+    const result = translateCCRequestToResponses({
+      model: 'gpt-5.4',
+      messages: [{ role: 'user', content: 'Hi' }],
+      reasoning_effort: 'max',
+    })
+    expect(result.reasoning).toEqual({ effort: 'xhigh' })
+  })
+
   test('unsupported fields (stop, n, logit_bias) are ignored', () => {
     const result = translateCCRequestToResponses({
       model: 'gpt-5.4',

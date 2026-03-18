@@ -448,6 +448,20 @@ bun run dev
 bun run start
 ```
 
+### Live Copilot Capability Validation
+
+When you change Anthropic or Claude compatibility behavior, it is worth validating whether GitHub Copilot upstream actually accepts the mapped fields before enabling them by default.
+
+The repository includes an opt-in live probe suite:
+
+```sh
+COPILOT_LIVE_TEST=1 \
+COPILOT_TOKEN=ghu_xxx \
+bun run test:live:copilot
+```
+
+See [docs/copilot-capability-validation.md](docs/copilot-capability-validation.md) for the probe matrix, supported environment variables, and result interpretation.
+
 ## Usage Tips
 
 - To avoid hitting GitHub Copilot's rate limits, you can use the following flags:

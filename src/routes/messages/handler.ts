@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 
-import type { AnthropicMessagesPayload, AnthropicStreamState } from './anthropic-types'
+import type { AnthropicMessagesPayload, AnthropicStreamState, AnthropicToolResultBlock, AnthropicUserContentBlock } from './anthropic-types'
 import type { ChatCompletionChunk, ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesResponse } from '~/services/copilot/create-responses'
 import type { Model } from '~/services/copilot/get-models'
@@ -9,7 +9,7 @@ import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { isUnsupportedApiError, recordProbeResult } from '~/lib/api-probe'
 import { awaitApproval } from '~/lib/approval'
-import { HTTPError } from '~/lib/error'
+import { HTTPError, JSONResponseError } from '~/lib/error'
 import { resolveBackend } from '~/lib/model-config'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
@@ -43,7 +43,7 @@ export async function handleCompletion(c: Context) {
     await awaitApproval()
   }
 
-  // Determine the effective model (with variant suffix) for routing
+  // Determine the effective routed model, including Claude variant suffixes.
   const effectiveModel = applyModelVariant(anthropicPayload.model, anthropicPayload, anthropicBeta)
 
   if (isNullish(anthropicPayload.max_tokens)) {
@@ -56,6 +56,8 @@ export async function handleCompletion(c: Context) {
       consola.debug('Set anthropic max_tokens to:', JSON.stringify(anthropicPayload.max_tokens))
     }
   }
+
+  assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 
   const backend = resolveBackend(effectiveModel, 'chat-completions')
 
@@ -237,4 +239,51 @@ function isCCNonStreaming(response: Awaited<ReturnType<typeof createChatCompleti
 
 function isResponsesNonStreaming(response: Awaited<ReturnType<typeof createResponses>>): response is ResponsesResponse {
   return Object.hasOwn(response, 'output')
+}
+
+function assertCopilotCompatibleAnthropicRequest(
+  payload: AnthropicMessagesPayload,
+): void {
+  for (const message of payload.messages) {
+    if (message.role !== 'user' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    for (const block of message.content) {
+      if (hasExternalImageUrl(block)) {
+        throwAnthropicInvalidRequestError(
+          'GitHub Copilot does not support external image URLs for Anthropic image blocks. Use base64 image data instead.',
+        )
+      }
+    }
+  }
+}
+
+function hasExternalImageUrl(block: AnthropicUserContentBlock): boolean {
+  if (block.type === 'image') {
+    return block.source.type === 'url'
+  }
+
+  if (block.type === 'tool_result') {
+    return hasExternalImageUrlInToolResult(block)
+  }
+
+  return false
+}
+
+function hasExternalImageUrlInToolResult(block: AnthropicToolResultBlock): boolean {
+  return Array.isArray(block.content)
+    && block.content.some(contentBlock =>
+      contentBlock.type === 'image' && contentBlock.source.type === 'url',
+    )
+}
+
+function throwAnthropicInvalidRequestError(message: string): never {
+  throw new JSONResponseError(message, 400, {
+    type: 'error',
+    error: {
+      type: 'invalid_request_error',
+      message,
+    },
+  })
 }

@@ -7,6 +7,28 @@ describe('getModelConfig', () => {
     const config = getModelConfig('claude-opus-4.6')
     expect(config.enableCacheControl).toBe(true)
     expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
+    expect(config.supportedApis).toEqual(['chat-completions'])
+  })
+
+  test('should let claude-opus-4.6-fast inherit the claude-opus-4.6 config', () => {
+    const config = getModelConfig('claude-opus-4.6-fast')
+    expect(config.enableCacheControl).toBe(true)
+    expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportsParallelToolCalls).toBe(true)
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
+    expect(config.supportedApis).toEqual(['chat-completions'])
+  })
+
+  test('should let claude-opus-4.6-1m inherit the claude-opus-4.6 config', () => {
+    const config = getModelConfig('claude-opus-4.6-1m')
+    expect(config.enableCacheControl).toBe(true)
+    expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportsParallelToolCalls).toBe(true)
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
     expect(config.supportedApis).toEqual(['chat-completions'])
   })
 
@@ -46,6 +68,16 @@ describe('getModelConfig', () => {
     expect(config.supportsParallelToolCalls).toBe(false)
   })
 
+  test('should return exact match config for claude-sonnet-4.6', () => {
+    const config = getModelConfig('claude-sonnet-4.6')
+    expect(config.enableCacheControl).toBe(true)
+    expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportsParallelToolCalls).toBe(true)
+    expect(config.supportedApis).toEqual(['chat-completions'])
+  })
+
   test('should return exact match config for gpt-4o', () => {
     const config = getModelConfig('gpt-4o')
     expect(config.supportsToolChoice).toBe(true)
@@ -56,6 +88,8 @@ describe('getModelConfig', () => {
     const config = getModelConfig('gpt-5.4')
     expect(config.supportedApis).toEqual(['responses'])
     expect(config.reasoningMode).toBe('thinking')
+    expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
   })
 
   test('should configure gpt-5.1 as both APIs', () => {
@@ -107,6 +141,20 @@ describe('resolveBackend', () => {
 
   test('should return chat-completions for claude even if responses requested', () => {
     expect(resolveBackend('claude-opus-4.6', 'responses')).toBe('chat-completions')
+  })
+
+  test('should route claude-opus-4.6-fast exactly like claude-opus-4.6', () => {
+    expect(resolveBackend('claude-opus-4.6-fast', 'chat-completions')).toBe('chat-completions')
+    expect(resolveBackend('claude-opus-4.6-fast', 'responses')).toBe('chat-completions')
+  })
+
+  test('should route claude-opus-4.6-1m exactly like claude-opus-4.6', () => {
+    expect(resolveBackend('claude-opus-4.6-1m', 'chat-completions')).toBe('chat-completions')
+    expect(resolveBackend('claude-opus-4.6-1m', 'responses')).toBe('chat-completions')
+  })
+
+  test('should return chat-completions for claude-sonnet-4.6 even if responses requested', () => {
+    expect(resolveBackend('claude-sonnet-4.6', 'responses')).toBe('chat-completions')
   })
 
   test('should return responses for gpt-5.4 (responses-only model)', () => {

@@ -432,6 +432,20 @@ bun run dev
 bun run start
 ```
 
+### GitHub Copilot 能力验证
+
+如果你准备修改 Anthropic / Claude 兼容层，建议先验证 GitHub Copilot 上游端点是否真的接受这些映射字段，再决定是否默认开启。
+
+仓库里已经带了一组可选的 live probe：
+
+```sh
+COPILOT_LIVE_TEST=1 \
+COPILOT_TOKEN=ghu_xxx \
+bun run test:live:copilot
+```
+
+探针矩阵、环境变量说明和结果判读见 [docs/copilot-capability-validation.md](docs/copilot-capability-validation.md)。
+
 ## 使用建议
 
 - 为避免触发 GitHub Copilot 的速率限制，可使用：

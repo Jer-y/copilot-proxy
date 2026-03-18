@@ -31,6 +31,7 @@
     "prepare": "test -d .git && npx simple-git-hooks || true",
     "release": "bumpp && npm publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts start",
+    "test:live:copilot": "bun test tests/live/copilot-capabilities.test.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

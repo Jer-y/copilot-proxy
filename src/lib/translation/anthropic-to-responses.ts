@@ -7,7 +7,6 @@ import type {
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
-  AnthropicThinkingBlock,
   AnthropicToolResultBlock,
   AnthropicToolUseBlock,
   AnthropicUserMessage,
@@ -21,6 +20,9 @@ import type {
   ResponsesTool,
   ResponsesToolChoice,
 } from '~/services/copilot/create-responses'
+import { getModelConfig } from '~/lib/model-config'
+import { mapAnthropicOutputFormatToResponses } from './anthropic-output-format'
+import { mapAnthropicReasoningToResponses, resolveAnthropicReasoningEffort } from './anthropic-reasoning'
 
 export interface TranslateAnthropicToResponsesOptions {
   model?: string
@@ -30,13 +32,26 @@ export function translateAnthropicRequestToResponses(
   payload: AnthropicMessagesPayload,
   options?: TranslateAnthropicToResponsesOptions,
 ): ResponsesPayload {
+  const model = options?.model ?? payload.model
+  const modelConfig = getModelConfig(model)
   const instructions = translateSystemToInstructions(payload.system)
   const input = translateAnthropicMessagesToResponsesInput(payload.messages)
   const tools = translateAnthropicToolsToResponses(payload.tools)
-  const toolChoice = translateAnthropicToolChoiceToResponses(payload.tool_choice)
+  const toolChoice = modelConfig.supportsToolChoice
+    ? translateAnthropicToolChoiceToResponses(payload.tool_choice)
+    : undefined
+  const reasoning = mapAnthropicReasoningToResponses(
+    resolveAnthropicReasoningEffort(payload, modelConfig),
+    modelConfig,
+  )
+  const text = mapAnthropicOutputFormatToResponses(payload.output_config)
+  const parallelToolCalls = payload.tool_choice?.disable_parallel_tool_use === true
+    && modelConfig.supportsParallelToolCalls
+    ? false
+    : undefined
 
   return {
-    model: options?.model ?? payload.model,
+    model,
     ...(instructions && { instructions }),
     input,
     stream: payload.stream,
@@ -45,9 +60,9 @@ export function translateAnthropicRequestToResponses(
     max_output_tokens: clampMaxOutputTokens(payload.max_tokens),
     ...(tools && { tools }),
     ...(toolChoice !== undefined && { tool_choice: toolChoice }),
-    ...(payload.thinking?.budget_tokens && {
-      reasoning: { effort: 'high' as const },
-    }),
+    ...(reasoning && { reasoning }),
+    ...(text && { text }),
+    ...(parallelToolCalls !== undefined && { parallel_tool_calls: parallelToolCalls }),
   }
 }
 
@@ -102,18 +117,24 @@ function handleUserMessage(
     input.push({
       type: 'function_call_output',
       call_id: tr.tool_use_id,
-      output: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+      output: serializeToolResultContent(tr.content),
     } as ResponsesFunctionCallOutputItem)
   }
 
   if (otherBlocks.length > 0) {
     const content = otherBlocks.map((block) => {
       if (block.type === 'image') {
-        return {
-          type: 'input_image' as const,
-          source: block.source,
-        }
+        return block.source.type === 'base64'
+          ? {
+              type: 'input_image' as const,
+              source: block.source,
+            }
+          : {
+              type: 'input_image' as const,
+              image_url: block.source.url,
+            }
       }
+
       return { type: 'input_text' as const, text: block.text }
     })
     input.push({
@@ -139,13 +160,13 @@ function handleAssistantMessage(
     (b): b is AnthropicToolUseBlock => b.type === 'tool_use',
   )
   const textBlocks = msg.content.filter(
-    (b): b is AnthropicTextBlock | AnthropicThinkingBlock =>
-      b.type === 'text' || b.type === 'thinking',
+    (b): b is AnthropicTextBlock =>
+      b.type === 'text',
   )
 
   if (textBlocks.length > 0) {
     const textContent = textBlocks
-      .map(b => b.type === 'text' ? b.text : b.thinking)
+      .map(b => b.text)
       .join('\n\n')
 
     if (textContent) {
@@ -208,4 +229,20 @@ function clampMaxOutputTokens(maxTokens: number | null | undefined): number | un
   if (maxTokens === null || maxTokens === undefined)
     return undefined
   return Math.max(maxTokens, 16)
+}
+
+function serializeToolResultContent(
+  content: AnthropicToolResultBlock['content'],
+): string {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (content.every(block => block.type === 'text')) {
+    return content.map(block => block.text).join('\n\n')
+  }
+
+  // Responses function_call_output currently accepts a string payload, not rich
+  // content parts, so preserve mixed/image tool results losslessly as JSON.
+  return JSON.stringify(content)
 }
