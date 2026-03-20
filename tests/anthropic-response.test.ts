@@ -20,6 +20,12 @@ const anthropicContentBlockTextSchema = z.object({
   text: z.string(),
 })
 
+const anthropicContentBlockThinkingSchema = z.object({
+  type: z.literal('thinking'),
+  thinking: z.string(),
+  signature: z.string().optional(),
+})
+
 const anthropicContentBlockToolUseSchema = z.object({
   type: z.literal('tool_use'),
   id: z.string(),
@@ -33,6 +39,7 @@ const anthropicMessageResponseSchema = z.object({
   role: z.literal('assistant'),
   content: z.array(
     z.union([
+      anthropicContentBlockThinkingSchema,
       anthropicContentBlockTextSchema,
       anthropicContentBlockToolUseSchema,
     ]),
@@ -110,6 +117,80 @@ describe('OpenAI to Anthropic Non-Streaming Response Translation', () => {
     else {
       throw new Error('Expected text block')
     }
+  })
+
+  test('should translate reasoning_text into an Anthropic thinking block', () => {
+    const openAIResponse: ChatCompletionResponse = {
+      id: 'chatcmpl-thinking',
+      object: 'chat.completion',
+      created: 1677652288,
+      model: 'claude-opus-4.6',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            reasoning_text: 'Let me reason this through first.',
+            content: 'Final answer.',
+          },
+          finish_reason: 'stop',
+          logprobs: null,
+        },
+      ],
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 18,
+        total_tokens: 30,
+      },
+    }
+
+    const anthropicResponse = translateToAnthropic(openAIResponse)
+
+    expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    expect(anthropicResponse.content[0]).toEqual({
+      type: 'thinking',
+      thinking: 'Let me reason this through first.',
+    })
+    expect(anthropicResponse.content[1]).toEqual({
+      type: 'text',
+      text: 'Final answer.',
+    })
+  })
+
+  test('should translate reasoning_opaque into an Anthropic thinking signature', () => {
+    const openAIResponse: ChatCompletionResponse = {
+      id: 'chatcmpl-thinking-signature',
+      object: 'chat.completion',
+      created: 1677652288,
+      model: 'claude-opus-4.6',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            reasoning_text: 'Replayable hidden reasoning.',
+            reasoning_opaque: 'sig_reasoning_opaque_123',
+            content: 'Visible answer.',
+          },
+          finish_reason: 'stop',
+          logprobs: null,
+        },
+      ],
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 18,
+        total_tokens: 30,
+      },
+    }
+
+    const anthropicResponse = translateToAnthropic(openAIResponse)
+
+    expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    expect(anthropicResponse.content[0]).toEqual({
+      type: 'thinking',
+      thinking: 'Replayable hidden reasoning.',
+      signature: 'sig_reasoning_opaque_123',
+    })
   })
 
   test('should translate a response with tool calls', () => {
@@ -282,8 +363,14 @@ describe('OpenAI to Anthropic Streaming Response Translation', () => {
 
     const streamState: AnthropicStreamState = {
       messageStartSent: false,
+      messageStopSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
+      currentBlockType: null,
+      thinkingSignature: null,
+      pendingLeadingText: '',
+      hasThinkingContent: false,
+      hasNonThinkingContent: false,
       toolCalls: {},
     }
     const translatedStream = openAIStream.flatMap(chunk =>
@@ -382,8 +469,14 @@ describe('OpenAI to Anthropic Streaming Response Translation', () => {
     // Streaming translation requires state
     const streamState: AnthropicStreamState = {
       messageStartSent: false,
+      messageStopSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
+      currentBlockType: null,
+      thinkingSignature: null,
+      pendingLeadingText: '',
+      hasThinkingContent: false,
+      hasNonThinkingContent: false,
       toolCalls: {},
     }
     const translatedStream = openAIStream.flatMap(chunk =>

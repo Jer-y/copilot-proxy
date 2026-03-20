@@ -1,4 +1,4 @@
-import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, AnthropicMessage, AnthropicMessagesPayload, AnthropicResponse, AnthropicTextBlock, AnthropicTool, AnthropicToolResultBlock, AnthropicToolUseBlock, AnthropicUserContentBlock, AnthropicUserMessage } from './anthropic-types'
+import type { AnthropicAssistantContentBlock, AnthropicAssistantMessage, AnthropicMessage, AnthropicMessagesPayload, AnthropicResponse, AnthropicTextBlock, AnthropicThinkingBlock, AnthropicTool, AnthropicToolResultBlock, AnthropicToolUseBlock, AnthropicUserContentBlock, AnthropicUserMessage } from './anthropic-types'
 
 import type { ChatCompletionResponse, ChatCompletionsPayload, ContentPart, Message, TextPart, Tool, ToolCall } from '~/services/copilot/create-chat-completions'
 import consola from 'consola'
@@ -233,16 +233,14 @@ function handleAssistantMessage(
   const textBlocks = message.content.filter(
     (block): block is AnthropicTextBlock => block.type === 'text',
   )
-  const thinkingBlocks = message.content.filter(block => block.type === 'thinking')
+  const thinkingBlocks = message.content.filter(
+    (block): block is AnthropicThinkingBlock => block.type === 'thinking',
+  )
 
-  if (thinkingBlocks.length > 0) {
-    logLossyAnthropicCompatibility(
-      'assistant thinking replay',
-      'Copilot Chat Completions cannot replay Anthropic thinking blocks, so only visible text/tool_use content is forwarded.',
-    )
-  }
+  const reasoningText = extractAssistantReasoningText(thinkingBlocks)
+  const reasoningOpaque = extractAssistantReasoningOpaque(thinkingBlocks)
 
-  const assistantContent = textBlocks.length > 0
+  const visibleText = textBlocks.length > 0
     ? mapContent(textBlocks)
     : null
 
@@ -250,7 +248,9 @@ function handleAssistantMessage(
     ? [
         {
           role: 'assistant',
-          content: assistantContent,
+          content: visibleText,
+          ...(reasoningText && { reasoning_text: reasoningText }),
+          ...(reasoningOpaque && { reasoning_opaque: reasoningOpaque }),
           tool_calls: toolUseBlocks.map(toolUse => ({
             id: toolUse.id,
             type: 'function',
@@ -261,14 +261,57 @@ function handleAssistantMessage(
           })),
         },
       ]
-    : assistantContent === null
+    : visibleText === null && reasoningText === null
       ? []
       : [
           {
             role: 'assistant',
-            content: assistantContent,
+            content: visibleText,
+            ...(reasoningText && { reasoning_text: reasoningText }),
+            ...(reasoningOpaque && { reasoning_opaque: reasoningOpaque }),
           },
         ]
+}
+
+function extractAssistantReasoningText(
+  thinkingBlocks: Array<AnthropicThinkingBlock>,
+): string | null {
+  if (thinkingBlocks.length === 0) {
+    return null
+  }
+
+  const thinkingText = thinkingBlocks
+    .map(block => block.thinking)
+    .filter(Boolean)
+    .join('\n\n')
+
+  if (!thinkingText) {
+    return null
+  }
+
+  return thinkingText
+}
+
+function extractAssistantReasoningOpaque(
+  thinkingBlocks: Array<AnthropicThinkingBlock>,
+): string | null {
+  const signatures = thinkingBlocks
+    .map(block => block.signature)
+    .filter((signature): signature is string => Boolean(signature))
+
+  if (signatures.length === 0) {
+    return null
+  }
+
+  const distinctSignatures = new Set(signatures)
+  if (distinctSignatures.size > 1) {
+    logLossyAnthropicCompatibility(
+      'assistant thinking signatures',
+      'Multiple Anthropic thinking signatures in one assistant turn are not fully representable in Copilot Chat Completions, so the latest signature is forwarded as reasoning_opaque.',
+    )
+  }
+
+  return signatures[signatures.length - 1] ?? null
 }
 
 function mapContent(
@@ -470,20 +513,20 @@ function logIgnoredMessageBlockCacheControl(
 export function translateToAnthropic(
   response: ChatCompletionResponse,
 ): AnthropicResponse {
-  // Merge content from all choices
-  const allTextBlocks: Array<AnthropicTextBlock> = []
-  const allToolUseBlocks: Array<AnthropicToolUseBlock> = []
+  const allContentBlocks: Array<AnthropicResponse['content'][number]> = []
   let stopReason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null
     = null // default
   stopReason = response.choices[0]?.finish_reason ?? stopReason
 
-  // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
+    const thinkingBlocks = getAnthropicThinkingBlocks(
+      choice.message.reasoning_text,
+      choice.message.reasoning_opaque,
+    )
     const textBlocks = getAnthropicTextBlocks(choice.message.content)
     const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls)
 
-    allTextBlocks.push(...textBlocks)
-    allToolUseBlocks.push(...toolUseBlocks)
+    allContentBlocks.push(...thinkingBlocks, ...textBlocks, ...toolUseBlocks)
 
     // Use the finish_reason from the first choice, or prioritize tool_calls
     if (choice.finish_reason === 'tool_calls' || stopReason === 'stop') {
@@ -491,14 +534,12 @@ export function translateToAnthropic(
     }
   }
 
-  // Note: GitHub Copilot doesn't generate thinking blocks, so we don't include them in responses
-
   return {
     id: response.id,
     type: 'message',
     role: 'assistant',
     model: response.model,
-    content: [...allTextBlocks, ...allToolUseBlocks],
+    content: allContentBlocks,
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
     usage: {
@@ -513,6 +554,23 @@ export function translateToAnthropic(
       }),
     },
   }
+}
+
+function getAnthropicThinkingBlocks(
+  reasoningText: Message['reasoning_text'],
+  reasoningOpaque?: Message['reasoning_opaque'],
+): Array<AnthropicThinkingBlock> {
+  if (typeof reasoningText !== 'string' || reasoningText.length === 0) {
+    return []
+  }
+
+  return [{
+    type: 'thinking',
+    thinking: reasoningText,
+    ...(typeof reasoningOpaque === 'string' && reasoningOpaque.length > 0
+      ? { signature: reasoningOpaque }
+      : {}),
+  }]
 }
 
 function getAnthropicTextBlocks(

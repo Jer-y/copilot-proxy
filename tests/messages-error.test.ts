@@ -5,7 +5,7 @@ import { state } from '~/lib/state'
 import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
-const fetchMock = mock(async (url: string) => {
+const fetchMock = mock(async (url: string, init?: RequestInit) => {
   if (url.endsWith('/responses')) {
     return new Response(JSON.stringify({
       id: 'resp_test',
@@ -21,6 +21,20 @@ const fetchMock = mock(async (url: string) => {
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  const forwardedPayload = init?.body
+    ? JSON.parse(String(init.body)) as { stream?: boolean }
+    : {}
+
+  if (forwardedPayload.stream) {
+    return new Response([
+      'data: {"id":"chatcmpl_test_stream","object":"chat.completion.chunk","created":0,"model":"claude-sonnet-4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":7,"completion_tokens":1,"total_tokens":8}}\n\n',
+      'data: [DONE]\n\n',
+    ].join(''), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
     })
   }
 
@@ -157,6 +171,42 @@ describe('messages error paths', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
+    expect(forwardedPayload.max_tokens).toBe(8192)
+  })
+
+  test('max_tokens above model limits are clamped before forwarding', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    state.models = {
+      data: [{
+        id: 'claude-sonnet-4',
+        capabilities: {
+          limits: {
+            max_output_tokens: 8192,
+          },
+        },
+      }],
+    } as typeof state.models
+
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4',
+        max_tokens: 16000,
         messages: [{ role: 'user', content: 'hi' }],
       }),
     })

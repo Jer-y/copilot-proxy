@@ -178,7 +178,7 @@ export interface AnthropicContentBlockStartEvent {
     | (Omit<AnthropicToolUseBlock, 'input'> & {
       input: Record<string, unknown>
     })
-    | { type: 'thinking', thinking: string }
+    | { type: 'thinking', thinking: string, signature?: string }
 }
 
 export interface AnthropicContentBlockDeltaEvent {
@@ -239,8 +239,14 @@ export type AnthropicStreamEventData
 // State for streaming translation
 export interface AnthropicStreamState {
   messageStartSent: boolean
+  messageStopSent: boolean
   contentBlockIndex: number
   contentBlockOpen: boolean
+  currentBlockType: 'text' | 'thinking' | 'tool_use' | null
+  thinkingSignature: string | null
+  pendingLeadingText: string
+  hasThinkingContent: boolean
+  hasNonThinkingContent: boolean
   toolCalls: {
     [openAIToolIndex: number]: {
       id: string

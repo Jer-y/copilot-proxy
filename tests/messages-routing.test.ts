@@ -25,6 +25,20 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
   }
 
   if (url.endsWith('/chat/completions')) {
+    const forwardedPayload = init?.body
+      ? JSON.parse(String(init.body)) as { stream?: boolean }
+      : {}
+
+    if (forwardedPayload.stream) {
+      return new Response([
+        'data: {"id":"chatcmpl_route_stream","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
+        'data: [DONE]\n\n',
+      ].join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    }
+
     return new Response(JSON.stringify({
       id: 'chatcmpl_route_test',
       object: 'chat.completion',
@@ -120,6 +134,104 @@ describe('messages route upstream adaptation', () => {
 
     expect(forwardedPayload.model).toBe('gpt-5.4')
     expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
+  })
+
+  test('Claude non-streaming requests are buffered from a streamed upstream response', async () => {
+    fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith('/chat/completions')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      const forwardedPayload = JSON.parse(String(init?.body)) as {
+        stream?: boolean
+      }
+
+      expect(forwardedPayload.stream).toBe(true)
+
+      return new Response([
+        'data: {"id":"chatcmpl_stream_buffered","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_text":"First think."},"finish_reason":null,"logprobs":null}]}\n\n',
+        'data: {"id":"chatcmpl_stream_buffered","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"Buffered answer."},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}\n\n',
+        'data: [DONE]\n\n',
+      ].join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+
+    const body = await res.json() as {
+      type?: string
+      content?: Array<Record<string, unknown>>
+      usage?: {
+        input_tokens?: number
+        output_tokens?: number
+      }
+    }
+
+    expect(body.type).toBe('message')
+    expect(body.content).toEqual([
+      {
+        type: 'thinking',
+        thinking: 'First think.',
+      },
+      {
+        type: 'text',
+        text: 'Buffered answer.',
+      },
+    ])
+    expect(body.usage?.input_tokens).toBe(11)
+    expect(body.usage?.output_tokens).toBe(2)
+  })
+
+  test('Claude non-streaming requests fail fast when streamed upstream only yields thinking', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      if (!url.endsWith('/chat/completions')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response([
+        'data: {"id":"chatcmpl_thinking_only","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_text":"Still reasoning."},"finish_reason":null,"logprobs":null}]}\n\n',
+        'data: [DONE]\n\n',
+      ].join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(502)
+
+    const body = await res.json() as {
+      type?: string
+      error?: {
+        type?: string
+        message?: string
+      }
+    }
+
+    expect(body.type).toBe('error')
+    expect(body.error?.type).toBe('api_error')
+    expect(body.error?.message).toContain('reasoning output without any assistant text or tool call')
   })
 
   test('Claude URL image requests fail locally with Anthropic invalid_request_error', async () => {

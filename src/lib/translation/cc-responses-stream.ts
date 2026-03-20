@@ -443,8 +443,14 @@ function buildPartialResponse(
 export function createAnthropicFromResponsesStreamState(): AnthropicStreamState {
   return {
     messageStartSent: false,
+    messageStopSent: false,
     contentBlockIndex: 0,
     contentBlockOpen: false,
+    currentBlockType: null,
+    thinkingSignature: null,
+    pendingLeadingText: '',
+    hasThinkingContent: false,
+    hasNonThinkingContent: false,
     toolCalls: {},
   }
 }
@@ -494,6 +500,7 @@ export function translateResponsesStreamEventToAnthropic(
           content_block: { type: 'text', text: '' },
         })
         state.contentBlockOpen = true
+        state.currentBlockType = 'text'
       }
 
       events.push({
@@ -501,6 +508,7 @@ export function translateResponsesStreamEventToAnthropic(
         index: state.contentBlockIndex,
         delta: { type: 'text_delta', text: event.delta },
       })
+      state.hasNonThinkingContent = true
       break
     }
 
@@ -528,6 +536,8 @@ export function translateResponsesStreamEventToAnthropic(
           },
         })
         state.contentBlockOpen = true
+        state.currentBlockType = 'tool_use'
+        state.hasNonThinkingContent = true
       }
       break
     }
@@ -581,6 +591,7 @@ export function translateResponsesStreamEventToAnthropic(
         },
         { type: 'message_stop' },
       )
+      state.messageStopSent = true
       break
     }
 
@@ -612,13 +623,7 @@ export function translateResponsesStreamEventToAnthropic(
 }
 
 function isToolBlockOpen(state: AnthropicStreamState): boolean {
-  if (!state.contentBlockOpen) {
-    return false
-  }
-
-  return Object.values(state.toolCalls).some(
-    tc => tc.anthropicBlockIndex === state.contentBlockIndex,
-  )
+  return state.contentBlockOpen && state.currentBlockType === 'tool_use'
 }
 
 function closeOpenAnthropicBlock(
@@ -629,10 +634,25 @@ function closeOpenAnthropicBlock(
     return
   }
 
+  if (state.currentBlockType === 'thinking') {
+    if (typeof state.thinkingSignature === 'string' && state.thinkingSignature.length > 0) {
+      events.push({
+        type: 'content_block_delta',
+        index: state.contentBlockIndex,
+        delta: {
+          type: 'signature_delta',
+          signature: state.thinkingSignature,
+        },
+      })
+    }
+  }
+
   events.push({
     type: 'content_block_stop',
     index: state.contentBlockIndex,
   })
   state.contentBlockIndex++
   state.contentBlockOpen = false
+  state.currentBlockType = null
+  state.thinkingSignature = null
 }

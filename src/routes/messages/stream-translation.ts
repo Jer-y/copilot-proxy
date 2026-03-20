@@ -1,16 +1,171 @@
-import type { AnthropicStreamEventData, AnthropicStreamState } from './anthropic-types'
+import type { AnthropicResponse, AnthropicStreamEventData, AnthropicStreamState } from './anthropic-types'
 
 import type { ChatCompletionChunk } from '~/services/copilot/create-chat-completions'
 import { mapOpenAIStopReasonToAnthropic } from './utils'
 
 function isToolBlockOpen(state: AnthropicStreamState): boolean {
+  return state.contentBlockOpen && state.currentBlockType === 'tool_use'
+}
+
+function closeOpenAnthropicBlock(
+  events: Array<AnthropicStreamEventData>,
+  state: AnthropicStreamState,
+): void {
   if (!state.contentBlockOpen) {
-    return false
+    return
   }
-  // Check if the current block index corresponds to any known tool call
-  return Object.values(state.toolCalls).some(
-    tc => tc.anthropicBlockIndex === state.contentBlockIndex,
+
+  if (state.currentBlockType === 'thinking') {
+    // Anthropic emits a signature_delta immediately before closing thinking
+    // blocks. Copilot exposes the equivalent opaque reasoning payload as
+    // reasoning_opaque, so we replay it through the Anthropic signature field
+    // when available.
+    if (typeof state.thinkingSignature === 'string' && state.thinkingSignature.length > 0) {
+      events.push({
+        type: 'content_block_delta',
+        index: state.contentBlockIndex,
+        delta: {
+          type: 'signature_delta',
+          signature: state.thinkingSignature,
+        },
+      })
+    }
+  }
+
+  events.push({
+    type: 'content_block_stop',
+    index: state.contentBlockIndex,
+  })
+  state.contentBlockIndex++
+  state.contentBlockOpen = false
+  state.currentBlockType = null
+  state.thinkingSignature = null
+}
+
+function isBeforeFirstContentBlock(state: AnthropicStreamState): boolean {
+  return state.contentBlockIndex === 0 && !state.contentBlockOpen
+}
+
+function flushPendingLeadingText(
+  events: Array<AnthropicStreamEventData>,
+  state: AnthropicStreamState,
+): void {
+  if (!state.pendingLeadingText) {
+    return
+  }
+
+  ensureTextBlockOpen(events, state)
+  events.push({
+    type: 'content_block_delta',
+    index: state.contentBlockIndex,
+    delta: {
+      type: 'text_delta',
+      text: state.pendingLeadingText,
+    },
+  })
+  state.pendingLeadingText = ''
+}
+
+function ensureTextBlockOpen(
+  events: Array<AnthropicStreamEventData>,
+  state: AnthropicStreamState,
+): void {
+  if (state.contentBlockOpen && state.currentBlockType !== 'text') {
+    closeOpenAnthropicBlock(events, state)
+  }
+
+  if (!state.contentBlockOpen) {
+    events.push({
+      type: 'content_block_start',
+      index: state.contentBlockIndex,
+      content_block: {
+        type: 'text',
+        text: '',
+      },
+    })
+    state.contentBlockOpen = true
+    state.currentBlockType = 'text'
+  }
+}
+
+function ensureThinkingBlockOpen(
+  events: Array<AnthropicStreamEventData>,
+  state: AnthropicStreamState,
+): void {
+  if (state.contentBlockOpen && state.currentBlockType !== 'thinking') {
+    closeOpenAnthropicBlock(events, state)
+  }
+
+  if (!state.contentBlockOpen) {
+    events.push({
+      type: 'content_block_start',
+      index: state.contentBlockIndex,
+      content_block: {
+        type: 'thinking',
+        thinking: '',
+        ...(typeof state.thinkingSignature === 'string' && state.thinkingSignature.length > 0
+          ? { signature: state.thinkingSignature }
+          : {}),
+      },
+    })
+    state.contentBlockOpen = true
+    state.currentBlockType = 'thinking'
+  }
+}
+
+export function canRecoverUpstreamTerminationAsMessage(
+  state: AnthropicStreamState,
+): boolean {
+  // Recovering a terminated stream as a successful message is only safe once
+  // we have surfaced some non-thinking assistant output. Otherwise Claude Code
+  // receives an "end_turn" with no visible content and the turn appears to end
+  // silently.
+  return state.hasNonThinkingContent
+}
+
+export function finalizeAnthropicStreamFromState(
+  state: AnthropicStreamState,
+  options?: {
+    stopReason?: AnthropicResponse['stop_reason']
+    outputTokens?: number
+  },
+): Array<AnthropicStreamEventData> {
+  const events: Array<AnthropicStreamEventData> = []
+
+  if (!state.messageStartSent || state.messageStopSent) {
+    return events
+  }
+
+  if (state.pendingLeadingText) {
+    flushPendingLeadingText(events, state)
+  }
+
+  if (isToolBlockOpen(state)) {
+    return events
+  }
+
+  if (state.contentBlockOpen) {
+    closeOpenAnthropicBlock(events, state)
+  }
+
+  events.push(
+    {
+      type: 'message_delta',
+      delta: {
+        stop_reason: options?.stopReason ?? 'end_turn',
+        stop_sequence: null,
+      },
+      usage: {
+        output_tokens: options?.outputTokens ?? 0,
+      },
+    },
+    {
+      type: 'message_stop',
+    },
   )
+  state.messageStopSent = true
+
+  return events
 }
 
 export function translateChunkToAnthropicEvents(
@@ -25,6 +180,10 @@ export function translateChunkToAnthropicEvents(
 
   const choice = chunk.choices[0]
   const { delta } = choice
+
+  if (typeof delta.reasoning_opaque === 'string' && delta.reasoning_opaque.length > 0) {
+    state.thinkingSignature = delta.reasoning_opaque
+  }
 
   if (!state.messageStartSent) {
     events.push({
@@ -55,51 +214,70 @@ export function translateChunkToAnthropicEvents(
     state.messageStartSent = true
   }
 
-  if (delta.content) {
-    if (isToolBlockOpen(state)) {
-      // A tool block was open, so close it before starting a text block.
-      events.push({
-        type: 'content_block_stop',
-        index: state.contentBlockIndex,
-      })
-      state.contentBlockIndex++
-      state.contentBlockOpen = false
+  if (typeof delta.reasoning_text === 'string' && delta.reasoning_text.length > 0) {
+    // Some Copilot streams emit a leading "\n\n" text chunk before the first
+    // reasoning chunk. Buffering and dropping that whitespace keeps the stream
+    // shape closer to Anthropic's native "thinking first" pattern.
+    if (isBeforeFirstContentBlock(state)) {
+      state.pendingLeadingText = ''
     }
 
-    if (!state.contentBlockOpen) {
-      events.push({
-        type: 'content_block_start',
-        index: state.contentBlockIndex,
-        content_block: {
-          type: 'text',
-          text: '',
-        },
-      })
-      state.contentBlockOpen = true
-    }
+    ensureThinkingBlockOpen(events, state)
+    state.hasThinkingContent = true
 
     events.push({
       type: 'content_block_delta',
       index: state.contentBlockIndex,
       delta: {
-        type: 'text_delta',
-        text: delta.content,
+        type: 'thinking_delta',
+        thinking: delta.reasoning_text,
       },
     })
   }
 
+  if (typeof delta.content === 'string' && delta.content.length > 0) {
+    if (
+      isBeforeFirstContentBlock(state)
+      && state.pendingLeadingText === ''
+      && delta.content.trim().length === 0
+    ) {
+      state.pendingLeadingText = delta.content
+    }
+    else {
+      if (state.pendingLeadingText) {
+        flushPendingLeadingText(events, state)
+      }
+
+      if (isToolBlockOpen(state)) {
+        // A tool block was open, so close it before starting a text block.
+        closeOpenAnthropicBlock(events, state)
+      }
+
+      ensureTextBlockOpen(events, state)
+      state.hasNonThinkingContent = true
+
+      events.push({
+        type: 'content_block_delta',
+        index: state.contentBlockIndex,
+        delta: {
+          type: 'text_delta',
+          text: delta.content,
+        },
+      })
+    }
+  }
+
   if (delta.tool_calls) {
+    if (isBeforeFirstContentBlock(state)) {
+      state.pendingLeadingText = ''
+    }
+
     for (const toolCall of delta.tool_calls) {
       if (toolCall.id && toolCall.function?.name) {
         // New tool call starting.
         if (state.contentBlockOpen) {
           // Close any previously open block.
-          events.push({
-            type: 'content_block_stop',
-            index: state.contentBlockIndex,
-          })
-          state.contentBlockIndex++
-          state.contentBlockOpen = false
+          closeOpenAnthropicBlock(events, state)
         }
 
         const anthropicBlockIndex = state.contentBlockIndex
@@ -120,6 +298,8 @@ export function translateChunkToAnthropicEvents(
           },
         })
         state.contentBlockOpen = true
+        state.currentBlockType = 'tool_use'
+        state.hasNonThinkingContent = true
       }
 
       if (toolCall.function?.arguments) {
@@ -140,12 +320,16 @@ export function translateChunkToAnthropicEvents(
   }
 
   if (choice.finish_reason) {
+    if (state.pendingLeadingText) {
+      flushPendingLeadingText(events, state)
+    }
+
+    if (isToolBlockOpen(state)) {
+      // A tool block was open, so close it before starting a text block.
+      closeOpenAnthropicBlock(events, state)
+    }
     if (state.contentBlockOpen) {
-      events.push({
-        type: 'content_block_stop',
-        index: state.contentBlockIndex,
-      })
-      state.contentBlockOpen = false
+      closeOpenAnthropicBlock(events, state)
     }
 
     events.push(
@@ -171,6 +355,7 @@ export function translateChunkToAnthropicEvents(
         type: 'message_stop',
       },
     )
+    state.messageStopSent = true
   }
 
   return events

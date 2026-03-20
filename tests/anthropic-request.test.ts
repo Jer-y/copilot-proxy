@@ -15,8 +15,12 @@ const messageSchema = z.object({
     'function',
     'developer',
   ]),
-  content: z.union([z.string(), z.object({}), z.array(z.any())]),
+  content: z.union([z.string(), z.object({}), z.array(z.any()), z.null()]),
   name: z.string().optional(),
+  reasoning_text: z.string().optional().nullable(),
+  reasoning_opaque: z.string().optional().nullable(),
+  encrypted_content: z.string().optional().nullable(),
+  phase: z.string().optional().nullable(),
   tool_calls: z.array(z.any()).optional(),
   tool_call_id: z.string().optional(),
 })
@@ -148,11 +152,44 @@ describe('Anthropic to OpenAI translation logic', () => {
     const openAIPayload = translateToOpenAI(anthropicPayload)
     expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
 
-    // Check that thinking content is combined with text content
     const assistantMessage = openAIPayload.messages.find(
       m => m.role === 'assistant',
     )
     expect(assistantMessage?.content).toBe('2+2 equals 4.')
+    expect(assistantMessage?.reasoning_text).toBe(
+      'Let me think about this simple math problem...',
+    )
+  })
+
+  test('should forward Anthropic thinking signatures as reasoning_opaque', () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4-6',
+      messages: [
+        { role: 'user', content: 'Keep the hidden chain of thought replayable.' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'thinking',
+              thinking: 'Private reasoning that should stay replayable.',
+              signature: 'sig_reasoning_123',
+            },
+            { type: 'text', text: 'Visible answer.' },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload)
+    const assistantMessage = openAIPayload.messages.find(
+      m => m.role === 'assistant',
+    )
+
+    expect(assistantMessage?.reasoning_text).toBe(
+      'Private reasoning that should stay replayable.',
+    )
+    expect(assistantMessage?.reasoning_opaque).toBe('sig_reasoning_123')
   })
 
   test('should handle thinking blocks with tool calls', () => {
@@ -183,13 +220,44 @@ describe('Anthropic to OpenAI translation logic', () => {
     const openAIPayload = translateToOpenAI(anthropicPayload)
     expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
 
-    // Check that thinking content is included in the message content
     const assistantMessage = openAIPayload.messages.find(
       m => m.role === 'assistant',
     )
     expect(assistantMessage?.content).toBe('I\'ll check the weather for you.')
+    expect(assistantMessage?.reasoning_text).toBe(
+      'I need to call the weather API to get current weather information.',
+    )
     expect(assistantMessage?.tool_calls).toHaveLength(1)
     expect(assistantMessage?.tool_calls?.[0].function.name).toBe('get_weather')
+  })
+
+  test('should preserve thinking-only assistant turns as reasoning_text', () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: 'claude-opus-4-6',
+      messages: [
+        { role: 'user', content: 'Track your reasoning.' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'thinking',
+              thinking: 'Internal plan that still matters for the next turn.',
+            },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload)
+    const assistantMessage = openAIPayload.messages.find(
+      m => m.role === 'assistant',
+    )
+
+    expect(assistantMessage?.content).toBeNull()
+    expect(assistantMessage?.reasoning_text).toBe(
+      'Internal plan that still matters for the next turn.',
+    )
   })
 })
 

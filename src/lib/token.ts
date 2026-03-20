@@ -105,7 +105,7 @@ export async function setupGitHubToken(
       if (state.showToken) {
         consola.info('GitHub token:', githubToken)
       }
-      await logUser()
+      await tryLogUser()
 
       return
     }
@@ -125,7 +125,7 @@ export async function setupGitHubToken(
     if (state.showToken) {
       consola.info('GitHub token:', token)
     }
-    await logUser()
+    await tryLogUser()
   }
   catch (error) {
     if (error instanceof HTTPError) {
@@ -141,4 +141,13 @@ export async function setupGitHubToken(
 async function logUser() {
   const user = await getGitHubUser()
   consola.info(`Logged in as ${user.login}`)
+}
+
+async function tryLogUser() {
+  try {
+    await logUser()
+  }
+  catch (error) {
+    consola.warn('Failed to fetch GitHub user profile for startup logging; continuing with the cached token.', error)
+  }
 }
