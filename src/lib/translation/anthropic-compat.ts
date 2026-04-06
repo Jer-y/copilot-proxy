@@ -81,7 +81,7 @@ function assertSupportedUserContentBlock(
 
   if (isDocumentBlock(block)) {
     throwAnthropicInvalidRequestError(
-      'GitHub Copilot does not support Anthropic document blocks yet. Extract the document text or convert the document into supported text/image inputs before sending it through the proxy.',
+      'Unexpanded document block reached assertion layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
     )
   }
 
@@ -106,7 +106,7 @@ function assertSupportedToolResultContent(
 
     if (isDocumentBlock(contentBlock)) {
       throwAnthropicInvalidRequestError(
-        'GitHub Copilot does not support document blocks inside Anthropic tool_result content yet. Return extracted text or supported image data instead.',
+        'Unexpanded document block inside tool_result reached assertion layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
       )
     }
   }

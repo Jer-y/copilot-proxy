@@ -9,9 +9,10 @@ import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
 import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
+import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
 import { validateBody } from '~/lib/validate'
 
-import { parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
+import { applyModelVariant, parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
 
 /**
  * Find a model in the models list, falling back to the base model
@@ -53,6 +54,19 @@ export async function handleCountTokens(c: Context) {
     const anthropicBeta = c.req.header('anthropic-beta')
 
     const anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
+
+    // Quick model check before expensive document expansion (avoids network/PDF work for invalid models)
+    // Normalize the model name first (same as handler.ts) so dated suffixes resolve correctly
+    const effectiveModel = applyModelVariant(anthropicPayload.model, anthropicPayload, anthropicBeta)
+    const quickModel = findModelWithFallback(effectiveModel, state.models?.data)
+    if (!quickModel) {
+      consola.warn('Model not found, returning default token count')
+      return c.json({
+        input_tokens: 1,
+      })
+    }
+
+    await expandDocumentBlocks(anthropicPayload)
     assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 
     const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })

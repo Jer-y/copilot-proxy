@@ -17,6 +17,7 @@ import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
 import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
+import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
 import {
@@ -75,6 +76,7 @@ export async function handleCompletion(c: Context) {
     }
   }
 
+  await expandDocumentBlocks(anthropicPayload)
   assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 
   const backend = resolveBackend(effectiveModel, 'chat-completions')

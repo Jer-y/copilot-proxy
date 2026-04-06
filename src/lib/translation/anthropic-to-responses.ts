@@ -303,7 +303,7 @@ function translateUserBlockToResponsesContent(
       return { type: 'input_text' as const, text: block.text }
     case 'document':
       throwAnthropicInvalidRequestError(
-        'GitHub Copilot does not support Anthropic document blocks yet. Extract the document text or convert the document into supported text/image inputs before sending it through the proxy.',
+        'Unexpanded document block reached Responses translation layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
       )
   }
 }

@@ -364,7 +364,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.message).toContain('base64')
   })
 
-  test('document blocks fail locally with Anthropic invalid_request_error', async () => {
+  test('document blocks with invalid PDF data return extraction error', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -403,10 +403,10 @@ describe('messages route upstream adaptation', () => {
 
     expect(body.type).toBe('error')
     expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('document blocks')
+    expect(body.error?.message).toContain('Failed to extract text from PDF document')
   })
 
-  test('count_tokens document blocks fail locally with Anthropic invalid_request_error', async () => {
+  test('count_tokens with document blocks returns default when model not found', async () => {
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -431,20 +431,12 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
-    expect(res.status).toBe(400)
+    // Model not found in test env → early return with default, no document expansion attempted
+    expect(res.status).toBe(200)
     expect(fetchMock).not.toHaveBeenCalled()
 
-    const body = await res.json() as {
-      type?: string
-      error?: {
-        type?: string
-        message?: string
-      }
-    }
-
-    expect(body.type).toBe('error')
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('document blocks')
+    const body = await res.json() as { input_tokens?: number }
+    expect(body.input_tokens).toBe(1)
   })
 })
 
