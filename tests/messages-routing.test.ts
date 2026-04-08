@@ -194,6 +194,58 @@ describe('messages route upstream adaptation', () => {
     expect(body.usage?.output_tokens).toBe(2)
   })
 
+  test('Claude non-streaming responses preserve the original requested model name', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'fast-mode-2026-02-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-6-20250514',
+        speed: 'fast',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/chat/completions')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as { model?: string }
+    expect(forwardedPayload.model).toBe('claude-opus-4.6-fast')
+
+    const body = await res.json() as { model?: string }
+    expect(body.model).toBe('claude-opus-4-6-20250514')
+  })
+
+  test('Claude streaming responses preserve the original requested model name', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'fast-mode-2026-02-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-6-20250514',
+        speed: 'fast',
+        stream: true,
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+
+    const body = await res.text()
+    expect(body).toContain('event: message_start')
+    expect(body).toContain('"model":"claude-opus-4-6-20250514"')
+    expect(body).not.toContain('"model":"claude-opus-4.6-fast"')
+  })
+
   test('Claude non-streaming requests fail fast when streamed upstream only yields thinking', async () => {
     fetchMock.mockImplementationOnce(async (url: string) => {
       if (!url.endsWith('/chat/completions')) {

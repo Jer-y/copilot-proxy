@@ -175,12 +175,12 @@ function handleAssistantMessage(
     (b): b is AnthropicTextBlock =>
       b.type === 'text',
   )
-  const thinkingBlocks = msg.content.filter(block => block.type === 'thinking')
+  const thinkingBlocks = msg.content.filter(block => block.type === 'thinking' || block.type === 'redacted_thinking')
 
   if (thinkingBlocks.length > 0) {
     logLossyAnthropicCompatibility(
       'assistant thinking replay',
-      'Responses cannot replay Anthropic thinking blocks, so only visible assistant text/tool_use content is forwarded.',
+      'Responses cannot replay Anthropic thinking/redacted_thinking blocks, so only visible assistant text/tool_use content is forwarded.',
     )
   }
 

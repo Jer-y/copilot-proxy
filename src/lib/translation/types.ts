@@ -101,6 +101,11 @@ export interface AnthropicThinkingBlock {
   signature?: string
 }
 
+export interface AnthropicRedactedThinkingBlock {
+  type: 'redacted_thinking'
+  data: string
+}
+
 export type AnthropicUserContentBlock
   = | AnthropicTextBlock
     | AnthropicImageBlock
@@ -111,6 +116,7 @@ export type AnthropicAssistantContentBlock
   = | AnthropicTextBlock
     | AnthropicToolUseBlock
     | AnthropicThinkingBlock
+    | AnthropicRedactedThinkingBlock
 
 export interface AnthropicUserMessage {
   role: 'user'
@@ -254,4 +260,6 @@ export interface AnthropicStreamState {
       anthropicBlockIndex: number
     }
   }
+  /** When set, overrides the upstream model name in translated responses. */
+  requestedModel?: string
 }

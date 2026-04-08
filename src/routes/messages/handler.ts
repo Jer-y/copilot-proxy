@@ -18,6 +18,7 @@ import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
 import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
 import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
+import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
 import {
@@ -52,8 +53,9 @@ export async function handleCompletion(c: Context) {
     await awaitApproval()
   }
 
+  const requestedModel = anthropicPayload.model
   // Determine the effective routed model, including Claude variant suffixes.
-  const effectiveModel = applyModelVariant(anthropicPayload.model, anthropicPayload, anthropicBeta)
+  const effectiveModel = applyModelVariant(requestedModel, anthropicPayload, anthropicBeta)
   const selectedModel = findModelWithFallback(effectiveModel, state.models?.data)
   const modelMaxOutputTokens = selectedModel?.capabilities.limits.max_output_tokens
 
@@ -79,21 +81,38 @@ export async function handleCompletion(c: Context) {
   await expandDocumentBlocks(anthropicPayload)
   assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 
+  const signal = c.req.raw.signal
   const backend = resolveBackend(effectiveModel, 'chat-completions')
 
   if (backend === 'responses') {
-    return handleViaResponses(c, anthropicPayload, effectiveModel)
+    try {
+      return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, signal)
+    }
+    catch (error) {
+      if (error instanceof Error && error.name === 'AbortError')
+        return c.body(null)
+      throw error
+    }
   }
 
   // Try chat-completions first; if unsupported, fall back to responses
   try {
-    return await handleViaChatCompletions(c, anthropicPayload, anthropicBeta)
+    return await handleViaChatCompletions(c, anthropicPayload, anthropicBeta, effectiveModel, requestedModel, signal)
   }
   catch (error) {
+    if (error instanceof Error && error.name === 'AbortError')
+      return c.body(null)
     if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
       consola.info(`Model ${effectiveModel} does not support /chat/completions, falling back to /responses`)
       recordProbeResult(effectiveModel, 'chat-completions')
-      return handleViaResponses(c, anthropicPayload, effectiveModel)
+      try {
+        return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, signal)
+      }
+      catch (fallbackError) {
+        if (fallbackError instanceof Error && fallbackError.name === 'AbortError')
+          return c.body(null)
+        throw fallbackError
+      }
     }
     throw error
   }
@@ -122,6 +141,9 @@ async function handleViaChatCompletions(
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
   anthropicBeta: string | undefined,
+  effectiveModel: string,
+  requestedModel: string,
+  signal: AbortSignal,
 ) {
   const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
   const clientRequestedStreaming = anthropicPayload.stream === true
@@ -135,17 +157,18 @@ async function handleViaChatCompletions(
     consola.debug('Translated OpenAI request payload:', JSON.stringify(upstreamPayload))
   }
 
-  const response = await createChatCompletions(upstreamPayload)
+  const result = await createChatCompletions(upstreamPayload, { signal })
 
-  if (isCCNonStreaming(response)) {
+  if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {
-      consola.debug('Non-streaming response from Copilot:', JSON.stringify(response).slice(-400))
+      consola.debug('Non-streaming response from Copilot:', JSON.stringify(result.body).slice(-400))
     }
-    assertAnthropicMessageCanComplete(response)
-    const anthropicResponse = translateToAnthropic(response)
+    assertAnthropicMessageCanComplete(result.body)
+    const anthropicResponse = translateToAnthropic(result.body, { requestedModel })
     if (consola.level >= 4) {
       consola.debug('Translated Anthropic response:', JSON.stringify(anthropicResponse))
     }
+    forwardUpstreamHeaders(c, result.headers)
     return c.json(anthropicResponse)
   }
 
@@ -155,7 +178,7 @@ async function handleViaChatCompletions(
     const bufferedState = createBufferedChatCompletionsState()
 
     try {
-      for await (const rawEvent of response) {
+      for await (const rawEvent of result.body) {
         if (consola.level >= 4) {
           consola.debug('Copilot raw stream event:', JSON.stringify(rawEvent))
         }
@@ -179,6 +202,8 @@ async function handleViaChatCompletions(
       }
     }
     catch (error) {
+      if (error instanceof Error && error.name === 'AbortError')
+        return c.body(null)
       const upstreamTerminated = isRecoverableUpstreamTermination(error)
       if (upstreamTerminated && bufferedState.hasNonThinkingContent) {
         consola.warn('Buffered Chat Completions stream terminated without a finish chunk; returning the partial assistant message.')
@@ -207,14 +232,17 @@ async function handleViaChatCompletions(
 
     assertAnthropicMessageCanComplete(bufferedResponse)
 
-    const anthropicResponse = translateToAnthropic(bufferedResponse)
+    const anthropicResponse = translateToAnthropic(bufferedResponse, { requestedModel })
     if (consola.level >= 4) {
       consola.debug('Translated buffered Anthropic response:', JSON.stringify(anthropicResponse))
     }
+    forwardUpstreamHeaders(c, result.headers)
     return c.json(anthropicResponse)
   }
 
   consola.debug('Streaming response from Copilot')
+  forwardUpstreamHeaders(c, result.headers)
+  const streamBody = result.body
   return streamSSE(c, async (stream) => {
     const anthropicWriter = createAnthropicSSEWriter(stream)
     const streamState: AnthropicStreamState = {
@@ -228,10 +256,13 @@ async function handleViaChatCompletions(
       hasThinkingContent: false,
       hasNonThinkingContent: false,
       toolCalls: {},
+      requestedModel,
     }
 
     try {
-      for await (const rawEvent of response) {
+      for await (const rawEvent of streamBody) {
+        if (stream.aborted)
+          break
         if (consola.level >= 4) {
           consola.debug('Copilot raw stream event:', JSON.stringify(rawEvent))
         }
@@ -274,6 +305,9 @@ async function handleViaChatCompletions(
       }
     }
     catch (error) {
+      if (error instanceof Error && error.name === 'AbortError')
+        return
+
       const upstreamTerminated = isRecoverableUpstreamTermination(error)
       const recoveredEvents = upstreamTerminated && canRecoverUpstreamTerminationAsMessage(streamState)
         ? finalizeAnthropicStreamFromState(streamState)
@@ -316,33 +350,40 @@ async function handleViaResponses(
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
   effectiveModel: string,
+  requestedModel: string,
+  signal: AbortSignal,
 ) {
   const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, { model: effectiveModel })
   if (consola.level >= 4) {
     consola.debug('Translated Anthropic→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
   }
 
-  const response = await createResponses(responsesPayload)
+  const result = await createResponses(responsesPayload, { signal })
 
-  if (isResponsesNonStreaming(response)) {
+  if (isResponsesNonStreaming(result.body)) {
     if (consola.level >= 4) {
-      consola.debug('Non-streaming responses (Anthropic path):', JSON.stringify(response))
+      consola.debug('Non-streaming responses (Anthropic path):', JSON.stringify(result.body))
     }
-    const anthropicResponse = translateResponsesResponseToAnthropic(response)
+    const anthropicResponse = translateResponsesResponseToAnthropic(result.body, { requestedModel })
     if (consola.level >= 4) {
       consola.debug('Translated Responses→Anthropic response:', JSON.stringify(anthropicResponse))
     }
+    forwardUpstreamHeaders(c, result.headers)
     return c.json(anthropicResponse)
   }
 
   // Streaming translation (Responses stream → Anthropic events)
   consola.debug('Streaming responses (Anthropic path)')
+  forwardUpstreamHeaders(c, result.headers)
+  const streamBody = result.body
   return streamSSE(c, async (stream) => {
     const anthropicWriter = createAnthropicSSEWriter(stream)
-    const streamState = createAnthropicFromResponsesStreamState()
+    const streamState = createAnthropicFromResponsesStreamState({ requestedModel })
 
     try {
-      for await (const rawEvent of response) {
+      for await (const rawEvent of streamBody) {
+        if (stream.aborted)
+          break
         if (rawEvent.data === '[DONE]')
           break
         if (!rawEvent.data)
@@ -376,6 +417,9 @@ async function handleViaResponses(
       }
     }
     catch (error) {
+      if (error instanceof Error && error.name === 'AbortError')
+        return
+
       const upstreamTerminated = isRecoverableUpstreamTermination(error)
       const recoveredEvents = upstreamTerminated && canRecoverUpstreamTerminationAsMessage(streamState)
         ? finalizeAnthropicStreamFromState(streamState)
@@ -410,12 +454,12 @@ async function handleViaResponses(
   })
 }
 
-function isCCNonStreaming(response: Awaited<ReturnType<typeof createChatCompletions>>): response is ChatCompletionResponse {
-  return Object.hasOwn(response, 'choices')
+function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>>['body']): body is ChatCompletionResponse {
+  return Object.hasOwn(body, 'choices')
 }
 
-function isResponsesNonStreaming(response: Awaited<ReturnType<typeof createResponses>>): response is ResponsesResponse {
-  return Object.hasOwn(response, 'output')
+function isResponsesNonStreaming(body: Awaited<ReturnType<typeof createResponses>>['body']): body is ResponsesResponse {
+  return Object.hasOwn(body, 'output')
 }
 
 function isRecoverableUpstreamTermination(error: unknown): boolean {

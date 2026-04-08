@@ -110,7 +110,7 @@ async function runProbe(
         return await createChatCompletions(payload)
       })
 
-      if (!isChatCompletionResponse(result)) {
+      if (!isChatCompletionResponse(result.body)) {
         return {
           id: probe.id,
           endpoint: probe.endpoint,
@@ -118,7 +118,7 @@ async function runProbe(
           status: 'unexpected_response',
           model: payload.model,
           durationMs: Date.now() - startedAt,
-          message: `Expected chat.completion response object, got ${describeObjectType(result)}`,
+          message: `Expected chat.completion response object, got ${describeObjectType(result.body)}`,
         }
       }
 
@@ -150,7 +150,7 @@ async function runProbe(
       return await createResponses(payload as ResponsesPayload)
     })
 
-    if (!isResponsesResponse(result)) {
+    if (!isResponsesResponse(result.body)) {
       return {
         id: probe.id,
         endpoint: probe.endpoint,
@@ -158,7 +158,7 @@ async function runProbe(
         status: 'unexpected_response',
         model: payload.model,
         durationMs: Date.now() - startedAt,
-        message: `Expected response object, got ${describeObjectType(result)}`,
+        message: `Expected response object, got ${describeObjectType(result.body)}`,
       }
     }
 

@@ -22,6 +22,7 @@ import {
 
 export function translateResponsesResponseToAnthropic(
   response: ResponsesResponse,
+  options?: { requestedModel?: string },
 ): AnthropicResponse {
   if (response.status === 'failed') {
     throwAnthropicErrorFromFailedResponses(response)
@@ -38,7 +39,7 @@ export function translateResponsesResponseToAnthropic(
     id: response.id,
     type: 'message',
     role: 'assistant',
-    model: response.model,
+    model: options?.requestedModel ?? response.model,
     content,
     stop_reason: stopReason,
     stop_sequence: null,

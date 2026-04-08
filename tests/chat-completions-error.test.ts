@@ -1,7 +1,32 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+import { clearProbeCache } from '~/lib/api-probe'
 import { state } from '~/lib/state'
 import { server } from '~/server'
+
+const originalFetch = globalThis.fetch
+const fetchMock = mock(async (url: string) => {
+  throw new Error(`Unexpected upstream URL: ${url}`)
+})
+
+beforeEach(() => {
+  fetchMock.mockClear()
+  fetchMock.mockImplementation(async (url: string) => {
+    throw new Error(`Unexpected upstream URL: ${url}`)
+  })
+  clearProbeCache()
+  state.lastRequestTimestamp = undefined
+  state.copilotToken = 'test-token'
+  state.vsCodeVersion = '1.0.0'
+  state.accountType = 'individual'
+  // @ts-expect-error test mock only needs callable fetch shape
+  globalThis.fetch = fetchMock
+})
+
+afterEach(() => {
+  clearProbeCache()
+  globalThis.fetch = originalFetch
+})
 
 describe('chat-completions error paths', () => {
   test('invalid JSON body returns 400 with invalid_request_error', async () => {
@@ -74,5 +99,62 @@ describe('chat-completions error paths', () => {
       state.rateLimitWait = origRateLimitWait
       state.lastRequestTimestamp = origLastRequestTimestamp
     }
+  })
+
+  test('responses-routed aborts return an empty response instead of surfacing as 500', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/responses')) {
+        throw new DOMException('The operation was aborted.', 'AbortError')
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('')
+  })
+
+  test('responses fallback aborts return an empty response instead of surfacing as 500', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/chat/completions')) {
+        return new Response(JSON.stringify({
+          error: {
+            message: 'unsupported_api_for_model',
+            code: 'unsupported_api_for_model',
+          },
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url.endsWith('/responses')) {
+        throw new DOMException('The operation was aborted.', 'AbortError')
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('')
   })
 })

@@ -6,7 +6,10 @@ import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
-export async function createChatCompletions(payload: ChatCompletionsPayload) {
+export async function createChatCompletions(
+  payload: ChatCompletionsPayload,
+  options?: { signal?: AbortSignal },
+) {
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
@@ -34,6 +37,7 @@ export async function createChatCompletions(payload: ChatCompletionsPayload) {
     method: 'POST',
     headers,
     body,
+    signal: options?.signal,
   })
   logUpstreamHeadersReceived({
     endpoint: '/chat/completions',
@@ -48,10 +52,11 @@ export async function createChatCompletions(payload: ChatCompletionsPayload) {
   }
 
   if (payload.stream) {
-    return instrumentCopilotEventStream(events(response), {
+    const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/chat/completions',
       requestStartedAt,
     })
+    return { body: instrumentedStream, headers: response.headers }
   }
 
   const json = (await response.json()) as ChatCompletionResponse
@@ -59,7 +64,7 @@ export async function createChatCompletions(payload: ChatCompletionsPayload) {
     endpoint: '/chat/completions',
     requestStartedAt,
   })
-  return json
+  return { body: json, headers: response.headers }
 }
 
 // Streaming types

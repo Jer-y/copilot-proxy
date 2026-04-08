@@ -2,7 +2,10 @@ import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 
-export async function createEmbeddings(payload: EmbeddingRequest) {
+export async function createEmbeddings(
+  payload: EmbeddingRequest,
+  options?: { signal?: AbortSignal },
+) {
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
@@ -10,6 +13,7 @@ export async function createEmbeddings(payload: EmbeddingRequest) {
     method: 'POST',
     headers: copilotHeaders(state),
     body: JSON.stringify(payload),
+    signal: options?.signal,
   })
 
   if (!response.ok)

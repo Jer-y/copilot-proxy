@@ -85,6 +85,11 @@ const AnthropicUserMessageSchema = z.object({
   ]),
 }).passthrough()
 
+const AnthropicRedactedThinkingBlockSchema = z.object({
+  type: z.literal('redacted_thinking'),
+  data: z.string(),
+}).passthrough()
+
 const AnthropicAssistantMessageSchema = z.object({
   role: z.literal('assistant'),
   content: z.union([
@@ -93,6 +98,7 @@ const AnthropicAssistantMessageSchema = z.object({
       AnthropicTextBlockSchema,
       AnthropicToolUseBlockSchema,
       AnthropicThinkingBlockSchema,
+      AnthropicRedactedThinkingBlockSchema,
     ])),
   ]),
 }).passthrough()

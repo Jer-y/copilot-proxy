@@ -21,7 +21,10 @@ const VISION_TYPES = new Set([
   'image_file',
 ])
 
-export async function createResponses(payload: ResponsesPayload) {
+export async function createResponses(
+  payload: ResponsesPayload,
+  options?: { signal?: AbortSignal },
+) {
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
@@ -50,6 +53,7 @@ export async function createResponses(payload: ResponsesPayload) {
     method: 'POST',
     headers,
     body,
+    signal: options?.signal,
   })
   logUpstreamHeadersReceived({
     endpoint: '/responses',
@@ -79,10 +83,11 @@ export async function createResponses(payload: ResponsesPayload) {
   }
 
   if (payload.stream) {
-    return instrumentCopilotEventStream(events(response), {
+    const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/responses',
       requestStartedAt,
     })
+    return { body: instrumentedStream, headers: response.headers }
   }
 
   const json = (await response.json()) as ResponsesResponse
@@ -90,7 +95,7 @@ export async function createResponses(payload: ResponsesPayload) {
     endpoint: '/responses',
     requestStartedAt,
   })
-  return json
+  return { body: json, headers: response.headers }
 }
 
 function hasVisionInput(input: Array<ResponsesInputItem>): boolean {

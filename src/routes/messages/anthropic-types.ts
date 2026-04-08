@@ -13,6 +13,7 @@ export type {
   AnthropicMessageStartEvent,
   AnthropicMessageStopEvent,
   AnthropicPingEvent,
+  AnthropicRedactedThinkingBlock,
   AnthropicResponse,
   AnthropicResponseContentBlock,
   AnthropicStreamEventData,

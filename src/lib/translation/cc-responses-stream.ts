@@ -440,7 +440,7 @@ function buildPartialResponse(
 
 // ─── T9: Responses Stream → Anthropic Stream ────────────────────
 
-export function createAnthropicFromResponsesStreamState(): AnthropicStreamState {
+export function createAnthropicFromResponsesStreamState(options?: { requestedModel?: string }): AnthropicStreamState {
   return {
     messageStartSent: false,
     messageStopSent: false,
@@ -452,6 +452,7 @@ export function createAnthropicFromResponsesStreamState(): AnthropicStreamState 
     hasThinkingContent: false,
     hasNonThinkingContent: false,
     toolCalls: {},
+    requestedModel: options?.requestedModel,
   }
 }
 
@@ -474,7 +475,7 @@ export function translateResponsesStreamEventToAnthropic(
             type: 'message',
             role: 'assistant',
             content: [],
-            model: event.response.model,
+            model: state.requestedModel ?? event.response.model,
             stop_reason: null,
             stop_sequence: null,
             usage: {

@@ -14,11 +14,14 @@ export const embeddingRoutes = new Hono()
 embeddingRoutes.post('/', async (c) => {
   try {
     const payload = await validateBody<EmbeddingRequest>(c, EmbeddingRequestSchema)
-    const response = await createEmbeddings(payload)
+    const signal = c.req.raw.signal
+    const response = await createEmbeddings(payload, { signal })
 
     return c.json(response)
   }
   catch (error) {
+    if (error instanceof Error && error.name === 'AbortError')
+      return c.body(null)
     return await forwardError(c, error)
   }
 })

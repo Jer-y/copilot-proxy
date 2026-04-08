@@ -193,7 +193,7 @@ export function translateChunkToAnthropicEvents(
         type: 'message',
         role: 'assistant',
         content: [],
-        model: chunk.model,
+        model: state.requestedModel ?? chunk.model,
         stop_reason: null,
         stop_sequence: null,
         usage: {

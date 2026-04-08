@@ -236,9 +236,8 @@ function handleAssistantMessage(
   const thinkingBlocks = message.content.filter(
     (block): block is AnthropicThinkingBlock => block.type === 'thinking',
   )
-
   const reasoningText = extractAssistantReasoningText(thinkingBlocks)
-  const reasoningOpaque = extractAssistantReasoningOpaque(thinkingBlocks)
+  const reasoningOpaque = extractLastReasoningOpaque(message.content)
 
   const visibleText = textBlocks.length > 0
     ? mapContent(textBlocks)
@@ -261,7 +260,7 @@ function handleAssistantMessage(
           })),
         },
       ]
-    : visibleText === null && reasoningText === null
+    : visibleText === null && reasoningText === null && reasoningOpaque === null
       ? []
       : [
           {
@@ -292,26 +291,26 @@ function extractAssistantReasoningText(
   return thinkingText
 }
 
-function extractAssistantReasoningOpaque(
-  thinkingBlocks: Array<AnthropicThinkingBlock>,
+/**
+ * Extract the last opaque reasoning token from an assistant turn,
+ * respecting original block order. Handles both `thinking` (signature)
+ * and `redacted_thinking` (data) blocks, returning whichever appears last.
+ */
+function extractLastReasoningOpaque(
+  content: Array<AnthropicAssistantContentBlock>,
 ): string | null {
-  const signatures = thinkingBlocks
-    .map(block => block.signature)
-    .filter((signature): signature is string => Boolean(signature))
+  let lastOpaque: string | null = null
 
-  if (signatures.length === 0) {
-    return null
+  for (const block of content) {
+    if (block.type === 'thinking' && block.signature) {
+      lastOpaque = block.signature
+    }
+    else if (block.type === 'redacted_thinking') {
+      lastOpaque = block.data
+    }
   }
 
-  const distinctSignatures = new Set(signatures)
-  if (distinctSignatures.size > 1) {
-    logLossyAnthropicCompatibility(
-      'assistant thinking signatures',
-      'Multiple Anthropic thinking signatures in one assistant turn are not fully representable in Copilot Chat Completions, so the latest signature is forwarded as reasoning_opaque.',
-    )
-  }
-
-  return signatures[signatures.length - 1] ?? null
+  return lastOpaque
 }
 
 function mapContent(
@@ -512,6 +511,7 @@ function logIgnoredMessageBlockCacheControl(
 
 export function translateToAnthropic(
   response: ChatCompletionResponse,
+  options?: { requestedModel?: string },
 ): AnthropicResponse {
   const allContentBlocks: Array<AnthropicResponse['content'][number]> = []
   let stopReason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null
@@ -538,7 +538,7 @@ export function translateToAnthropic(
     id: response.id,
     type: 'message',
     role: 'assistant',
-    model: response.model,
+    model: options?.requestedModel ?? response.model,
     content: allContentBlocks,
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,

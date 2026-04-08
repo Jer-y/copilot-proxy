@@ -36,6 +36,15 @@ export async function forwardError(c: Context, error: unknown) {
 
   if (error instanceof HTTPError) {
     const status = error.response.status as ContentfulStatusCode
+
+    // Forward useful upstream headers
+    const retryAfter = error.response.headers.get('retry-after')
+    if (retryAfter)
+      c.header('retry-after', retryAfter)
+    const requestId = error.response.headers.get('x-request-id')
+    if (requestId)
+      c.header('x-request-id', requestId)
+
     const errorText = await error.response.text()
     let errorJson: unknown
     try {
@@ -75,6 +84,15 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
 
   if (error instanceof HTTPError) {
     const status = error.response.status as ContentfulStatusCode
+
+    // Forward useful upstream headers
+    const retryAfter = error.response.headers.get('retry-after')
+    if (retryAfter)
+      c.header('retry-after', retryAfter)
+    const requestId = error.response.headers.get('x-request-id')
+    if (requestId)
+      c.header('x-request-id', requestId)
+
     const errorText = await error.response.text()
 
     // Try to parse upstream error and re-wrap in Anthropic format
