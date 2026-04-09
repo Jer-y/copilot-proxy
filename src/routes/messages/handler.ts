@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 
-import type { AnthropicMessagesPayload, AnthropicStreamState } from './anthropic-types'
+import type { AnthropicMessagesPayload, AnthropicStreamEventData, AnthropicStreamState } from './anthropic-types'
 import type { ChatCompletionChunk, ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesResponse } from '~/services/copilot/create-responses'
 import type { Model } from '~/services/copilot/get-models'
@@ -21,6 +21,7 @@ import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
+import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 import {
   createChatCompletions,
 } from '~/services/copilot/create-chat-completions'
@@ -83,6 +84,18 @@ export async function handleCompletion(c: Context) {
 
   const signal = c.req.raw.signal
   const backend = resolveBackend(effectiveModel, 'chat-completions')
+
+  // Native Anthropic passthrough for Claude models — no translation needed
+  if (backend === 'anthropic-messages') {
+    try {
+      return await handleViaNativeAnthropic(c, anthropicPayload, anthropicBeta, effectiveModel, signal)
+    }
+    catch (error) {
+      if (error instanceof Error && error.name === 'AbortError')
+        return c.body(null)
+      throw error
+    }
+  }
 
   if (backend === 'responses') {
     try {
@@ -511,5 +524,97 @@ function throwAnthropicApiError(message: string): never {
       type: 'api_error',
       message,
     },
+  })
+}
+
+/**
+ * Native Anthropic passthrough: Anthropic → /v1/messages → Anthropic
+ *
+ * No translation needed. The Copilot backend natively supports the
+ * Anthropic Messages API format, so we forward the payload as-is
+ * (after document expansion and max_tokens clamping).
+ *
+ * For streaming, upstream SSE events are already in Anthropic format,
+ * so we pipe them directly with keep-alive pings.
+ */
+async function handleViaNativeAnthropic(
+  c: Context,
+  anthropicPayload: AnthropicMessagesPayload,
+  anthropicBeta: string | undefined,
+  effectiveModel: string,
+  signal: AbortSignal,
+) {
+  // Override model to effective (variant-resolved) model
+  const payload: AnthropicMessagesPayload = {
+    ...anthropicPayload,
+    model: effectiveModel,
+  }
+
+  if (consola.level >= 4) {
+    consola.debug('Native Anthropic passthrough payload:', JSON.stringify(payload))
+  }
+
+  const result = await createAnthropicMessages(payload, {
+    signal,
+    anthropicBeta: anthropicBeta ?? undefined,
+  })
+
+  if (!result.streaming) {
+    if (consola.level >= 4) {
+      consola.debug('Native Anthropic non-streaming response:', JSON.stringify(result.body))
+    }
+    forwardUpstreamHeaders(c, result.headers)
+    return c.json(result.body)
+  }
+
+  // Streaming: upstream SSE is already in Anthropic format.
+  // Pipe events through the writer for keep-alive ping support.
+  consola.debug('Native Anthropic streaming passthrough')
+  forwardUpstreamHeaders(c, result.headers)
+  const streamBody = result.body
+  return streamSSE(c, async (stream) => {
+    const anthropicWriter = createAnthropicSSEWriter(stream)
+
+    try {
+      for await (const rawEvent of streamBody) {
+        if (stream.aborted)
+          break
+        if (rawEvent.data === '[DONE]')
+          break
+        if (!rawEvent.data)
+          continue
+
+        let event: AnthropicStreamEventData
+        try {
+          event = JSON.parse(rawEvent.data) as AnthropicStreamEventData
+        }
+        catch {
+          consola.error('Failed to parse native Anthropic stream event:', rawEvent.data)
+          await anthropicWriter.writeEvent(
+            translateErrorToAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Anthropic upstream response.'),
+          )
+          return
+        }
+
+        await anthropicWriter.writeEvent(event)
+
+        if (event.type === 'error') {
+          return
+        }
+      }
+    }
+    catch (error) {
+      if (error instanceof Error && error.name === 'AbortError')
+        return
+
+      const message = error instanceof Error
+        ? error.message
+        : 'An unexpected error occurred during native Anthropic stream passthrough.'
+      consola.error('Native Anthropic stream passthrough failed:', error)
+      await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
+    }
+    finally {
+      await anthropicWriter.close()
+    }
   })
 }

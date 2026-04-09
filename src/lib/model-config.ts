@@ -1,6 +1,6 @@
 import { getProbeOverride } from './api-probe'
 
-export type BackendApiType = 'chat-completions' | 'responses'
+export type BackendApiType = 'chat-completions' | 'responses' | 'anthropic-messages'
 
 export interface ModelConfig {
   /** Backend API types this model supports */
@@ -22,23 +22,25 @@ export interface ModelConfig {
 }
 
 const MODEL_CONFIGS: Record<string, ModelConfig> = {
-  // Claude models — chat-completions only
+  // Claude models — native Anthropic Messages API passthrough
+  // Copilot backend natively supports /v1/messages (Anthropic format),
+  // so we bypass the lossy Chat Completions translation layer.
   'claude-sonnet-4': {
-    supportedApis: ['chat-completions'],
+    supportedApis: ['anthropic-messages'],
     enableCacheControl: true,
     defaultReasoningEffort: undefined,
     supportsToolChoice: false,
     supportsParallelToolCalls: false,
   },
   'claude-sonnet-4.5': {
-    supportedApis: ['chat-completions'],
+    supportedApis: ['anthropic-messages'],
     enableCacheControl: true,
     defaultReasoningEffort: undefined,
     supportsToolChoice: false,
     supportsParallelToolCalls: false,
   },
   'claude-sonnet-4.6': {
-    supportedApis: ['chat-completions'],
+    supportedApis: ['anthropic-messages'],
     enableCacheControl: true,
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
@@ -46,14 +48,14 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsParallelToolCalls: true,
   },
   'claude-opus-4.5': {
-    supportedApis: ['chat-completions'],
+    supportedApis: ['anthropic-messages'],
     enableCacheControl: true,
     defaultReasoningEffort: undefined,
     supportsToolChoice: false,
     supportsParallelToolCalls: false,
   },
   'claude-opus-4.6': {
-    supportedApis: ['chat-completions'],
+    supportedApis: ['anthropic-messages'],
     enableCacheControl: true,
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
@@ -185,9 +187,9 @@ export function getModelConfig(modelId: string): ModelConfig {
     }
   }
 
-  // Default: check if it's a Claude model (enable cache control by default)
+  // Default: check if it's a Claude model (native passthrough with cache control)
   if (modelId.startsWith('claude')) {
-    return { supportedApis: ['chat-completions'], enableCacheControl: true, supportsToolChoice: false }
+    return { supportedApis: ['anthropic-messages'], enableCacheControl: true, supportsToolChoice: false }
   }
 
   return DEFAULT_CONFIG
