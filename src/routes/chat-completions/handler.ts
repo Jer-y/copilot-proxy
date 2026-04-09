@@ -32,7 +32,7 @@ export async function handleCompletion(c: Context) {
   }
 
   // Find the selected model
-  const selectedModel = state.models?.data.find(
+  const selectedModel = state.models?.data?.find(
     model => model.id === payload.model,
   )
 

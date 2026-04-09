@@ -20,6 +20,8 @@ import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
 import { server } from '~/server'
 
 const TIMEOUT = 30_000
+const E2E_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
+const describeE2E = E2E_TEST_ENABLED ? describe : describe.skip
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,6 +79,10 @@ const WEATHER_TOOL = {
 // ---------------------------------------------------------------------------
 
 beforeAll(async () => {
+  if (!E2E_TEST_ENABLED) {
+    return
+  }
+
   state.accountType = 'enterprise'
   await cacheVSCodeVersion()
   await setupGitHubToken()
@@ -89,6 +95,10 @@ beforeAll(async () => {
 }, TIMEOUT)
 
 afterAll(() => {
+  if (!E2E_TEST_ENABLED) {
+    return
+  }
+
   state.copilotToken = undefined
 })
 
@@ -263,11 +273,11 @@ function defineModelTests(model: string) {
   }, TIMEOUT)
 }
 
-describe('Claude Sonnet 4.6', () => {
+describeE2E('Claude Sonnet 4.6', () => {
   defineModelTests('claude-sonnet-4.6')
 })
 
-describe('Claude Opus 4.6', () => {
+describeE2E('Claude Opus 4.6', () => {
   defineModelTests('claude-opus-4.6')
 })
 
@@ -275,7 +285,7 @@ describe('Claude Opus 4.6', () => {
 // Feature probes — edge cases and features that need special handling
 // ======================================================================
 
-describe('Feature probes', () => {
+describeE2E('Feature probes', () => {
   const model = 'claude-sonnet-4.6'
 
   // --- thinking edge cases ---
