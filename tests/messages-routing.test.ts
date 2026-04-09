@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+import { clearProbeCache } from '~/lib/api-probe'
 import { state } from '~/lib/state'
 import { server } from '~/server'
 
@@ -18,6 +19,47 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
       }],
       status: 'completed',
       error: null,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  // Native Anthropic passthrough for Claude models
+  if (url.endsWith('/v1/messages')) {
+    const forwardedPayload = init?.body
+      ? JSON.parse(String(init.body)) as { stream?: boolean, model?: string }
+      : {}
+
+    if (forwardedPayload.stream) {
+      return new Response([
+        'event: message_start\n',
+        `data: {"type":"message_start","message":{"id":"msg_route_stream","type":"message","role":"assistant","content":[],"model":"${forwardedPayload.model ?? 'claude-opus-4.6'}","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}\n\n`,
+        'event: content_block_start\n',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: content_block_stop\n',
+        'data: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\n',
+        `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}\n\n`,
+        'event: message_stop\n',
+        'data: {"type":"message_stop"}\n\n',
+      ].join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    }
+
+    return new Response(JSON.stringify({
+      id: 'msg_route_test',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'ok' }],
+      model: forwardedPayload.model ?? 'claude-opus-4.6',
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 5, output_tokens: 1 },
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -64,6 +106,7 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
 
 beforeEach(() => {
   fetchMock.mockClear()
+  clearProbeCache()
   state.lastRequestTimestamp = undefined
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
@@ -74,7 +117,7 @@ beforeEach(() => {
 })
 
 describe('messages route upstream adaptation', () => {
-  test('Claude json_object requests are forwarded to /chat/completions with response_format', async () => {
+  test('Claude json_object requests are forwarded natively to /v1/messages with output_config preserved', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -94,15 +137,16 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/chat/completions')
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
 
     const forwardedPayload = JSON.parse(String(init?.body)) as {
-      response_format?: { type?: string }
+      output_config?: { format?: { type?: string } }
       model?: string
     }
 
     expect(forwardedPayload.model).toBe('claude-opus-4.6')
-    expect(forwardedPayload.response_format).toEqual({ type: 'json_object' })
+    // Native passthrough preserves output_config as-is
+    expect(forwardedPayload.output_config).toEqual({ format: { type: 'json_object' } })
   })
 
   test('Responses-backed json_object requests are forwarded to /responses with text.format', async () => {
@@ -136,28 +180,7 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
   })
 
-  test('Claude non-streaming requests are buffered from a streamed upstream response', async () => {
-    fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
-      if (!url.endsWith('/chat/completions')) {
-        throw new Error(`Unexpected upstream URL: ${url}`)
-      }
-
-      const forwardedPayload = JSON.parse(String(init?.body)) as {
-        stream?: boolean
-      }
-
-      expect(forwardedPayload.stream).toBe(true)
-
-      return new Response([
-        'data: {"id":"chatcmpl_stream_buffered","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_text":"First think."},"finish_reason":null,"logprobs":null}]}\n\n',
-        'data: {"id":"chatcmpl_stream_buffered","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"Buffered answer."},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}\n\n',
-        'data: [DONE]\n\n',
-      ].join(''), {
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-      })
-    })
-
+  test('Claude non-streaming requests are forwarded natively and return Anthropic JSON directly', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -179,22 +202,14 @@ describe('messages route upstream adaptation', () => {
       }
     }
 
+    // Native passthrough returns Anthropic format directly
     expect(body.type).toBe('message')
-    expect(body.content).toEqual([
-      {
-        type: 'thinking',
-        thinking: 'First think.',
-      },
-      {
-        type: 'text',
-        text: 'Buffered answer.',
-      },
-    ])
-    expect(body.usage?.input_tokens).toBe(11)
-    expect(body.usage?.output_tokens).toBe(2)
+    expect(body.content).toEqual([{ type: 'text', text: 'ok' }])
+    expect(body.usage?.input_tokens).toBe(5)
+    expect(body.usage?.output_tokens).toBe(1)
   })
 
-  test('Claude non-streaming responses preserve the original requested model name', async () => {
+  test('Claude non-streaming responses forward the effective model to upstream', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: {
@@ -213,7 +228,7 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/chat/completions')
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
 
     const forwardedPayload = JSON.parse(String(init?.body)) as { model?: string }
     expect(forwardedPayload.model).toBe('claude-opus-4.6-fast')
@@ -222,7 +237,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.model).toBe('claude-opus-4-6-20250514')
   })
 
-  test('Claude streaming responses preserve the original requested model name', async () => {
+  test('Claude streaming responses are piped through natively', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: {
@@ -242,22 +257,120 @@ describe('messages route upstream adaptation', () => {
 
     const body = await res.text()
     expect(body).toContain('event: message_start')
-    expect(body).toContain('"model":"claude-opus-4-6-20250514"')
-    expect(body).not.toContain('"model":"claude-opus-4.6-fast"')
+    expect(body).toContain('\"model\":\"claude-opus-4-6-20250514\"')
+    expect(body).not.toContain('\"model\":\"claude-opus-4.6-fast\"')
+    expect(body).toContain('event: content_block_delta')
+    expect(body).toContain('event: message_stop')
   })
 
-  test('Claude non-streaming requests fail fast when streamed upstream only yields thinking', async () => {
+  test('Claude falls back to chat-completions when native /v1/messages is unsupported and caches the probe result', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/v1/messages')) {
+        return new Response(JSON.stringify({
+          error: {
+            message: 'unsupported_api_for_model',
+            code: 'unsupported_api_for_model',
+          },
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url.endsWith('/chat/completions')) {
+        return new Response([
+          'data: {"id":"chatcmpl_fallback_stream","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"fallback ok"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+          'data: [DONE]\n\n',
+        ].join(''), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url} body=${String(init?.body)}`)
+    })
+
+    const makeRequest = () => server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    const first = await makeRequest()
+    expect(first.status).toBe(200)
+    const firstBody = await first.json() as { content?: Array<{ text?: string, type?: string }> }
+    expect(firstBody.content).toEqual([{ type: 'text', text: 'fallback ok' }])
+
+    const second = await makeRequest()
+    expect(second.status).toBe(200)
+
+    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
+    expect(calledUrls).toEqual([
+      'https://api.githubcopilot.com/v1/messages',
+      'https://api.githubcopilot.com/chat/completions',
+      'https://api.githubcopilot.com/chat/completions',
+    ])
+  })
+
+  test('Claude native passthrough synthesizes message_stop when upstream stream terminates after visible text', async () => {
     fetchMock.mockImplementationOnce(async (url: string) => {
-      if (!url.endsWith('/chat/completions')) {
+      if (!url.endsWith('/v1/messages')) {
         throw new Error(`Unexpected upstream URL: ${url}`)
       }
 
       return new Response([
-        'data: {"id":"chatcmpl_thinking_only","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_text":"Still reasoning."},"finish_reason":null,"logprobs":null}]}\n\n',
-        'data: [DONE]\n\n',
+        'event: message_start\n',
+        'data: {"type":"message_start","message":{"id":"msg_partial","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}\n\n',
+        'event: content_block_start\n',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
       ].join(''), {
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4-6-20250514',
+        stream: true,
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+
+    const body = await res.text()
+    expect(body).toContain('event: content_block_delta')
+    expect(body).toContain('\"text\":\"partial\"')
+    expect(body).toContain('event: content_block_stop')
+    expect(body).toContain('event: message_stop')
+    expect(body).toContain('\"model\":\"claude-opus-4-6-20250514\"')
+  })
+
+  test('Claude non-streaming requests forward error responses from upstream', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      if (!url.endsWith('/v1/messages')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response(JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'api_error',
+          message: 'Backend error from Copilot',
+        },
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
       })
     })
 
@@ -271,19 +384,8 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
+    // Upstream error is forwarded as HTTP error
     expect(res.status).toBe(502)
-
-    const body = await res.json() as {
-      type?: string
-      error?: {
-        type?: string
-        message?: string
-      }
-    }
-
-    expect(body.type).toBe('error')
-    expect(body.error?.type).toBe('api_error')
-    expect(body.error?.message).toContain('reasoning output without any assistant text or tool call')
   })
 
   test('Claude URL image requests fail locally with Anthropic invalid_request_error', async () => {
@@ -493,5 +595,6 @@ describe('messages route upstream adaptation', () => {
 })
 
 afterEach(() => {
+  clearProbeCache()
   globalThis.fetch = originalFetch
 })

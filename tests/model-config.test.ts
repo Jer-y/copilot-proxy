@@ -9,7 +9,8 @@ describe('getModelConfig', () => {
     expect(config.defaultReasoningEffort).toBe('high')
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
-    expect(config.supportedApis).toEqual(['chat-completions'])
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('chat-completions')
   })
 
   test('should let claude-opus-4.6-fast inherit the claude-opus-4.6 config', () => {
@@ -19,7 +20,8 @@ describe('getModelConfig', () => {
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
-    expect(config.supportedApis).toEqual(['chat-completions'])
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('chat-completions')
   })
 
   test('should let claude-opus-4.6-1m inherit the claude-opus-4.6 config', () => {
@@ -29,7 +31,8 @@ describe('getModelConfig', () => {
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
-    expect(config.supportedApis).toEqual(['chat-completions'])
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('chat-completions')
   })
 
   test('should return config with reasoningMode for gpt-5.2-codex', () => {
@@ -75,7 +78,8 @@ describe('getModelConfig', () => {
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportsParallelToolCalls).toBe(true)
-    expect(config.supportedApis).toEqual(['chat-completions'])
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('chat-completions')
   })
 
   test('should return exact match config for gpt-4o', () => {
@@ -135,25 +139,31 @@ describe('isThinkingModeModel', () => {
 })
 
 describe('resolveBackend', () => {
-  test('should return chat-completions for claude (cc-only model)', () => {
+  test('should return anthropic-messages when the messages route explicitly requests it for claude', () => {
+    expect(resolveBackend('claude-opus-4.6', 'anthropic-messages')).toBe('anthropic-messages')
+  })
+
+  test('should keep OpenAI chat-completions on chat-completions route for claude', () => {
     expect(resolveBackend('claude-opus-4.6', 'chat-completions')).toBe('chat-completions')
   })
 
-  test('should return chat-completions for claude even if responses requested', () => {
+  test('should prefer chat-completions when Claude is asked for unsupported responses', () => {
     expect(resolveBackend('claude-opus-4.6', 'responses')).toBe('chat-completions')
   })
 
   test('should route claude-opus-4.6-fast exactly like claude-opus-4.6', () => {
+    expect(resolveBackend('claude-opus-4.6-fast', 'anthropic-messages')).toBe('anthropic-messages')
     expect(resolveBackend('claude-opus-4.6-fast', 'chat-completions')).toBe('chat-completions')
     expect(resolveBackend('claude-opus-4.6-fast', 'responses')).toBe('chat-completions')
   })
 
   test('should route claude-opus-4.6-1m exactly like claude-opus-4.6', () => {
+    expect(resolveBackend('claude-opus-4.6-1m', 'anthropic-messages')).toBe('anthropic-messages')
     expect(resolveBackend('claude-opus-4.6-1m', 'chat-completions')).toBe('chat-completions')
     expect(resolveBackend('claude-opus-4.6-1m', 'responses')).toBe('chat-completions')
   })
 
-  test('should return chat-completions for claude-sonnet-4.6 even if responses requested', () => {
+  test('should prefer chat-completions for claude-sonnet-4.6 when responses are requested', () => {
     expect(resolveBackend('claude-sonnet-4.6', 'responses')).toBe('chat-completions')
   })
 

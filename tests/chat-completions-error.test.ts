@@ -5,13 +5,20 @@ import { state } from '~/lib/state'
 import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
-const fetchMock = mock(async (url: string) => {
+
+function createAbortError(): Error {
+  const error = new Error('The operation was aborted.')
+  error.name = 'AbortError'
+  return error
+}
+
+const fetchMock = mock(async (url: string, _init?: RequestInit): Promise<Response> => {
   throw new Error(`Unexpected upstream URL: ${url}`)
 })
 
 beforeEach(() => {
   fetchMock.mockClear()
-  fetchMock.mockImplementation(async (url: string) => {
+  fetchMock.mockImplementation(async (url: string, _init?: RequestInit): Promise<Response> => {
     throw new Error(`Unexpected upstream URL: ${url}`)
   })
   clearProbeCache()
@@ -102,9 +109,9 @@ describe('chat-completions error paths', () => {
   })
 
   test('responses-routed aborts return an empty response instead of surfacing as 500', async () => {
-    fetchMock.mockImplementation(async (url: string) => {
+    fetchMock.mockImplementation(async (url: string, _init?: RequestInit): Promise<Response> => {
       if (url.endsWith('/responses')) {
-        throw new DOMException('The operation was aborted.', 'AbortError')
+        throw createAbortError()
       }
 
       throw new Error(`Unexpected upstream URL: ${url}`)
@@ -124,7 +131,7 @@ describe('chat-completions error paths', () => {
   })
 
   test('responses fallback aborts return an empty response instead of surfacing as 500', async () => {
-    fetchMock.mockImplementation(async (url: string) => {
+    fetchMock.mockImplementation(async (url: string, _init?: RequestInit): Promise<Response> => {
       if (url.endsWith('/chat/completions')) {
         return new Response(JSON.stringify({
           error: {
@@ -138,7 +145,7 @@ describe('chat-completions error paths', () => {
       }
 
       if (url.endsWith('/responses')) {
-        throw new DOMException('The operation was aborted.', 'AbortError')
+        throw createAbortError()
       }
 
       throw new Error(`Unexpected upstream URL: ${url}`)
@@ -156,5 +163,47 @@ describe('chat-completions error paths', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('')
+  })
+
+  test('Claude chat-completions requests keep using /chat/completions despite native Anthropic support', async () => {
+    fetchMock.mockImplementation(async (url: string, _init?: RequestInit): Promise<Response> => {
+      if (url.endsWith('/chat/completions')) {
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_claude_direct',
+          object: 'chat.completion',
+          created: 0,
+          model: 'claude-opus-4.6',
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: 'ok',
+            },
+            logprobs: null,
+            finish_reason: 'stop',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
+    expect(calledUrls).toEqual([
+      'https://api.githubcopilot.com/chat/completions',
+    ])
   })
 })
