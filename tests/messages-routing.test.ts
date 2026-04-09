@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+import { clearProbeCache } from '~/lib/api-probe'
 import { state } from '~/lib/state'
 import { server } from '~/server'
 
@@ -105,6 +106,7 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
 
 beforeEach(() => {
   fetchMock.mockClear()
+  clearProbeCache()
   state.lastRequestTimestamp = undefined
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
@@ -230,6 +232,9 @@ describe('messages route upstream adaptation', () => {
 
     const forwardedPayload = JSON.parse(String(init?.body)) as { model?: string }
     expect(forwardedPayload.model).toBe('claude-opus-4.6-fast')
+
+    const body = await res.json() as { model?: string }
+    expect(body.model).toBe('claude-opus-4-6-20250514')
   })
 
   test('Claude streaming responses are piped through natively', async () => {
@@ -252,8 +257,103 @@ describe('messages route upstream adaptation', () => {
 
     const body = await res.text()
     expect(body).toContain('event: message_start')
+    expect(body).toContain('\"model\":\"claude-opus-4-6-20250514\"')
+    expect(body).not.toContain('\"model\":\"claude-opus-4.6-fast\"')
     expect(body).toContain('event: content_block_delta')
     expect(body).toContain('event: message_stop')
+  })
+
+  test('Claude falls back to chat-completions when native /v1/messages is unsupported and caches the probe result', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/v1/messages')) {
+        return new Response(JSON.stringify({
+          error: {
+            message: 'unsupported_api_for_model',
+            code: 'unsupported_api_for_model',
+          },
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url.endsWith('/chat/completions')) {
+        return new Response([
+          'data: {"id":"chatcmpl_fallback_stream","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"fallback ok"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+          'data: [DONE]\n\n',
+        ].join(''), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url} body=${String(init?.body)}`)
+    })
+
+    const makeRequest = () => server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    const first = await makeRequest()
+    expect(first.status).toBe(200)
+    const firstBody = await first.json() as { content?: Array<{ text?: string, type?: string }> }
+    expect(firstBody.content).toEqual([{ type: 'text', text: 'fallback ok' }])
+
+    const second = await makeRequest()
+    expect(second.status).toBe(200)
+
+    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
+    expect(calledUrls).toEqual([
+      'https://api.githubcopilot.com/v1/messages',
+      'https://api.githubcopilot.com/chat/completions',
+      'https://api.githubcopilot.com/chat/completions',
+    ])
+  })
+
+  test('Claude native passthrough synthesizes message_stop when upstream stream terminates after visible text', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      if (!url.endsWith('/v1/messages')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response([
+        'event: message_start\n',
+        'data: {"type":"message_start","message":{"id":"msg_partial","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}\n\n',
+        'event: content_block_start\n',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
+      ].join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4-6-20250514',
+        stream: true,
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+
+    const body = await res.text()
+    expect(body).toContain('event: content_block_delta')
+    expect(body).toContain('\"text\":\"partial\"')
+    expect(body).toContain('event: content_block_stop')
+    expect(body).toContain('event: message_stop')
+    expect(body).toContain('\"model\":\"claude-opus-4-6-20250514\"')
   })
 
   test('Claude non-streaming requests forward error responses from upstream', async () => {
@@ -495,5 +595,6 @@ describe('messages route upstream adaptation', () => {
 })
 
 afterEach(() => {
+  clearProbeCache()
   globalThis.fetch = originalFetch
 })

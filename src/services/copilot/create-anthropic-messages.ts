@@ -3,11 +3,15 @@
  *
  * Instead of translating Anthropic → OpenAI Chat Completions and back,
  * this service forwards the Anthropic payload directly to Copilot's
- * native `/v1/messages` endpoint (proven to exist via VS Code Copilot
- * Chat deep-dive analysis).
+ * native `/v1/messages` endpoint.
  */
 
-import type { AnthropicMessagesPayload, AnthropicResponse } from '~/lib/translation/types'
+import type {
+  AnthropicMessagesPayload,
+  AnthropicResponse,
+  AnthropicToolResultBlock,
+  AnthropicUserContentBlock,
+} from '~/lib/translation/types'
 
 import consola from 'consola'
 import { events } from 'fetch-event-stream'
@@ -17,8 +21,6 @@ import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
-const ANTHROPIC_BETA = 'advanced-tool-use-2025-11-20'
-
 export async function createAnthropicMessages(
   payload: AnthropicMessagesPayload,
   options?: { signal?: AbortSignal, anthropicBeta?: string },
@@ -26,26 +28,13 @@ export async function createAnthropicMessages(
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
-  // Vision detection: scan for base64 image blocks in Anthropic format
-  const enableVision = payload.messages.some(
-    msg => Array.isArray(msg.content) && msg.content.some(
-      (block: any) => block.type === 'image',
-    ),
-  )
-
-  // Agent/user detection: if messages contain assistant turns or tool_result,
-  // this is an agent continuation (tool-use loop), not a fresh user request.
-  const isAgentCall = payload.messages.some(msg =>
-    msg.role === 'assistant'
-    || (msg.role === 'user' && Array.isArray(msg.content) && msg.content.some(
-      (block: any) => block.type === 'tool_result',
-    )),
-  )
+  const enableVision = payload.messages.some(messageContainsVisionInput)
+  const isAgentCall = payload.messages.some(messageContinuesAgentLoop)
 
   const headers: Record<string, string> = {
     ...copilotHeaders(state, enableVision),
     'X-Initiator': isAgentCall ? 'agent' : 'user',
-    'anthropic-beta': options?.anthropicBeta ?? ANTHROPIC_BETA,
+    ...(options?.anthropicBeta ? { 'anthropic-beta': options.anthropicBeta } : {}),
   }
 
   const requestStartedAt = Date.now()
@@ -82,4 +71,36 @@ export async function createAnthropicMessages(
     requestStartedAt,
   })
   return { body: json, headers: response.headers, streaming: false as const }
+}
+
+function messageContainsVisionInput(
+  message: AnthropicMessagesPayload['messages'][number],
+): boolean {
+  if (message.role !== 'user' || !Array.isArray(message.content)) {
+    return false
+  }
+
+  return message.content.some(block =>
+    block.type === 'image'
+    || (block.type === 'tool_result' && toolResultContainsImage(block)),
+  )
+}
+
+function messageContinuesAgentLoop(
+  message: AnthropicMessagesPayload['messages'][number],
+): boolean {
+  return message.role === 'assistant'
+    || (
+      message.role === 'user'
+      && Array.isArray(message.content)
+      && message.content.some((block): block is AnthropicToolResultBlock => block.type === 'tool_result')
+    )
+}
+
+function toolResultContainsImage(block: AnthropicToolResultBlock): boolean {
+  if (!Array.isArray(block.content)) {
+    return false
+  }
+
+  return block.content.some((contentBlock: AnthropicUserContentBlock) => contentBlock.type === 'image')
 }

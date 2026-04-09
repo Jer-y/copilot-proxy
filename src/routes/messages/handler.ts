@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 
-import type { AnthropicMessagesPayload, AnthropicStreamEventData, AnthropicStreamState } from './anthropic-types'
+import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData, AnthropicStreamState } from './anthropic-types'
 import type { ChatCompletionChunk, ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesResponse } from '~/services/copilot/create-responses'
 import type { Model } from '~/services/copilot/get-models'
@@ -83,16 +83,35 @@ export async function handleCompletion(c: Context) {
   assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 
   const signal = c.req.raw.signal
-  const backend = resolveBackend(effectiveModel, 'chat-completions')
+  const backend = resolveBackend(effectiveModel, 'anthropic-messages')
 
   // Native Anthropic passthrough for Claude models — no translation needed
   if (backend === 'anthropic-messages') {
     try {
-      return await handleViaNativeAnthropic(c, anthropicPayload, anthropicBeta, effectiveModel, signal)
+      return await handleViaNativeAnthropic(
+        c,
+        anthropicPayload,
+        anthropicBeta,
+        effectiveModel,
+        requestedModel,
+        signal,
+      )
     }
     catch (error) {
       if (error instanceof Error && error.name === 'AbortError')
         return c.body(null)
+      if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
+        consola.info(`Model ${effectiveModel} does not support /v1/messages, falling back to /chat/completions`)
+        recordProbeResult(effectiveModel, 'anthropic-messages')
+        return await handleViaTranslatedBackends(
+          c,
+          anthropicPayload,
+          anthropicBeta,
+          effectiveModel,
+          requestedModel,
+          signal,
+        )
+      }
       throw error
     }
   }
@@ -108,9 +127,26 @@ export async function handleCompletion(c: Context) {
     }
   }
 
-  // Try chat-completions first; if unsupported, fall back to responses
+  return await handleViaTranslatedBackends(
+    c,
+    anthropicPayload,
+    anthropicBeta,
+    effectiveModel,
+    requestedModel,
+    signal,
+  )
+}
+
+async function handleViaTranslatedBackends(
+  c: Context,
+  anthropicPayload: AnthropicMessagesPayload,
+  anthropicBeta: string | undefined,
+  effectiveModel: string,
+  requestedModel: string,
+  signal: AbortSignal,
+) {
   try {
-    return await handleViaChatCompletions(c, anthropicPayload, anthropicBeta, effectiveModel, requestedModel, signal)
+    return await handleViaChatCompletions(c, anthropicPayload, anthropicBeta, requestedModel, signal)
   }
   catch (error) {
     if (error instanceof Error && error.name === 'AbortError')
@@ -154,7 +190,6 @@ async function handleViaChatCompletions(
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
   anthropicBeta: string | undefined,
-  effectiveModel: string,
   requestedModel: string,
   signal: AbortSignal,
 ) {
@@ -542,6 +577,7 @@ async function handleViaNativeAnthropic(
   anthropicPayload: AnthropicMessagesPayload,
   anthropicBeta: string | undefined,
   effectiveModel: string,
+  requestedModel: string,
   signal: AbortSignal,
 ) {
   // Override model to effective (variant-resolved) model
@@ -568,7 +604,7 @@ async function handleViaNativeAnthropic(
       consola.debug('Native Anthropic non-streaming response:', JSON.stringify(result.body))
     }
     forwardUpstreamHeaders(c, result.headers)
-    return c.json(result.body)
+    return c.json(overrideAnthropicResponseModel(result.body, requestedModel))
   }
 
   // Streaming: upstream SSE is already in Anthropic format.
@@ -578,6 +614,7 @@ async function handleViaNativeAnthropic(
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
     const anthropicWriter = createAnthropicSSEWriter(stream)
+    const passthroughState = createNativeAnthropicPassthroughState()
 
     try {
       for await (const rawEvent of streamBody) {
@@ -600,16 +637,58 @@ async function handleViaNativeAnthropic(
           return
         }
 
-        await anthropicWriter.writeEvent(event)
+        const eventToWrite = overrideAnthropicStreamEventModel(event, requestedModel)
+        updateNativeAnthropicPassthroughState(passthroughState, eventToWrite)
 
-        if (event.type === 'error') {
+        await anthropicWriter.writeEvent(eventToWrite)
+
+        if (eventToWrite.type === 'error') {
           return
         }
+      }
+
+      const finalEvents = finalizeNativeAnthropicPassthroughState(passthroughState)
+      if (finalEvents.length > 0) {
+        consola.warn('Native Anthropic stream terminated without a completion event; synthesizing Anthropic message_stop.')
+        for (const event of finalEvents) {
+          await anthropicWriter.writeEvent(event)
+        }
+        return
+      }
+
+      if (shouldEmitNativeAnthropicTerminationError(passthroughState)) {
+        const message = passthroughState.hasThinkingContent && !passthroughState.hasNonThinkingContent
+          ? 'Upstream Copilot connection terminated after reasoning output, before any assistant text or tool call was produced.'
+          : 'Upstream Copilot connection terminated before the response completed.'
+        consola.warn('Native Anthropic stream terminated without recoverable assistant output; returning Anthropic error event.')
+        await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
       }
     }
     catch (error) {
       if (error instanceof Error && error.name === 'AbortError')
         return
+
+      const upstreamTerminated = isRecoverableUpstreamTermination(error)
+      const recoveredEvents = upstreamTerminated
+        ? finalizeNativeAnthropicPassthroughState(passthroughState)
+        : []
+
+      if (recoveredEvents.length > 0) {
+        consola.warn('Native Anthropic stream terminated without a completion event; synthesizing Anthropic message_stop.')
+        for (const event of recoveredEvents) {
+          await anthropicWriter.writeEvent(event)
+        }
+        return
+      }
+
+      if (upstreamTerminated && shouldEmitNativeAnthropicTerminationError(passthroughState)) {
+        const message = passthroughState.hasThinkingContent && !passthroughState.hasNonThinkingContent
+          ? 'Upstream Copilot connection terminated after reasoning output, before any assistant text or tool call was produced.'
+          : 'Upstream Copilot connection terminated before the response completed.'
+        consola.warn('Native Anthropic stream terminated without recoverable assistant output; returning Anthropic error event.')
+        await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
+        return
+      }
 
       const message = error instanceof Error
         ? error.message
@@ -655,5 +734,168 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
         delete thinking.budget_tokens_max
       }
     }
+  }
+}
+
+interface NativeAnthropicPassthroughState {
+  currentBlockIndex: number | null
+  currentBlockType: 'text' | 'thinking' | 'tool_use' | null
+  errorSeen: boolean
+  hasNonThinkingContent: boolean
+  hasThinkingContent: boolean
+  messageDeltaSeen: boolean
+  messageStartSeen: boolean
+  messageStopSeen: boolean
+  outputTokens: number
+}
+
+function createNativeAnthropicPassthroughState(): NativeAnthropicPassthroughState {
+  return {
+    currentBlockIndex: null,
+    currentBlockType: null,
+    errorSeen: false,
+    hasNonThinkingContent: false,
+    hasThinkingContent: false,
+    messageDeltaSeen: false,
+    messageStartSeen: false,
+    messageStopSeen: false,
+    outputTokens: 0,
+  }
+}
+
+function updateNativeAnthropicPassthroughState(
+  state: NativeAnthropicPassthroughState,
+  event: AnthropicStreamEventData,
+): void {
+  switch (event.type) {
+    case 'message_start': {
+      state.messageStartSeen = true
+      state.outputTokens = event.message.usage.output_tokens
+      return
+    }
+
+    case 'content_block_start': {
+      state.currentBlockIndex = event.index
+      state.currentBlockType = event.content_block.type
+
+      if (event.content_block.type === 'thinking') {
+        state.hasThinkingContent = true
+      }
+      else {
+        state.hasNonThinkingContent = true
+      }
+      return
+    }
+
+    case 'content_block_delta': {
+      if (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta') {
+        state.hasThinkingContent = true
+      }
+      else {
+        state.hasNonThinkingContent = true
+      }
+      return
+    }
+
+    case 'content_block_stop': {
+      if (state.currentBlockIndex === event.index) {
+        state.currentBlockIndex = null
+        state.currentBlockType = null
+      }
+      return
+    }
+
+    case 'message_delta': {
+      state.messageDeltaSeen = true
+      state.outputTokens = event.usage?.output_tokens ?? state.outputTokens
+      return
+    }
+
+    case 'message_stop': {
+      state.messageStopSeen = true
+      return
+    }
+
+    case 'error': {
+      state.errorSeen = true
+      break
+    }
+
+    case 'ping': {
+      break
+    }
+  }
+}
+
+function finalizeNativeAnthropicPassthroughState(
+  state: NativeAnthropicPassthroughState,
+): Array<AnthropicStreamEventData> {
+  if (!state.messageStartSeen || state.messageStopSeen || state.errorSeen || !state.hasNonThinkingContent) {
+    return []
+  }
+
+  if (state.currentBlockType === 'tool_use') {
+    return []
+  }
+
+  const events: Array<AnthropicStreamEventData> = []
+
+  if (state.currentBlockIndex !== null) {
+    events.push({
+      type: 'content_block_stop',
+      index: state.currentBlockIndex,
+    })
+    state.currentBlockIndex = null
+    state.currentBlockType = null
+  }
+
+  if (!state.messageDeltaSeen) {
+    events.push({
+      type: 'message_delta',
+      delta: {
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+      },
+      usage: {
+        output_tokens: state.outputTokens,
+      },
+    })
+  }
+
+  events.push({ type: 'message_stop' })
+  state.messageStopSeen = true
+  return events
+}
+
+function shouldEmitNativeAnthropicTerminationError(
+  state: NativeAnthropicPassthroughState,
+): boolean {
+  return state.messageStartSeen && !state.messageStopSeen && !state.errorSeen
+}
+
+function overrideAnthropicResponseModel(
+  response: AnthropicResponse,
+  requestedModel: string,
+): AnthropicResponse {
+  return {
+    ...response,
+    model: requestedModel,
+  }
+}
+
+function overrideAnthropicStreamEventModel(
+  event: AnthropicStreamEventData,
+  requestedModel: string,
+): AnthropicStreamEventData {
+  if (event.type !== 'message_start') {
+    return event
+  }
+
+  return {
+    ...event,
+    message: {
+      ...event.message,
+      model: requestedModel,
+    },
   }
 }
