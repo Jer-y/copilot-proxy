@@ -550,6 +550,10 @@ async function handleViaNativeAnthropic(
     model: effectiveModel,
   }
 
+  // Minimal sanitization for fields the Copilot backend rejects.
+  // Unlike the CC translation path this is surgical — everything else passes through.
+  sanitizeForCopilotBackend(payload)
+
   if (consola.level >= 4) {
     consola.debug('Native Anthropic passthrough payload:', JSON.stringify(payload))
   }
@@ -617,4 +621,39 @@ async function handleViaNativeAnthropic(
       await anthropicWriter.close()
     }
   })
+}
+
+/**
+ * Minimal sanitization for the native Anthropic passthrough path.
+ *
+ * The Copilot backend rejects a small number of fields that Claude Code
+ * sends. Rather than translating the entire payload (as the CC path does),
+ * we surgically strip only the known-bad fields and leave everything else
+ * intact.
+ *
+ * Mutates the payload in place.
+ */
+function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
+  // 1. context_management — Copilot does not support this field (with or without beta flag)
+  if ('context_management' in payload) {
+    consola.debug('Stripping context_management (unsupported by Copilot backend)')
+    delete (payload as Record<string, unknown>).context_management
+  }
+
+  // 2. thinking.adaptive + budget_tokens / budget_tokens_max
+  //    Copilot rejects any extra fields inside adaptive thinking.
+  //    Claude API spec: budget_tokens is only valid with type:"enabled".
+  if (payload.thinking && typeof payload.thinking === 'object' && 'type' in payload.thinking) {
+    if (payload.thinking.type === 'adaptive') {
+      const thinking = payload.thinking as Record<string, unknown>
+      if ('budget_tokens' in thinking) {
+        consola.debug('Stripping budget_tokens from adaptive thinking (only valid with type:enabled)')
+        delete thinking.budget_tokens
+      }
+      if ('budget_tokens_max' in thinking) {
+        consola.debug('Stripping budget_tokens_max from adaptive thinking (unsupported by Copilot)')
+        delete thinking.budget_tokens_max
+      }
+    }
+  }
 }
