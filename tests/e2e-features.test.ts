@@ -35,6 +35,14 @@ async function sendRequest(body: Record<string, unknown>, headers?: Record<strin
   })
 }
 
+async function sendCountTokensRequest(body: Record<string, unknown>, headers?: Record<string, string>) {
+  return server.request('/v1/messages/count_tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  })
+}
+
 async function parseResponse(res: Response) {
   return res.json() as Promise<Record<string, unknown>>
 }
@@ -73,6 +81,8 @@ const WEATHER_TOOL = {
     required: ['location'],
   },
 }
+
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='
 
 // ---------------------------------------------------------------------------
 // Setup: initialize real Copilot auth
@@ -293,9 +303,8 @@ describeE2E('Feature probes', () => {
     // These are not Copilot-specific — they validate the native Claude API contract
 
     test('thinking adaptive + budget_tokens → rejected (budget_tokens only for enabled)', async () => {
-      // Per Claude API docs: budget_tokens is ONLY valid with type:"enabled".
-      // budget_tokens_max is not part of the official adaptive thinking shape;
-      // the proxy strips it for compatibility. See A2 in the review plan.
+      // Official Claude docs/SDK split adaptive vs enabled thinking.
+      // Direct Copilot /v1/messages probing also rejects this exact shape with 400.
       const res = await sendRequest({
         model,
         max_tokens: 8000,
@@ -350,6 +359,7 @@ describeE2E('Feature probes', () => {
                 answer: { type: 'string' },
               },
               required: ['answer'],
+              additionalProperties: false,
             },
           },
         },
@@ -371,7 +381,7 @@ describeE2E('Feature probes', () => {
           content: [
             {
               type: 'document',
-              source: { type: 'text', media_type: 'text/plain', text: 'The capital of France is Paris.' },
+              source: { type: 'text', media_type: 'text/plain', data: 'The capital of France is Paris.' },
             },
             { type: 'text', text: 'What is the capital mentioned in the document?' },
           ],
@@ -428,7 +438,7 @@ describeE2E('Feature probes', () => {
           content: [
             {
               type: 'document',
-              source: { type: 'text', media_type: 'text/plain', text: 'The capital of France is Paris. The Eiffel Tower is located in Paris.' },
+              source: { type: 'text', media_type: 'text/plain', data: 'The capital of France is Paris. The Eiffel Tower is located in Paris.' },
               citations: { enabled: true },
             },
             { type: 'text', text: 'What is the capital of France? Cite your source.' },
@@ -549,6 +559,94 @@ describeE2E('Feature probes', () => {
       const body = await parseResponse(res)
       logProbe('speed fast', res.status, body)
       expect(res.status).toBe(200)
+    }, TIMEOUT)
+  })
+
+  describe('Additional proxy surface smoke', () => {
+    test('image source base64 → 200', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: TINY_PNG_BASE64,
+              },
+            },
+            { type: 'text', text: 'Reply with the single word image.' },
+          ],
+        }],
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      expect(body.type).toBe('message')
+    }, TIMEOUT)
+
+    test('image source URL → rejected locally', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'url',
+                url: 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png',
+              },
+            },
+            { type: 'text', text: 'What is in this image?' },
+          ],
+        }],
+      })
+
+      expect(res.status).toBe(400)
+      const body = await parseResponse(res)
+      expect((body.error as Record<string, unknown>)?.message).toBeDefined()
+    }, TIMEOUT)
+
+    test('count_tokens baseline → returns positive input_tokens', async () => {
+      const res = await sendCountTokensRequest({
+        model,
+        messages: [{ role: 'user', content: 'Count these tokens.' }],
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      expect(typeof body.input_tokens).toBe('number')
+      expect((body.input_tokens as number)).toBeGreaterThan(1)
+    }, TIMEOUT)
+
+    test('count_tokens with document source data → returns positive input_tokens', async () => {
+      const res = await sendCountTokensRequest({
+        model,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'text',
+                media_type: 'text/plain',
+                data: 'The capital of France is Paris.',
+              },
+            },
+            { type: 'text', text: 'What is the capital?' },
+          ],
+        }],
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      expect(typeof body.input_tokens).toBe('number')
+      expect((body.input_tokens as number)).toBeGreaterThan(1)
     }, TIMEOUT)
   })
 })
