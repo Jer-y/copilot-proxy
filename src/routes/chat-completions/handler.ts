@@ -72,17 +72,15 @@ export async function handleCompletion(c: Context) {
     }
   }
 
-  const signal = c.req.raw.signal
-
   const routingPolicy = planChatCompletionsBackends(payload.model)
   const steps = routingPolicy.steps.map(step => ({
     ...step,
     run: async () => {
       switch (step.api) {
         case 'chat-completions':
-          return await handleViaChatCompletions(c, payload, signal)
+          return await handleViaChatCompletions(c, payload)
         case 'responses':
-          return await handleViaResponses(c, payload, signal)
+          return await handleViaResponses(c, payload)
         case 'anthropic-messages':
           throw new Error('anthropic-messages is not routable from chat-completions')
       }
@@ -103,8 +101,8 @@ export async function handleCompletion(c: Context) {
 }
 
 /** Direct path: model supports chat-completions */
-async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayload, signal: AbortSignal) {
-  const result = await createChatCompletions(payload, { signal })
+async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayload) {
+  const result = await createChatCompletions(payload)
 
   if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -137,13 +135,13 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
 }
 
 /** Translation path: model only supports responses API, translate CC ↔ Responses */
-async function handleViaResponses(c: Context, payload: ChatCompletionsPayload, signal: AbortSignal) {
+async function handleViaResponses(c: Context, payload: ChatCompletionsPayload) {
   const responsesPayload = translateCCRequestToResponses(payload)
   if (consola.level >= 4) {
     consola.debug('Translated CC→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
   }
 
-  const result = await createResponses(responsesPayload, { signal })
+  const result = await createResponses(responsesPayload)
 
   if (isResponsesNonStreaming(result.body)) {
     if (consola.level >= 4) {

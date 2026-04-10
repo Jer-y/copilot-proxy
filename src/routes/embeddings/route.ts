@@ -14,8 +14,7 @@ export const embeddingRoutes = new Hono()
 embeddingRoutes.post('/', async (c) => {
   try {
     const payload = await validateBody<EmbeddingRequest>(c, EmbeddingRequestSchema)
-    const signal = c.req.raw.signal
-    const response = await createEmbeddings(payload, { signal })
+    const response = await createEmbeddings(payload)
 
     return c.json(response)
   }

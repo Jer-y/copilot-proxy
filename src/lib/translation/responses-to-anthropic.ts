@@ -35,6 +35,9 @@ import {
   throwAnthropicErrorFromFailedResponses,
 } from './utils'
 
+type AnthropicOutputConfig = NonNullable<AnthropicMessagesPayload['output_config']>
+type AnthropicOutputConfigFormat = NonNullable<AnthropicOutputConfig['format']>
+
 export function translateResponsesResponseToAnthropic(
   response: ResponsesResponse,
   options?: { requestedModel?: string },
@@ -443,7 +446,7 @@ function buildOutputConfig(
   payload: ResponsesPayload,
 ): AnthropicMessagesPayload['output_config'] | undefined {
   let effort: 'low' | 'medium' | 'high' | 'max' | undefined
-  let format: AnthropicMessagesPayload['output_config']['format']
+  let format: AnthropicOutputConfigFormat | undefined
 
   if (payload.reasoning?.effort) {
     effort = payload.reasoning.effort === 'xhigh' ? 'max' : payload.reasoning.effort
@@ -471,7 +474,7 @@ function buildOutputConfig(
 
 function normalizeResponsesJsonSchemaFormat(
   format: NonNullable<NonNullable<ResponsesPayload['text']>['format']>,
-): AnthropicMessagesPayload['output_config']['format'] {
+): AnthropicOutputConfigFormat {
   if (!isRecord(format)) {
     throwInvalidRequestError('Responses text.format must be an object')
   }

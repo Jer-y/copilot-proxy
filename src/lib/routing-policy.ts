@@ -1,6 +1,6 @@
 import type { BackendApiType } from './model-config'
 
-import type { AnthropicMessagesPayload } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicUserContentBlock } from '~/lib/translation/types'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 import { formatBackendApi } from './backend-api'
 import { getModelConfig, resolveBackendForConfig } from './model-config'
@@ -256,7 +256,7 @@ function payloadHasUrlDocumentSources(payload: AnthropicMessagesPayload): boolea
       continue
     }
 
-    if (contentBlocksHaveUrlDocumentSource(message.content as Array<Record<string, unknown>>)) {
+    if (contentBlocksHaveUrlDocumentSource(message.content)) {
       return true
     }
   }
@@ -265,20 +265,17 @@ function payloadHasUrlDocumentSources(payload: AnthropicMessagesPayload): boolea
 }
 
 function contentBlocksHaveUrlDocumentSource(
-  blocks: Array<Record<string, unknown>>,
+  blocks: ReadonlyArray<AnthropicUserContentBlock>,
 ): boolean {
   for (const block of blocks) {
-    if (block.type === 'document') {
-      const source = block.source
-      if (source && typeof source === 'object' && 'type' in source && source.type === 'url') {
-        return true
-      }
+    if (block.type === 'document' && block.source.type === 'url') {
+      return true
     }
 
     if (
       block.type === 'tool_result'
       && Array.isArray(block.content)
-      && contentBlocksHaveUrlDocumentSource(block.content as Array<Record<string, unknown>>)
+      && contentBlocksHaveUrlDocumentSource(block.content)
     ) {
       return true
     }

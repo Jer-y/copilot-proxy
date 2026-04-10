@@ -82,7 +82,6 @@ export async function handleCompletion(c: Context) {
 
   normalizeAnthropicThinkingForCopilot(anthropicPayload)
 
-  const signal = c.req.raw.signal
   const ensureTranslatedPayloadPrepared = onceAsync(async () => {
     await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
   })
@@ -112,7 +111,6 @@ export async function handleCompletion(c: Context) {
             anthropicBeta,
             effectiveModel,
             requestedModel,
-            signal,
           )
         }
         case 'chat-completions': {
@@ -122,7 +120,6 @@ export async function handleCompletion(c: Context) {
             anthropicPayload,
             anthropicBeta,
             requestedModel,
-            signal,
           )
         }
         case 'responses': {
@@ -132,7 +129,6 @@ export async function handleCompletion(c: Context) {
             anthropicPayload,
             effectiveModel,
             requestedModel,
-            signal,
           )
         }
       }
@@ -176,7 +172,6 @@ async function handleViaChatCompletions(
   anthropicPayload: AnthropicMessagesPayload,
   anthropicBeta: string | undefined,
   requestedModel: string,
-  signal: AbortSignal,
 ) {
   const openAIPayload = translateToOpenAI(anthropicPayload, { anthropicBeta })
   const clientRequestedStreaming = anthropicPayload.stream === true
@@ -190,7 +185,7 @@ async function handleViaChatCompletions(
     consola.debug('Translated OpenAI request payload:', JSON.stringify(upstreamPayload))
   }
 
-  const result = await createChatCompletions(upstreamPayload, { signal })
+  const result = await createChatCompletions(upstreamPayload)
 
   if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -354,14 +349,13 @@ async function handleViaResponses(
   anthropicPayload: AnthropicMessagesPayload,
   effectiveModel: string,
   requestedModel: string,
-  signal: AbortSignal,
 ) {
   const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, { model: effectiveModel })
   if (consola.level >= 4) {
     consola.debug('Translated Anthropic→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
   }
 
-  const result = await createResponses(responsesPayload, { signal })
+  const result = await createResponses(responsesPayload)
 
   if (isResponsesNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -594,7 +588,6 @@ async function handleViaNativeAnthropic(
   anthropicBeta: string | undefined,
   effectiveModel: string,
   requestedModel: string,
-  signal: AbortSignal,
 ) {
   // Override model to effective (variant-resolved) model
   const payload: AnthropicMessagesPayload = {
@@ -611,7 +604,6 @@ async function handleViaNativeAnthropic(
   }
 
   const result = await createAnthropicMessages(payload, {
-    signal,
     anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
   })
 
@@ -709,10 +701,14 @@ async function handleViaNativeAnthropic(
  * Mutates the payload in place.
  */
 function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
+  const payloadWithContextManagement = payload as AnthropicMessagesPayload & {
+    context_management?: unknown
+  }
+
   // 1. context_management — Copilot does not support this field (with or without beta flag)
-  if ('context_management' in payload) {
+  if ('context_management' in payloadWithContextManagement) {
     consola.debug('Stripping context_management (unsupported by Copilot backend)')
-    delete (payload as Record<string, unknown>).context_management
+    delete payloadWithContextManagement.context_management
   }
 
   if (payload.cache_control) {
@@ -720,7 +716,7 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
       'cache_control',
       'Copilot native /v1/messages rejects top-level cache_control, so the proxy drops it before passthrough.',
     )
-    delete (payload as Record<string, unknown>).cache_control
+    delete payload.cache_control
   }
 
   normalizeLegacyDocumentTextSources(payload)

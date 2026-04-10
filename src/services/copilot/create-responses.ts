@@ -410,5 +410,6 @@ export type ResponsesStreamEvent
     | { type: 'response.content_part.done', output_index: number, content_index: number, part: Record<string, unknown>, item_id?: string }
     | { type: 'response.output_item.done', output_index: number, item: ResponsesOutputItem }
     | { type: 'response.completed', response: ResponsesResponse }
+    | { type: 'response.incomplete', response: ResponsesResponse }
     | { type: 'response.failed', response: ResponsesResponse }
     | { type: 'error', error: ResponsesResponseError }

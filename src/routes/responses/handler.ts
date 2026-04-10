@@ -53,8 +53,6 @@ export async function handleResponses(c: Context) {
     await awaitApproval()
   }
 
-  const signal = c.req.raw.signal
-
   const routingPolicy = planResponsesBackends(payload.model, payload)
 
   if (routingPolicy.localError) {
@@ -74,11 +72,11 @@ export async function handleResponses(c: Context) {
     run: async () => {
       switch (step.api) {
         case 'anthropic-messages':
-          return await handleViaAnthropic(c, payload, signal)
+          return await handleViaAnthropic(c, payload)
         case 'chat-completions':
-          return await handleViaChatCompletions(c, payload, signal)
+          return await handleViaChatCompletions(c, payload)
         case 'responses':
-          return await handleViaResponses(c, payload, signal)
+          return await handleViaResponses(c, payload)
       }
     },
   }))
@@ -102,8 +100,8 @@ export async function handleResponses(c: Context) {
 }
 
 /** Direct path: model supports responses API */
-async function handleViaResponses(c: Context, payload: ResponsesPayload, signal: AbortSignal) {
-  const result = await createResponses(payload, { signal })
+async function handleViaResponses(c: Context, payload: ResponsesPayload) {
+  const result = await createResponses(payload)
 
   if (isResponsesNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -136,13 +134,13 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload, signal:
 }
 
 /** Translation path: model only supports chat-completions, translate Responses ↔ CC */
-async function handleViaChatCompletions(c: Context, payload: ResponsesPayload, signal: AbortSignal) {
+async function handleViaChatCompletions(c: Context, payload: ResponsesPayload) {
   const ccPayload = translateResponsesRequestToCC(payload)
   if (consola.level >= 4) {
     consola.debug('Translated Responses→CC payload:', JSON.stringify(ccPayload).slice(-400))
   }
 
-  const result = await createChatCompletions(ccPayload, { signal })
+  const result = await createChatCompletions(ccPayload)
 
   if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -213,7 +211,7 @@ function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>
 }
 
 /** Translation path: model supports Anthropic Messages API, translate Responses ↔ Anthropic */
-async function handleViaAnthropic(c: Context, payload: ResponsesPayload, signal: AbortSignal) {
+async function handleViaAnthropic(c: Context, payload: ResponsesPayload) {
   // Backfill/clamp max_output_tokens (Anthropic API requires max_tokens)
   if (payload.max_output_tokens == null) {
     payload.max_output_tokens = findModelMaxOutputTokens(payload.model, state.models) ?? 16384
@@ -231,7 +229,7 @@ async function handleViaAnthropic(c: Context, payload: ResponsesPayload, signal:
     consola.debug('Translated Responses→Anthropic payload:', JSON.stringify(anthropicPayload).slice(-400))
   }
 
-  const result = await createAnthropicMessages(anthropicPayload, { signal })
+  const result = await createAnthropicMessages(anthropicPayload)
 
   // Non-streaming
   if (!result.streaming) {
