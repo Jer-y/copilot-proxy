@@ -88,6 +88,10 @@ export async function handleCompletion(c: Context) {
   })
   const routingPolicy = planMessagesBackends(effectiveModel, anthropicPayload)
 
+  if (routingPolicy.localError) {
+    throwAnthropicInvalidRequestError(routingPolicy.localError)
+  }
+
   if (
     routingPolicy.resolvedBackend === 'anthropic-messages'
     && routingPolicy.steps[0]?.api !== 'anthropic-messages'

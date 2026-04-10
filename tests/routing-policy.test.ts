@@ -24,7 +24,6 @@ describe('planMessagesBackends', () => {
       steps: [
         { api: 'anthropic-messages' },
         { api: 'chat-completions' },
-        { api: 'responses' },
       ],
     })
   })
@@ -45,7 +44,6 @@ describe('planMessagesBackends', () => {
       resolvedBackend: 'anthropic-messages',
       steps: [
         { api: 'chat-completions', context: 'json_object requires an OpenAI-compatible backend' },
-        { api: 'responses', context: 'json_object requires an OpenAI-compatible backend' },
       ],
     })
   })
@@ -77,10 +75,6 @@ describe('planMessagesBackends', () => {
           api: 'chat-completions',
           context: 'document.source.type="url" is expanded locally because Copilot native /v1/messages rejects URL-backed documents',
         },
-        {
-          api: 'responses',
-          context: 'document.source.type="url" is expanded locally because Copilot native /v1/messages rejects URL-backed documents',
-        },
       ],
     })
   })
@@ -94,10 +88,20 @@ describe('planMessagesBackends', () => {
 
     expect(policy).toEqual({
       resolvedBackend: 'responses',
-      steps: [
-        { api: 'responses' },
-        { api: 'chat-completions' },
-      ],
+      steps: [{ api: 'responses' }],
+    })
+  })
+
+  test('keeps only chat-completions for chat-completions-only models', () => {
+    const policy = planMessagesBackends('gpt-4o', {
+      model: 'gpt-4o',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+
+    expect(policy).toEqual({
+      resolvedBackend: 'chat-completions',
+      steps: [{ api: 'chat-completions' }],
     })
   })
 })
@@ -114,7 +118,6 @@ describe('planResponsesBackends', () => {
       steps: [
         { api: 'anthropic-messages' },
         { api: 'chat-completions' },
-        { api: 'responses' },
       ],
     })
   })
@@ -132,10 +135,9 @@ describe('planResponsesBackends', () => {
 
     expect(policy).toEqual({
       resolvedBackend: 'anthropic-messages',
-      exhaustedError: 'Model claude-opus-4.6 does not support /chat/completions or /responses for json_object structured output.',
+      exhaustedError: 'Model claude-opus-4.6 does not support /chat/completions (json_object structured output).',
       steps: [
         { api: 'chat-completions', context: 'json_object structured output' },
-        { api: 'responses', context: 'json_object structured output' },
       ],
     })
   })
@@ -160,7 +162,6 @@ describe('planResponsesBackends', () => {
     expect(policy.steps).toEqual([
       { api: 'anthropic-messages' },
       { api: 'chat-completions' },
-      { api: 'responses' },
     ])
   })
 
@@ -172,10 +173,19 @@ describe('planResponsesBackends', () => {
 
     expect(policy).toEqual({
       resolvedBackend: 'responses',
-      steps: [
-        { api: 'responses' },
-        { api: 'chat-completions' },
-      ],
+      steps: [{ api: 'responses' }],
+    })
+  })
+
+  test('keeps only chat-completions for chat-completions-only models', () => {
+    const policy = planResponsesBackends('gpt-4o', {
+      model: 'gpt-4o',
+      input: 'hi',
+    })
+
+    expect(policy).toEqual({
+      resolvedBackend: 'chat-completions',
+      steps: [{ api: 'chat-completions' }],
     })
   })
 })
@@ -194,9 +204,14 @@ describe('planChatCompletionsBackends', () => {
   test('uses responses directly for responses-only models', () => {
     expect(planChatCompletionsBackends('gpt-5.4')).toEqual({
       resolvedBackend: 'responses',
-      steps: [
-        { api: 'responses' },
-      ],
+      steps: [{ api: 'responses' }],
+    })
+  })
+
+  test('keeps only chat-completions for Claude models', () => {
+    expect(planChatCompletionsBackends('claude-opus-4.6')).toEqual({
+      resolvedBackend: 'chat-completions',
+      steps: [{ api: 'chat-completions' }],
     })
   })
 })
