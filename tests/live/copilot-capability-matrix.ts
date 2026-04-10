@@ -1,3 +1,4 @@
+import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 
@@ -14,7 +15,7 @@ export interface ProbeErrorDetails {
   rawBody?: string
 }
 
-export type CapabilityProbeEndpoint = 'chat-completions' | 'responses'
+export type CapabilityProbeEndpoint = 'chat-completions' | 'responses' | 'anthropic-messages' | 'anthropic-files'
 export type CapabilityProbeTier = 'baseline' | 'optional'
 export type CapabilityProbeExpectation
   = | 'must_support'
@@ -43,7 +44,17 @@ export interface ResponsesCapabilityProbe extends CapabilityProbeBase {
   buildPayload: (config: LiveCopilotProbeConfig) => ResponsesPayload | ResponsesReasoningProbePayload
 }
 
-export type CapabilityProbe = ChatCompletionsCapabilityProbe | ResponsesCapabilityProbe
+export interface AnthropicMessagesCapabilityProbe extends CapabilityProbeBase {
+  endpoint: 'anthropic-messages'
+  buildPayload: (config: LiveCopilotProbeConfig) => AnthropicMessagesPayload
+}
+
+export interface AnthropicFilesCapabilityProbe extends CapabilityProbeBase {
+  endpoint: 'anthropic-files'
+  buildPayload: (config: LiveCopilotProbeConfig) => { headers?: Record<string, string> }
+}
+
+export type CapabilityProbe = ChatCompletionsCapabilityProbe | ResponsesCapabilityProbe | AnthropicMessagesCapabilityProbe | AnthropicFilesCapabilityProbe
 
 interface ResponsesReasoningProbePayload extends Omit<ResponsesPayload, 'reasoning'> {
   reasoning?: {
@@ -475,6 +486,204 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
         },
       ],
       max_output_tokens: 16,
+    }),
+  },
+
+  // Native Anthropic /v1/messages probes
+  {
+    id: 'native-anthropic-baseline',
+    title: 'Native Anthropic baseline',
+    tier: 'baseline',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Verifies native /v1/messages passthrough works for Claude models.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'Say hi' }],
+    }),
+  },
+  {
+    id: 'native-anthropic-json-schema',
+    title: 'Native Anthropic json_schema structured output',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Official Anthropic structured output uses json_schema, not json_object.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 128,
+      output_config: {
+        format: {
+          type: 'json_schema',
+          schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] },
+        },
+      },
+      messages: [{ role: 'user', content: 'What is 2+2? Return as JSON.' }],
+    }),
+  },
+  {
+    id: 'native-anthropic-thinking-display-omitted',
+    title: 'Native Anthropic thinking display=omitted',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Official adaptive thinking supports display: omitted.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 8192,
+      thinking: { type: 'adaptive', display: 'omitted' },
+      messages: [{ role: 'user', content: 'What is 2+2?' }],
+    }),
+  },
+  {
+    id: 'native-anthropic-document-text',
+    title: 'Native Anthropic document source=text',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Official document source type for inline text.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 64,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'text', media_type: 'text/plain', text: 'Hello world.' } },
+          { type: 'text', text: 'What does the document say?' },
+        ],
+      }],
+    }),
+  },
+  {
+    id: 'native-anthropic-document-url-pdf',
+    title: 'Native Anthropic document source=url (real PDF)',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Official document URL source with a real PDF.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 64,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'url', url: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf' } },
+          { type: 'text', text: 'Is there text in this PDF?' },
+        ],
+      }],
+    }),
+  },
+  {
+    id: 'native-anthropic-document-citations',
+    title: 'Native Anthropic document citations',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Official citations feature for document inputs.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 128,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'text', media_type: 'text/plain', text: 'The capital of France is Paris.' }, citations: { enabled: true } },
+          { type: 'text', text: 'What is the capital?' },
+        ],
+      }],
+    }),
+  },
+  {
+    id: 'native-anthropic-cache-control',
+    title: 'Native Anthropic top-level cache_control',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Official top-level cache_control field.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 32,
+      cache_control: { type: 'ephemeral' },
+      messages: [{ role: 'user', content: 'Say hi' }],
+    }),
+  },
+  {
+    id: 'native-anthropic-image-base64',
+    title: 'Native Anthropic base64 image',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_support',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Copilot upstream supports native base64 image input.',
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 64,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              // 1x1 red PNG
+              data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
+            },
+          },
+          { type: 'text', text: 'What color is this image?' },
+        ],
+      }],
+    }),
+  },
+  {
+    id: 'native-anthropic-image-url-rejected',
+    title: 'Native Anthropic URL image (expected rejection)',
+    tier: 'optional',
+    endpoint: 'anthropic-messages',
+    expectation: 'must_be_unsupported',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Copilot upstream does not support external image URLs.',
+    isUnsupported: details => details.status === 400,
+    buildPayload: config => ({
+      model: config.claudeModel,
+      max_tokens: 64,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'url', url: config.imageUrl } },
+          { type: 'text', text: 'What is this?' },
+        ],
+      }],
+    }),
+  },
+  {
+    id: 'native-anthropic-files-api-unsupported',
+    title: 'Anthropic Files API (expected 404)',
+    tier: 'optional',
+    endpoint: 'anthropic-files',
+    expectation: 'must_be_unsupported',
+    candidateFix: 'N/A',
+    candidateMapping: 'N/A',
+    rationale: 'Copilot upstream does not expose the Anthropic Files API.',
+    isUnsupported: details => details.status === 404,
+    buildPayload: () => ({
+      headers: { 'anthropic-beta': 'files-api-2025-04-14' },
     }),
   },
 ]

@@ -288,138 +288,267 @@ describeE2E('Claude Opus 4.6', () => {
 describeE2E('Feature probes', () => {
   const model = 'claude-sonnet-4.6'
 
-  // --- thinking edge cases ---
+  describe('Official Anthropic contract validation', () => {
+    // Tests here MUST have expect() assertions proving official API correctness
+    // These are not Copilot-specific — they validate the native Claude API contract
 
-  test('thinking adaptive + budget_tokens → rejected (budget_tokens only for enabled)', async () => {
-    // Per Claude API docs: budget_tokens is ONLY valid with type:"enabled".
-    // With type:"adaptive", use budget_tokens_max instead.
-    const res = await sendRequest({
-      model,
-      max_tokens: 8000,
-      thinking: { type: 'adaptive', budget_tokens: 5000 },
-      messages: [{ role: 'user', content: 'What is 2+2?' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('thinking adaptive + budget_tokens (invalid combo)', res.status, body)
-    expect(res.status).toBe(400)
-  }, TIMEOUT)
+    test('thinking adaptive + budget_tokens → rejected (budget_tokens only for enabled)', async () => {
+      // Per Claude API docs: budget_tokens is ONLY valid with type:"enabled".
+      // budget_tokens_max is not part of the official adaptive thinking shape;
+      // the proxy strips it for compatibility. See A2 in the review plan.
+      const res = await sendRequest({
+        model,
+        max_tokens: 8000,
+        thinking: { type: 'adaptive', budget_tokens: 5000 },
+        messages: [{ role: 'user', content: 'What is 2+2?' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('thinking adaptive + budget_tokens (invalid combo)', res.status, body)
+      expect(res.status).toBe(400)
+    }, TIMEOUT)
 
-  test('thinking adaptive + budget_tokens_max → should work', async () => {
-    // budget_tokens_max is the correct field for adaptive thinking
-    const res = await sendRequest({
-      model,
-      max_tokens: 16000,
-      thinking: { type: 'adaptive', budget_tokens_max: 8000 },
-      messages: [{ role: 'user', content: 'What is 2+2?' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('thinking adaptive + budget_tokens_max', res.status, body)
-  }, TIMEOUT)
+    test('thinking adaptive + display omitted → 200 with thinking block', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 16000,
+        thinking: { type: 'adaptive', display: 'omitted' },
+        messages: [{ role: 'user', content: 'What is 2+2?' }],
+      })
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      expect((body as any).content.some((b: any) => b.type === 'thinking')).toBe(true)
+    }, TIMEOUT)
 
-  // --- defer_loading ---
+    test('disable_parallel_tool_use', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 128,
+        tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+        tools: [
+          WEATHER_TOOL,
+          {
+            name: 'get_time',
+            description: 'Get current time in a timezone',
+            input_schema: { type: 'object', properties: { timezone: { type: 'string' } }, required: ['timezone'] },
+          },
+        ],
+        messages: [{ role: 'user', content: 'What is the weather and time in Tokyo?' }],
+      })
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
 
-  test('defer_loading — mixed (one deferred + one non-deferred) → should work', async () => {
-    // Per API docs: at least one tool must have defer_loading=false
-    const res = await sendRequest({
-      model,
-      max_tokens: 128,
-      tools: [
-        { ...WEATHER_TOOL, defer_loading: true },
-        {
-          name: 'get_time',
-          description: 'Get current time',
-          input_schema: { type: 'object', properties: { tz: { type: 'string' } }, required: ['tz'] },
-          // defer_loading defaults to false
+    test('json_schema structured output → 200 with valid JSON response', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 1024,
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema: {
+              type: 'object',
+              properties: {
+                answer: { type: 'string' },
+              },
+              required: ['answer'],
+            },
+          },
         },
-      ],
-      messages: [{ role: 'user', content: 'What is the weather and time in Tokyo?' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('defer_loading (mixed)', res.status, body)
-  }, TIMEOUT)
+        messages: [{ role: 'user', content: 'What is 2+2? Return answer as a string.' }],
+      })
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      const textBlock = (body as any).content.find((b: any) => b.type === 'text')
+      expect(textBlock).toBeDefined()
+      expect(() => JSON.parse(textBlock.text)).not.toThrow()
+    }, TIMEOUT)
 
-  test('defer_loading — all deferred → rejected', async () => {
-    const res = await sendRequest({
-      model,
-      max_tokens: 128,
-      tools: [{ ...WEATHER_TOOL, defer_loading: true }],
-      messages: [{ role: 'user', content: 'What is the weather in Tokyo?' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('defer_loading (all deferred)', res.status, body)
-    expect(res.status).toBe(400)
-  }, TIMEOUT)
+    test('document source text → 200', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 128,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'text', media_type: 'text/plain', text: 'The capital of France is Paris.' },
+            },
+            { type: 'text', text: 'What is the capital mentioned in the document?' },
+          ],
+        }],
+      })
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
 
-  // --- context_management ---
+    test('document source content → 200', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 128,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'content',
+                content: [{ type: 'text', text: 'The speed of light is approximately 300,000 km/s.' }],
+              },
+            },
+            { type: 'text', text: 'What speed is mentioned in the document?' },
+          ],
+        }],
+      })
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
 
-  test('context_management without beta flag → rejected', async () => {
-    const res = await sendRequest({
-      model,
-      max_tokens: 32,
-      context_management: { enabled: true },
-      messages: [{ role: 'user', content: 'Say hi' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('context_management (no beta flag)', res.status, body)
-  }, TIMEOUT)
+    test('document source URL with real PDF → 200', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 128,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'url', url: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf' },
+            },
+            { type: 'text', text: 'Is there any text in this PDF document? Reply with yes or no.' },
+          ],
+        }],
+      })
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
 
-  test('context_management with beta flag → probe', async () => {
-    // context_management may require the beta flag in anthropic-beta header
-    const res = await sendRequest({
-      model,
-      max_tokens: 32,
-      context_management: { enabled: true },
-      messages: [{ role: 'user', content: 'Say hi' }],
-    }, {
-      'anthropic-beta': 'context-management-2025-06-27',
-    })
-    const body = await parseResponse(res)
-    logProbe('context_management (with beta flag)', res.status, body)
-  }, TIMEOUT)
+    test('document citations → 200 with citations in response', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 256,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'text', media_type: 'text/plain', text: 'The capital of France is Paris. The Eiffel Tower is located in Paris.' },
+              citations: { enabled: true },
+            },
+            { type: 'text', text: 'What is the capital of France? Cite your source.' },
+          ],
+        }],
+      })
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      // At least one text block should have a citations array
+      const hasCitations = (body as any).content.some((b: any) => b.type === 'text' && Array.isArray(b.citations) && b.citations.length > 0)
+      expect(hasCitations).toBe(true)
+    }, TIMEOUT)
 
-  // --- disable_parallel_tool_use ---
+    test('top-level cache_control → 200', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 32,
+        cache_control: { type: 'ephemeral' },
+        messages: [{ role: 'user', content: 'Say hi' }],
+      })
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
+  })
 
-  test('disable_parallel_tool_use', async () => {
-    const res = await sendRequest({
-      model,
-      max_tokens: 128,
-      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
-      tools: [
-        WEATHER_TOOL,
-        {
-          name: 'get_time',
-          description: 'Get current time in a timezone',
-          input_schema: { type: 'object', properties: { timezone: { type: 'string' } }, required: ['timezone'] },
-        },
-      ],
-      messages: [{ role: 'user', content: 'What is the weather and time in Tokyo?' }],
-    })
-    expect(res.status).toBe(200)
-  }, TIMEOUT)
+  describe('Copilot upstream compatibility probes', () => {
+    // Tests here use logProbe() to record upstream behavior
+    // They may or may not have expect() assertions — exploratory by nature
 
-  // --- service_tier ---
+    test('thinking adaptive + budget_tokens_max → stripped by proxy (Copilot upstream probe)', async () => {
+      // budget_tokens_max is not part of the official adaptive thinking shape;
+      // the proxy strips it for compatibility. See A2 in the review plan.
+      const res = await sendRequest({
+        model,
+        max_tokens: 16000,
+        thinking: { type: 'adaptive', budget_tokens_max: 8000 },
+        messages: [{ role: 'user', content: 'What is 2+2?' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('thinking adaptive + budget_tokens_max', res.status, body)
+    }, TIMEOUT)
 
-  test('service_tier auto', async () => {
-    const res = await sendRequest({
-      model,
-      max_tokens: 32,
-      service_tier: 'auto',
-      messages: [{ role: 'user', content: 'Say hi' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('service_tier auto', res.status, body)
-  }, TIMEOUT)
+    test('defer_loading — mixed (one deferred + one non-deferred) → should work', async () => {
+      // Per API docs: at least one tool must have defer_loading=false
+      const res = await sendRequest({
+        model,
+        max_tokens: 128,
+        tools: [
+          { ...WEATHER_TOOL, defer_loading: true },
+          {
+            name: 'get_time',
+            description: 'Get current time',
+            input_schema: { type: 'object', properties: { tz: { type: 'string' } }, required: ['tz'] },
+            // defer_loading defaults to false
+          },
+        ],
+        messages: [{ role: 'user', content: 'What is the weather and time in Tokyo?' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('defer_loading (mixed)', res.status, body)
+    }, TIMEOUT)
 
-  // --- speed fast ---
+    test('defer_loading — all deferred → rejected', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 128,
+        tools: [{ ...WEATHER_TOOL, defer_loading: true }],
+        messages: [{ role: 'user', content: 'What is the weather in Tokyo?' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('defer_loading (all deferred)', res.status, body)
+      expect(res.status).toBe(400)
+    }, TIMEOUT)
 
-  test('speed fast', async () => {
-    const res = await sendRequest({
-      model,
-      max_tokens: 32,
-      speed: 'fast',
-      messages: [{ role: 'user', content: 'Say hi' }],
-    })
-    const body = await parseResponse(res)
-    logProbe('speed fast', res.status, body)
-  }, TIMEOUT)
+    test('context_management without beta flag → rejected', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 32,
+        context_management: { enabled: true },
+        messages: [{ role: 'user', content: 'Say hi' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('context_management (no beta flag)', res.status, body)
+    }, TIMEOUT)
+
+    test('context_management with beta flag → probe', async () => {
+      // context_management may require the beta flag in anthropic-beta header
+      const res = await sendRequest({
+        model,
+        max_tokens: 32,
+        context_management: { enabled: true },
+        messages: [{ role: 'user', content: 'Say hi' }],
+      }, {
+        'anthropic-beta': 'context-management-2025-06-27',
+      })
+      const body = await parseResponse(res)
+      logProbe('context_management (with beta flag)', res.status, body)
+    }, TIMEOUT)
+
+    test('service_tier auto', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 32,
+        service_tier: 'auto',
+        messages: [{ role: 'user', content: 'Say hi' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('service_tier auto', res.status, body)
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
+
+    test('speed fast', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 32,
+        speed: 'fast',
+        messages: [{ role: 'user', content: 'Say hi' }],
+      })
+      const body = await parseResponse(res)
+      logProbe('speed fast', res.status, body)
+      expect(res.status).toBe(200)
+    }, TIMEOUT)
+  })
 })

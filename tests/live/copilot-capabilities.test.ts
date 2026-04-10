@@ -1,17 +1,22 @@
 import type {
+  AnthropicFilesCapabilityProbe,
+  AnthropicMessagesCapabilityProbe,
   CapabilityProbe,
   CapabilityProbeEndpoint,
   CapabilityProbeExpectation,
   LiveCopilotProbeConfig,
   ProbeErrorDetails,
 } from './copilot-capability-matrix'
-import type { ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
+import type { AnthropicResponse } from '~/lib/translation/types'
 
+import type { ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload, ResponsesResponse } from '~/services/copilot/create-responses'
 
 import { expect, test } from 'bun:test'
+import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 import { createChatCompletions } from '~/services/copilot/create-chat-completions'
 import { createResponses } from '~/services/copilot/create-responses'
 import { copilotCapabilityProbes } from './copilot-capability-matrix'
@@ -141,6 +146,105 @@ async function runProbe(
     }
   }
 
+  if (probe.endpoint === 'anthropic-messages') {
+    const payload = (probe as AnthropicMessagesCapabilityProbe).buildPayload(config)
+
+    try {
+      const result = await withLiveCopilotState(config, async () => {
+        return await createAnthropicMessages(payload)
+      })
+
+      if (!isAnthropicResponse(result.body)) {
+        return {
+          id: probe.id,
+          endpoint: probe.endpoint,
+          title: probe.title,
+          status: 'unexpected_response',
+          model: payload.model,
+          durationMs: Date.now() - startedAt,
+          message: `Expected Anthropic messages response, got ${describeObjectType(result.body)}`,
+        }
+      }
+
+      return {
+        id: probe.id,
+        endpoint: probe.endpoint,
+        title: probe.title,
+        status: 'supported',
+        model: payload.model,
+        durationMs: Date.now() - startedAt,
+      }
+    }
+    catch (error) {
+      return classifyProbeError({
+        error,
+        probe,
+        model: payload.model,
+        durationMs: Date.now() - startedAt,
+      })
+    }
+  }
+
+  if (probe.endpoint === 'anthropic-files') {
+    const probeConfig = (probe as AnthropicFilesCapabilityProbe).buildPayload(config)
+
+    try {
+      const result = await withLiveCopilotState(config, async () => {
+        const headers: Record<string, string> = {
+          ...copilotHeaders(state),
+          ...(probeConfig.headers || {}),
+        }
+        const response = await fetch(`${copilotBaseUrl(state)}/v1/files`, {
+          method: 'GET',
+          headers,
+        })
+        return { response, body: await response.json().catch(() => null) }
+      })
+
+      if (result.response.ok) {
+        return {
+          id: probe.id,
+          endpoint: probe.endpoint,
+          title: probe.title,
+          status: 'supported',
+          model: 'N/A',
+          durationMs: Date.now() - startedAt,
+        }
+      }
+
+      // Classify as unsupported if status matches
+      if (probe.isUnsupported?.({ status: result.response.status })) {
+        return {
+          id: probe.id,
+          endpoint: probe.endpoint,
+          title: probe.title,
+          status: 'unsupported',
+          model: 'N/A',
+          durationMs: Date.now() - startedAt,
+          httpStatus: result.response.status,
+        }
+      }
+
+      return {
+        id: probe.id,
+        endpoint: probe.endpoint,
+        title: probe.title,
+        status: 'api_error',
+        model: 'N/A',
+        durationMs: Date.now() - startedAt,
+        httpStatus: result.response.status,
+      }
+    }
+    catch (error) {
+      return classifyProbeError({
+        error,
+        probe,
+        model: 'N/A',
+        durationMs: Date.now() - startedAt,
+      })
+    }
+  }
+
   const payload = probe.buildPayload(config)
 
   try {
@@ -213,6 +317,15 @@ function isResponsesResponse(value: unknown): value is ResponsesResponse {
     && typeof value === 'object'
     && 'object' in value
     && value.object === 'response'
+}
+
+function isAnthropicResponse(body: unknown): body is AnthropicResponse {
+  return (
+    typeof body === 'object'
+    && body !== null
+    && 'content' in body
+    && Array.isArray((body as AnthropicResponse).content)
+  )
 }
 
 function describeObjectType(value: unknown): string {
