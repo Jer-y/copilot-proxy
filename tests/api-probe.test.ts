@@ -2,29 +2,38 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   clearProbeCache,
-  getProbeOverride,
+  isApiProbedUnsupported,
   isUnsupportedApiError,
   recordProbeResult,
 } from '../src/lib/api-probe'
 
 describe('API probe cache', () => {
-  test('returns undefined when no probe exists', () => {
+  test('returns false when no probe exists', () => {
     clearProbeCache()
-    expect(getProbeOverride('unknown-model', 'chat-completions')).toBeUndefined()
+    expect(isApiProbedUnsupported('unknown-model', 'chat-completions')).toBe(false)
   })
 
-  test('records and retrieves probe result', () => {
+  test('records and checks probe result for chat-completions', () => {
     clearProbeCache()
     recordProbeResult('gpt-new', 'chat-completions')
-    expect(getProbeOverride('gpt-new', 'chat-completions')).toBe('responses')
-    expect(getProbeOverride('gpt-new', 'responses')).toBeUndefined()
+    expect(isApiProbedUnsupported('gpt-new', 'chat-completions')).toBe(true)
+    expect(isApiProbedUnsupported('gpt-new', 'responses')).toBe(false)
   })
 
-  test('records responses as unsupported', () => {
+  test('records and checks probe result for responses', () => {
     clearProbeCache()
     recordProbeResult('claude-new', 'responses')
-    expect(getProbeOverride('claude-new', 'responses')).toBe('chat-completions')
-    expect(getProbeOverride('claude-new', 'chat-completions')).toBeUndefined()
+    expect(isApiProbedUnsupported('claude-new', 'responses')).toBe(true)
+    expect(isApiProbedUnsupported('claude-new', 'chat-completions')).toBe(false)
+  })
+
+  test('supports per-API storage for same model', () => {
+    clearProbeCache()
+    recordProbeResult('multi-model', 'chat-completions')
+    recordProbeResult('multi-model', 'responses')
+    expect(isApiProbedUnsupported('multi-model', 'chat-completions')).toBe(true)
+    expect(isApiProbedUnsupported('multi-model', 'responses')).toBe(true)
+    expect(isApiProbedUnsupported('multi-model', 'anthropic-messages')).toBe(false)
   })
 
   test('expires entries after TTL', () => {
@@ -35,7 +44,7 @@ describe('API probe cache', () => {
     recordProbeResult('expiring-model', 'chat-completions')
     Object.defineProperty(Date, 'now', { value: () => 31 * 60 * 1000, configurable: true })
 
-    expect(getProbeOverride('expiring-model', 'chat-completions')).toBeUndefined()
+    expect(isApiProbedUnsupported('expiring-model', 'chat-completions')).toBe(false)
 
     Object.defineProperty(Date, 'now', { value: realNow, configurable: true })
   })
@@ -45,8 +54,8 @@ describe('API probe cache', () => {
     recordProbeResult('model-a', 'chat-completions')
     recordProbeResult('model-b', 'responses')
     clearProbeCache()
-    expect(getProbeOverride('model-a', 'chat-completions')).toBeUndefined()
-    expect(getProbeOverride('model-b', 'responses')).toBeUndefined()
+    expect(isApiProbedUnsupported('model-a', 'chat-completions')).toBe(false)
+    expect(isApiProbedUnsupported('model-b', 'responses')).toBe(false)
   })
 })
 

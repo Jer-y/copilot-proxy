@@ -26,6 +26,9 @@ export function throwAnthropicInvalidRequestError(message: string): never {
 
 export function assertCopilotCompatibleAnthropicRequest(
   payload: AnthropicMessagesPayload,
+  options?: {
+    allowDocuments?: boolean
+  },
 ): void {
   for (const message of payload.messages) {
     if (message.role !== 'user' || !Array.isArray(message.content)) {
@@ -33,7 +36,7 @@ export function assertCopilotCompatibleAnthropicRequest(
     }
 
     for (const block of message.content) {
-      assertSupportedUserContentBlock(block)
+      assertSupportedUserContentBlock(block, options)
     }
   }
 }
@@ -72,6 +75,9 @@ export function logLossyAnthropicCompatibility(
 
 function assertSupportedUserContentBlock(
   block: AnthropicUserContentBlock,
+  options?: {
+    allowDocuments?: boolean
+  },
 ): void {
   if (isExternalImageUrl(block)) {
     throwAnthropicInvalidRequestError(
@@ -79,19 +85,28 @@ function assertSupportedUserContentBlock(
     )
   }
 
-  if (isDocumentBlock(block)) {
+  if (isFileDocument(block)) {
+    throwAnthropicInvalidRequestError(
+      'Files API (source.type=\'file\') is not supported by GitHub Copilot upstream. Upload document content directly using base64, text, or url source types instead.',
+    )
+  }
+
+  if (isDocumentBlock(block) && options?.allowDocuments !== true) {
     throwAnthropicInvalidRequestError(
       'Unexpanded document block reached assertion layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
     )
   }
 
   if (block.type === 'tool_result') {
-    assertSupportedToolResultContent(block)
+    assertSupportedToolResultContent(block, options)
   }
 }
 
 function assertSupportedToolResultContent(
   block: AnthropicToolResultBlock,
+  options?: {
+    allowDocuments?: boolean
+  },
 ): void {
   if (!Array.isArray(block.content)) {
     return
@@ -104,7 +119,13 @@ function assertSupportedToolResultContent(
       )
     }
 
-    if (isDocumentBlock(contentBlock)) {
+    if (isFileDocument(contentBlock)) {
+      throwAnthropicInvalidRequestError(
+        'Files API (source.type=\'file\') is not supported by GitHub Copilot upstream. Upload document content directly using base64, text, or url source types instead.',
+      )
+    }
+
+    if (isDocumentBlock(contentBlock) && options?.allowDocuments !== true) {
       throwAnthropicInvalidRequestError(
         'Unexpanded document block inside tool_result reached assertion layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
       )
@@ -122,4 +143,10 @@ function isDocumentBlock(
   block: AnthropicUserContentBlock | AnthropicTextBlock | AnthropicDocumentBlock,
 ): block is AnthropicDocumentBlock {
   return block.type === 'document'
+}
+
+function isFileDocument(
+  block: AnthropicUserContentBlock | AnthropicTextBlock | AnthropicDocumentBlock,
+): boolean {
+  return block.type === 'document' && block.source.type === 'file'
 }

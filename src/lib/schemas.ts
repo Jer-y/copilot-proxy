@@ -39,9 +39,25 @@ const AnthropicDocumentBlockSchema = z.object({
       type: z.literal('url'),
       url: z.string().min(1),
     }).passthrough(),
+    z.object({
+      type: z.literal('text'),
+      media_type: z.string(),
+      text: z.string(),
+    }).passthrough(),
+    z.object({
+      type: z.literal('content'),
+      content: z.array(AnthropicTextBlockSchema),
+    }).passthrough(),
+    z.object({
+      type: z.literal('file'),
+      file_id: z.string().min(1),
+    }).passthrough(),
   ]),
   title: z.string().optional(),
   context: z.string().optional(),
+  citations: z.object({
+    enabled: z.boolean(),
+  }).passthrough().optional(),
   cache_control: AnthropicCacheControlSchema.optional(),
 }).passthrough()
 
@@ -137,6 +153,7 @@ const AnthropicThinkingConfigSchema = z.discriminatedUnion('type', [
   }).passthrough(),
   z.object({
     type: z.literal('adaptive'),
+    display: z.enum(['summarized', 'omitted']).nullable().optional(),
   }).passthrough(),
   z.object({
     type: z.literal('disabled'),
@@ -177,6 +194,7 @@ export const AnthropicMessagesPayloadSchema = z.object({
   max_tokens: z.number().int().nonnegative().optional(),
   stream: z.boolean().optional(),
   system: z.union([z.string(), z.array(AnthropicTextBlockSchema)]).optional(),
+  cache_control: AnthropicCacheControlSchema.optional(),
   tools: z.array(AnthropicToolSchema).optional(),
   tool_choice: AnthropicToolChoiceSchema.optional(),
   thinking: AnthropicThinkingConfigSchema.optional(),

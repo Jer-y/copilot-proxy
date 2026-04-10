@@ -4,44 +4,41 @@
  * When a model returns `unsupported_api_for_model`, we cache the fact that
  * it doesn't support that API type, so future requests skip straight to
  * the correct backend.
+ *
+ * Stores per-model-per-API entries: a single model can have multiple
+ * unsupported APIs recorded simultaneously.
  */
 
 import type { BackendApiType } from './model-config'
 
 import consola from 'consola'
 
-interface ProbeResult {
-  unsupported: BackendApiType
-  timestamp: number
-}
-
 /** TTL for probe cache entries (30 minutes) */
 const PROBE_CACHE_TTL_MS = 30 * 60 * 1000
 
-/** model ID → probe result */
-const probeCache = new Map<string, ProbeResult>()
+/** model:api → timestamp */
+const probeCache = new Map<string, number>()
+
+function probeKey(modelId: string, api: BackendApiType): string {
+  return `${modelId}:${api}`
+}
 
 /**
- * Check if we've previously probed this model and found an API unsupported.
- * Returns the alternative API type if so, undefined otherwise.
+ * Check if an API has been previously probed as unsupported for a model.
  */
-export function getProbeOverride(modelId: string, requestedApi: BackendApiType): BackendApiType | undefined {
-  const entry = probeCache.get(modelId)
-  if (!entry)
-    return undefined
+export function isApiProbedUnsupported(modelId: string, api: BackendApiType): boolean {
+  const key = probeKey(modelId, api)
+  const ts = probeCache.get(key)
+  if (ts === undefined)
+    return false
 
   // Check TTL
-  if (Date.now() - entry.timestamp > PROBE_CACHE_TTL_MS) {
-    probeCache.delete(modelId)
-    return undefined
+  if (Date.now() - ts > PROBE_CACHE_TTL_MS) {
+    probeCache.delete(key)
+    return false
   }
 
-  // If the requested API was previously found unsupported, return the other one
-  if (entry.unsupported === requestedApi) {
-    return requestedApi === 'chat-completions' ? 'responses' : 'chat-completions'
-  }
-
-  return undefined
+  return true
 }
 
 /**
@@ -49,10 +46,7 @@ export function getProbeOverride(modelId: string, requestedApi: BackendApiType):
  */
 export function recordProbeResult(modelId: string, unsupportedApi: BackendApiType): void {
   consola.debug(`Probe cache: ${modelId} does not support ${unsupportedApi}`)
-  probeCache.set(modelId, {
-    unsupported: unsupportedApi,
-    timestamp: Date.now(),
-  })
+  probeCache.set(probeKey(modelId, unsupportedApi), Date.now())
 }
 
 /**

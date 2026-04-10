@@ -1,4 +1,4 @@
-import { getProbeOverride } from './api-probe'
+import { isApiProbedUnsupported } from './api-probe'
 
 export type BackendApiType = 'chat-completions' | 'responses' | 'anthropic-messages'
 
@@ -22,11 +22,11 @@ export interface ModelConfig {
 }
 
 const MODEL_CONFIGS: Record<string, ModelConfig> = {
-  // Claude models — prefer native Anthropic Messages passthrough, but keep
-  // chat-completions available as a proven fallback when /v1/messages is not.
+  // Claude models — prefer native Anthropic Messages passthrough, with
+  // chat-completions available as a proven fallback.
   'claude-sonnet-4': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'anthropic-messages',
     enableCacheControl: true,
     defaultReasoningEffort: undefined,
     supportsToolChoice: false,
@@ -34,7 +34,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'claude-sonnet-4.5': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'anthropic-messages',
     enableCacheControl: true,
     defaultReasoningEffort: undefined,
     supportsToolChoice: false,
@@ -42,7 +42,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'claude-sonnet-4.6': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'anthropic-messages',
     enableCacheControl: true,
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
@@ -51,7 +51,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'claude-opus-4.5': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'anthropic-messages',
     enableCacheControl: true,
     defaultReasoningEffort: undefined,
     supportsToolChoice: false,
@@ -59,12 +59,20 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'claude-opus-4.6': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'anthropic-messages',
     enableCacheControl: true,
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
+  },
+  'claude-haiku-4.5': {
+    supportedApis: ['anthropic-messages', 'chat-completions'],
+    preferredApi: 'anthropic-messages',
+    enableCacheControl: true,
+    defaultReasoningEffort: undefined,
+    supportsToolChoice: false,
+    supportsParallelToolCalls: false,
   },
 
   // GPT classic models — chat-completions only
@@ -79,31 +87,31 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsParallelToolCalls: true,
   },
 
-  // GPT-5 base models — both APIs
+  // GPT-5 base models — both APIs, prefer Responses (modern API)
   'gpt-5': {
     supportedApis: ['chat-completions', 'responses'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'responses',
     reasoningMode: 'thinking',
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },
   'gpt-5.1': {
     supportedApis: ['chat-completions', 'responses'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'responses',
     reasoningMode: 'thinking',
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },
   'gpt-5.2': {
     supportedApis: ['chat-completions', 'responses'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'responses',
     reasoningMode: 'thinking',
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },
   'gpt-5-mini': {
     supportedApis: ['chat-completions', 'responses'],
-    preferredApi: 'chat-completions',
+    preferredApi: 'responses',
     reasoningMode: 'thinking',
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
@@ -145,7 +153,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsParallelToolCalls: true,
   },
 
-  // o-series — responses only
+  // Gemini models — chat-completions only
   'o3-mini': {
     supportedApis: ['responses'],
     reasoningMode: 'thinking',
@@ -156,8 +164,6 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     reasoningMode: 'thinking',
     supportsToolChoice: true,
   },
-
-  // Gemini models — chat-completions only
   'gemini': {
     supportedApis: ['chat-completions'],
     supportsToolChoice: true,
@@ -195,7 +201,7 @@ export function getModelConfig(modelId: string): ModelConfig {
   if (modelId.startsWith('claude')) {
     return {
       supportedApis: ['anthropic-messages', 'chat-completions'],
-      preferredApi: 'chat-completions',
+      preferredApi: 'anthropic-messages',
       enableCacheControl: true,
       supportsToolChoice: false,
     }
@@ -216,31 +222,48 @@ export function isThinkingModeModel(modelId: string): boolean {
  * Resolve which backend API to use for a given model.
  *
  * Strategy:
- * 1. Check runtime probe cache (overrides static config if model was probed)
- * 2. Static mapping from MODEL_CONFIGS
- * 3. Family-based guessing for unknown models
+ * 1. Filter out APIs known-unsupported from probe cache
+ * 2. If all configured APIs are probed, try any handler-routable API not yet probed
+ * 3. Pick the best candidate: requested API > preferred API > first available
  */
 export function resolveBackend(modelId: string, requestedApi: BackendApiType): BackendApiType {
-  // Check probe cache first — if we've previously discovered the requested API
-  // is unsupported for this model, use the alternative immediately
-  const probeOverride = getProbeOverride(modelId, requestedApi)
-  if (probeOverride) {
-    return probeOverride
-  }
-
   const config = getModelConfig(modelId)
-  const supported = config.supportedApis
 
-  // If model supports the requested API, use it directly
-  if (supported.includes(requestedApi)) {
+  // Filter out APIs that are known-unsupported from probe cache
+  const candidates = config.supportedApis.filter(
+    api => !isApiProbedUnsupported(modelId, api),
+  )
+
+  let pool: BackendApiType[]
+  if (candidates.length > 0) {
+    pool = candidates
+  }
+  else {
+    // All configured APIs probed as unsupported (e.g., unknown model only has CC, CC probed bad).
+    // Try any handler-routable API that hasn't been probed yet.
+    // Use requestedApi to infer which handler is calling (resolveBackend has no handler context).
+    const ROUTABLE_FROM: Record<BackendApiType, BackendApiType[]> = {
+      'anthropic-messages': ['anthropic-messages', 'responses', 'chat-completions'],
+      'responses': ['responses', 'chat-completions', 'anthropic-messages'],
+      'chat-completions': ['chat-completions', 'responses'], // CC handler has no AM branch
+    }
+    const routable = ROUTABLE_FROM[requestedApi]
+    const anyUnprobed = routable.filter(api => !isApiProbedUnsupported(modelId, api))
+    // Absolute last resort: TTL will expire and allow retry
+    pool = anyUnprobed.length > 0 ? anyUnprobed : config.supportedApis
+  }
+
+  // If pool contains the requested API, use it directly
+  if (pool.includes(requestedApi))
     return requestedApi
-  }
 
-  // Otherwise, use whatever the model supports
-  if (supported.length === 1) {
-    return supported[0]
-  }
+  // Only one candidate — use it
+  if (pool.length === 1)
+    return pool[0]
 
-  // Both supported — use preferred or fall back to requested
-  return config.preferredApi ?? requestedApi
+  // Multiple candidates — use preferred if available in pool
+  if (config.preferredApi && pool.includes(config.preferredApi))
+    return config.preferredApi
+
+  return pool[0]
 }

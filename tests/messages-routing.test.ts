@@ -6,7 +6,7 @@ import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
 
-const fetchMock = mock(async (url: string, init?: RequestInit) => {
+async function defaultFetchMock(url: string, init?: RequestInit) {
   if (url.endsWith('/responses')) {
     return new Response(JSON.stringify({
       id: 'resp_route_test',
@@ -55,7 +55,7 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
       id: 'msg_route_test',
       type: 'message',
       role: 'assistant',
-      content: [{ type: 'text', text: 'ok' }],
+      content: [{ type: 'text', text: 'ok', citations: [{ type: 'char_location', cited_text: 'test', document_index: 0, start_char_index: 0, end_char_index: 4 }] }],
       model: forwardedPayload.model ?? 'claude-opus-4.6',
       stop_reason: 'end_turn',
       stop_sequence: null,
@@ -102,10 +102,13 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
   }
 
   throw new Error(`Unexpected upstream URL: ${url} body=${String(init?.body)}`)
-})
+}
+
+const fetchMock = mock(defaultFetchMock)
 
 beforeEach(() => {
-  fetchMock.mockClear()
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(defaultFetchMock)
   clearProbeCache()
   state.lastRequestTimestamp = undefined
   state.copilotToken = 'test-token'
@@ -117,7 +120,7 @@ beforeEach(() => {
 })
 
 describe('messages route upstream adaptation', () => {
-  test('Claude json_object requests are forwarded natively to /v1/messages with output_config preserved', async () => {
+  test('Claude json_object requests are routed to chat-completions instead of native /v1/messages', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -137,16 +140,15 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+    expect(url).toBe('https://api.githubcopilot.com/chat/completions')
 
     const forwardedPayload = JSON.parse(String(init?.body)) as {
-      output_config?: { format?: { type?: string } }
+      response_format?: { type?: string }
       model?: string
     }
 
     expect(forwardedPayload.model).toBe('claude-opus-4.6')
-    // Native passthrough preserves output_config as-is
-    expect(forwardedPayload.output_config).toEqual({ format: { type: 'json_object' } })
+    expect(forwardedPayload.response_format).toEqual({ type: 'json_object' })
   })
 
   test('Responses-backed json_object requests are forwarded to /responses with text.format', async () => {
@@ -180,6 +182,56 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
   })
 
+  test('Claude json_schema requests are routed natively to /v1/messages with Copilot-safe output_config normalization', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Return JSON.' }],
+        output_config: {
+          format: {
+            type: 'json_schema',
+            name: 'sample',
+            strict: true,
+            json_schema: {
+              name: 'sample',
+              schema: {
+                type: 'object',
+                properties: { answer: { type: 'string' } },
+                required: ['answer'],
+              },
+            },
+          },
+        },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      output_config?: { format?: { type?: string, schema?: unknown, name?: string, strict?: boolean } }
+      model?: string
+    }
+
+    expect(forwardedPayload.model).toBe('claude-opus-4.6')
+    expect(forwardedPayload.output_config).toEqual({
+      format: {
+        type: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer'],
+        },
+      },
+    })
+  })
+
   test('Claude non-streaming requests are forwarded natively and return Anthropic JSON directly', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -204,7 +256,7 @@ describe('messages route upstream adaptation', () => {
 
     // Native passthrough returns Anthropic format directly
     expect(body.type).toBe('message')
-    expect(body.content).toEqual([{ type: 'text', text: 'ok' }])
+    expect(body.content).toEqual([{ type: 'text', text: 'ok', citations: [{ type: 'char_location', cited_text: 'test', document_index: 0, start_char_index: 0, end_char_index: 4 }] }])
     expect(body.usage?.input_tokens).toBe(5)
     expect(body.usage?.output_tokens).toBe(1)
   })
@@ -558,6 +610,140 @@ describe('messages route upstream adaptation', () => {
     expect(body.type).toBe('error')
     expect(body.error?.type).toBe('invalid_request_error')
     expect(body.error?.message).toContain('Failed to extract text from PDF document')
+  })
+
+  test('Claude document blocks are forwarded natively without local expansion', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                title: 'report.pdf',
+                citations: { enabled: true },
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: 'JVBERi0xLjQK',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      messages?: Array<{ content?: Array<Record<string, unknown>> }>
+    }
+    expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
+      type: 'document',
+      title: 'report.pdf',
+      citations: { enabled: true },
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: 'JVBERi0xLjQK',
+      },
+    })
+
+    // Verify the response body preserves citations in the text block
+    const body = await res.json() as {
+      content?: Array<{ type?: string, text?: string, citations?: unknown[] }>
+    }
+    expect(body.content?.[0]?.citations).toEqual([
+      { type: 'char_location', cited_text: 'test', document_index: 0, start_char_index: 0, end_char_index: 4 },
+    ])
+  })
+
+  test('Claude with file source type is rejected with 400', async () => {
+    // Send a request with source.type = 'file' through the proxy
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4',
+        max_tokens: 100,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'document',
+            source: { type: 'file', file_id: 'file-abc123' },
+          }],
+        }],
+      }),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: { message: string } }
+    expect(body.error.message).toContain('Files API')
+  })
+
+  test('Claude native passthrough preserves top-level cache_control and adaptive display', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        cache_control: { type: 'ephemeral' },
+        thinking: { type: 'adaptive', display: 'omitted' },
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      cache_control?: { type?: string }
+      thinking?: { type?: string, display?: string }
+    }
+    expect(forwardedPayload.cache_control).toEqual({ type: 'ephemeral' })
+    expect(forwardedPayload.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
+  })
+
+  test('/v1/responses routes Claude json_object requests to /chat/completions before considering /responses', async () => {
+    const res = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        input: 'Return JSON.',
+        text: {
+          format: {
+            type: 'json_object',
+          },
+        },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/chat/completions')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      response_format?: { type?: string }
+      model?: string
+    }
+    expect(forwardedPayload.model).toBe('claude-opus-4.6')
+    expect(forwardedPayload.response_format).toEqual({ type: 'json_object' })
   })
 
   test('count_tokens with document blocks returns default when model not found', async () => {

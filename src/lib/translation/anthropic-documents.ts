@@ -394,6 +394,35 @@ async function resolveDocumentSource(
     return { buffer: uint8, mediaType, charset }
   }
 
+  if (source.type === 'text') {
+    const { mediaType, charset } = parseContentType(source.media_type)
+    if (!mediaType.startsWith('text/')) {
+      throwAnthropicInvalidRequestError(
+        `Unsupported document media_type '${mediaType}'. Supported: application/pdf, text/*`,
+      )
+    }
+
+    return {
+      buffer: new TextEncoder().encode(source.text),
+      mediaType,
+      charset,
+    }
+  }
+
+  if (source.type === 'content') {
+    const text = source.content.map(block => block.text).join('\n\n')
+    return {
+      buffer: new TextEncoder().encode(text),
+      mediaType: 'text/plain',
+    }
+  }
+
+  if (source.type === 'file') {
+    throwAnthropicInvalidRequestError(
+      'Files API (source.type=\'file\') is not supported. GitHub Copilot upstream does not expose the Anthropic Files API. Upload document content directly using base64, text, or url source types instead.',
+    )
+  }
+
   // URL source
   let url: URL
   try {

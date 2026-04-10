@@ -1,6 +1,11 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 
+import { clearProbeCache } from '../src/lib/api-probe'
 import { getModelConfig, isThinkingModeModel, resolveBackend } from '../src/lib/model-config'
+
+beforeEach(() => {
+  clearProbeCache()
+})
 
 describe('getModelConfig', () => {
   test('should return config with enableCacheControl and defaultReasoningEffort for claude-opus-4.6', () => {
@@ -10,7 +15,7 @@ describe('getModelConfig', () => {
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
-    expect(config.preferredApi).toBe('chat-completions')
+    expect(config.preferredApi).toBe('anthropic-messages')
   })
 
   test('should let claude-opus-4.6-fast inherit the claude-opus-4.6 config', () => {
@@ -21,7 +26,7 @@ describe('getModelConfig', () => {
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
-    expect(config.preferredApi).toBe('chat-completions')
+    expect(config.preferredApi).toBe('anthropic-messages')
   })
 
   test('should let claude-opus-4.6-1m inherit the claude-opus-4.6 config', () => {
@@ -32,7 +37,7 @@ describe('getModelConfig', () => {
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
-    expect(config.preferredApi).toBe('chat-completions')
+    expect(config.preferredApi).toBe('anthropic-messages')
   })
 
   test('should return config with reasoningMode for gpt-5.2-codex', () => {
@@ -79,7 +84,7 @@ describe('getModelConfig', () => {
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
-    expect(config.preferredApi).toBe('chat-completions')
+    expect(config.preferredApi).toBe('anthropic-messages')
   })
 
   test('should return exact match config for gpt-4o', () => {
@@ -99,7 +104,19 @@ describe('getModelConfig', () => {
   test('should configure gpt-5.1 as both APIs', () => {
     const config = getModelConfig('gpt-5.1')
     expect(config.supportedApis).toEqual(['chat-completions', 'responses'])
-    expect(config.preferredApi).toBe('chat-completions')
+    expect(config.preferredApi).toBe('responses')
+  })
+
+  test('should configure gpt-5 as both APIs', () => {
+    const config = getModelConfig('gpt-5')
+    expect(config.supportedApis).toEqual(['chat-completions', 'responses'])
+    expect(config.preferredApi).toBe('responses')
+  })
+
+  test('should configure gpt-5.1-codex as responses-only', () => {
+    const config = getModelConfig('gpt-5.1-codex')
+    expect(config.supportedApis).toEqual(['responses'])
+    expect(config.reasoningMode).toBe('thinking')
   })
 
   test('should match gemini models via prefix', () => {
@@ -117,8 +134,16 @@ describe('isThinkingModeModel', () => {
     expect(isThinkingModeModel('claude-opus-4.6')).toBe(false)
   })
 
-  test('should return true for gpt-5', () => {
-    expect(isThinkingModeModel('gpt-5')).toBe(true)
+  test('should return true for gpt-5.1', () => {
+    expect(isThinkingModeModel('gpt-5.1')).toBe(true)
+  })
+
+  test('should return true for gpt-5.4', () => {
+    expect(isThinkingModeModel('gpt-5.4')).toBe(true)
+  })
+
+  test('should return true for gpt-5.1-codex', () => {
+    expect(isThinkingModeModel('gpt-5.1-codex')).toBe(true)
   })
 
   test('should return true for o3-mini', () => {
@@ -147,24 +172,24 @@ describe('resolveBackend', () => {
     expect(resolveBackend('claude-opus-4.6', 'chat-completions')).toBe('chat-completions')
   })
 
-  test('should prefer chat-completions when Claude is asked for unsupported responses', () => {
-    expect(resolveBackend('claude-opus-4.6', 'responses')).toBe('chat-completions')
+  test('should prefer anthropic-messages when Claude is asked for unsupported responses', () => {
+    expect(resolveBackend('claude-opus-4.6', 'responses')).toBe('anthropic-messages')
   })
 
   test('should route claude-opus-4.6-fast exactly like claude-opus-4.6', () => {
     expect(resolveBackend('claude-opus-4.6-fast', 'anthropic-messages')).toBe('anthropic-messages')
     expect(resolveBackend('claude-opus-4.6-fast', 'chat-completions')).toBe('chat-completions')
-    expect(resolveBackend('claude-opus-4.6-fast', 'responses')).toBe('chat-completions')
+    expect(resolveBackend('claude-opus-4.6-fast', 'responses')).toBe('anthropic-messages')
   })
 
   test('should route claude-opus-4.6-1m exactly like claude-opus-4.6', () => {
     expect(resolveBackend('claude-opus-4.6-1m', 'anthropic-messages')).toBe('anthropic-messages')
     expect(resolveBackend('claude-opus-4.6-1m', 'chat-completions')).toBe('chat-completions')
-    expect(resolveBackend('claude-opus-4.6-1m', 'responses')).toBe('chat-completions')
+    expect(resolveBackend('claude-opus-4.6-1m', 'responses')).toBe('anthropic-messages')
   })
 
-  test('should prefer chat-completions for claude-sonnet-4.6 when responses are requested', () => {
-    expect(resolveBackend('claude-sonnet-4.6', 'responses')).toBe('chat-completions')
+  test('should prefer anthropic-messages for claude-sonnet-4.6 when responses are requested', () => {
+    expect(resolveBackend('claude-sonnet-4.6', 'responses')).toBe('anthropic-messages')
   })
 
   test('should return responses for gpt-5.4 (responses-only model)', () => {
@@ -180,8 +205,19 @@ describe('resolveBackend', () => {
     expect(resolveBackend('gpt-5.1', 'responses')).toBe('responses')
   })
 
+  test('should return requested API for gpt-5 (both supported)', () => {
+    expect(resolveBackend('gpt-5', 'chat-completions')).toBe('chat-completions')
+    expect(resolveBackend('gpt-5', 'responses')).toBe('responses')
+  })
+
   test('should return responses for codex models', () => {
     expect(resolveBackend('gpt-5.1-codex', 'chat-completions')).toBe('responses')
-    expect(resolveBackend('gpt-5.1-codex-max', 'chat-completions')).toBe('responses')
+    expect(resolveBackend('gpt-5.2-codex', 'chat-completions')).toBe('responses')
+    expect(resolveBackend('gpt-5.2-codex-max', 'chat-completions')).toBe('responses')
+  })
+
+  test('should return responses for o-series mini models', () => {
+    expect(resolveBackend('o3-mini', 'chat-completions')).toBe('responses')
+    expect(resolveBackend('o4-mini', 'chat-completions')).toBe('responses')
   })
 })

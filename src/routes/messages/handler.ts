@@ -16,7 +16,7 @@ import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
-import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
+import { assertCopilotCompatibleAnthropicRequest, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
@@ -35,6 +35,7 @@ import {
 } from './chat-completions-buffer'
 import {
   applyModelVariant,
+  sanitizeAnthropicBetaHeader,
   translateToAnthropic,
   translateToOpenAI,
 } from './non-stream-translation'
@@ -79,14 +80,13 @@ export async function handleCompletion(c: Context) {
     }
   }
 
-  await expandDocumentBlocks(anthropicPayload)
-  assertCopilotCompatibleAnthropicRequest(anthropicPayload)
-
   const signal = c.req.raw.signal
   const backend = resolveBackend(effectiveModel, 'anthropic-messages')
+  const requiresTranslatedBackend = requiresTranslatedAnthropicBackend(anthropicPayload)
 
   // Native Anthropic passthrough for Claude models — no translation needed
-  if (backend === 'anthropic-messages') {
+  if (backend === 'anthropic-messages' && !requiresTranslatedBackend) {
+    assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
     try {
       return await handleViaNativeAnthropic(
         c,
@@ -116,6 +116,18 @@ export async function handleCompletion(c: Context) {
     }
   }
 
+  if (backend === 'anthropic-messages' && requiresTranslatedBackend) {
+    consola.debug(`Skipping native Anthropic passthrough for ${effectiveModel} because json_object requires an OpenAI-compatible backend`)
+    return await handleViaTranslatedBackends(
+      c,
+      anthropicPayload,
+      anthropicBeta,
+      effectiveModel,
+      requestedModel,
+      signal,
+    )
+  }
+
   if (backend === 'responses') {
     try {
       return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, signal)
@@ -123,6 +135,18 @@ export async function handleCompletion(c: Context) {
     catch (error) {
       if (error instanceof Error && error.name === 'AbortError')
         return c.body(null)
+      if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
+        consola.info(`Model ${effectiveModel} does not support /responses, falling back to /chat/completions`)
+        recordProbeResult(effectiveModel, 'responses')
+        return await handleViaTranslatedBackends(
+          c,
+          anthropicPayload,
+          anthropicBeta,
+          effectiveModel,
+          requestedModel,
+          signal,
+        )
+      }
       throw error
     }
   }
@@ -145,6 +169,8 @@ async function handleViaTranslatedBackends(
   requestedModel: string,
   signal: AbortSignal,
 ) {
+  await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
+
   try {
     return await handleViaChatCompletions(c, anthropicPayload, anthropicBeta, requestedModel, signal)
   }
@@ -401,6 +427,8 @@ async function handleViaResponses(
   requestedModel: string,
   signal: AbortSignal,
 ) {
+  await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
+
   const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, { model: effectiveModel })
   if (consola.level >= 4) {
     consola.debug('Translated Anthropic→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
@@ -567,7 +595,7 @@ function throwAnthropicApiError(message: string): never {
  *
  * No translation needed. The Copilot backend natively supports the
  * Anthropic Messages API format, so we forward the payload as-is
- * (after document expansion and max_tokens clamping).
+ * (after minimal sanitization and max_tokens clamping).
  *
  * For streaming, upstream SSE events are already in Anthropic format,
  * so we pipe them directly with keep-alive pings.
@@ -596,7 +624,7 @@ async function handleViaNativeAnthropic(
 
   const result = await createAnthropicMessages(payload, {
     signal,
-    anthropicBeta: anthropicBeta ?? undefined,
+    anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
   })
 
   if (!result.streaming) {
@@ -719,9 +747,11 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
     delete (payload as Record<string, unknown>).context_management
   }
 
-  // 2. thinking.adaptive + budget_tokens / budget_tokens_max
+  // 2. thinking.adaptive + extra legacy fields
   //    Copilot rejects any extra fields inside adaptive thinking.
-  //    Claude API spec: budget_tokens is only valid with type:"enabled".
+  //    Claude API spec: budget_tokens is only valid with type:"enabled";
+  //    some clients also still send budget_tokens_max even though it is
+  //    not part of the official adaptive thinking shape.
   if (payload.thinking && typeof payload.thinking === 'object' && 'type' in payload.thinking) {
     if (payload.thinking.type === 'adaptive') {
       const thinking = payload.thinking as Record<string, unknown>
@@ -735,6 +765,73 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
       }
     }
   }
+
+  const format = payload.output_config?.format
+  if (!format || typeof format !== 'object' || format.type !== 'json_schema') {
+    return
+  }
+
+  const formatRecord = format as Record<string, unknown>
+  const nestedJsonSchema = isRecord(formatRecord.json_schema)
+    ? formatRecord.json_schema
+    : undefined
+  const hasFlatSchema = isRecord(formatRecord.schema)
+  const hasNestedSchema = isRecord(nestedJsonSchema?.schema)
+
+  if (hasFlatSchema && hasNestedSchema) {
+    throwAnthropicInvalidRequestError(
+      'Anthropic output_config.format for json_schema must use either flat "schema" or legacy "json_schema.schema", not both.',
+    )
+  }
+
+  if (!hasFlatSchema && hasNestedSchema) {
+    formatRecord.schema = nestedJsonSchema!.schema
+  }
+
+  if (!isRecord(formatRecord.schema)) {
+    throwAnthropicInvalidRequestError(
+      'Anthropic output_config.format.type="json_schema" requires an object "schema".',
+    )
+  }
+
+  if ('json_schema' in formatRecord) {
+    consola.debug('Flattening legacy output_config.format.json_schema to output_config.format.schema')
+    delete formatRecord.json_schema
+  }
+
+  if ('name' in formatRecord) {
+    consola.debug('Stripping output_config.format.name (unsupported by Copilot /v1/messages backend)')
+    delete formatRecord.name
+  }
+
+  if ('strict' in formatRecord) {
+    consola.debug('Stripping output_config.format.strict (unsupported by Copilot /v1/messages backend)')
+    delete formatRecord.strict
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function getAnthropicOutputFormatType(
+  payload: AnthropicMessagesPayload,
+): string | undefined {
+  const format = payload.output_config?.format
+  return format && typeof format.type === 'string' ? format.type : undefined
+}
+
+function requiresTranslatedAnthropicBackend(
+  payload: AnthropicMessagesPayload,
+): boolean {
+  return getAnthropicOutputFormatType(payload) === 'json_object'
+}
+
+async function prepareAnthropicPayloadForTranslatedBackends(
+  payload: AnthropicMessagesPayload,
+): Promise<void> {
+  await expandDocumentBlocks(payload)
+  assertCopilotCompatibleAnthropicRequest(payload)
 }
 
 interface NativeAnthropicPassthroughState {

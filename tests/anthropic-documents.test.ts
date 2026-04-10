@@ -141,6 +141,56 @@ describe('expandDocumentBlocks', () => {
     expect(content[0].text).toBe(html)
   })
 
+  test('decodes native text-source document block', async () => {
+    const payload = makePayload([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain',
+              text: 'Hello from text source',
+            },
+          },
+        ],
+      },
+    ])
+
+    await expandDocumentBlocks(payload)
+
+    const content = payload.messages[0].content as Array<{ type: string, text?: string }>
+    expect(content[0].type).toBe('text')
+    expect(content[0].text).toBe('Hello from text source')
+  })
+
+  test('decodes native content-source document block', async () => {
+    const payload = makePayload([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'content',
+              content: [
+                { type: 'text', text: 'First paragraph.' },
+                { type: 'text', text: 'Second paragraph.' },
+              ],
+            },
+          },
+        ],
+      },
+    ])
+
+    await expandDocumentBlocks(payload)
+
+    const content = payload.messages[0].content as Array<{ type: string, text?: string }>
+    expect(content[0].type).toBe('text')
+    expect(content[0].text).toBe('First paragraph.\n\nSecond paragraph.')
+  })
+
   test('formats text with title and context', async () => {
     const payload = makePayload([
       {
@@ -461,6 +511,21 @@ describe('expandDocumentBlocks', () => {
     ])
 
     await expect(expandDocumentBlocks(payload)).rejects.toThrow('exceeds maximum size of 32MB')
+  })
+
+  test('should reject file source type (Files API not supported)', async () => {
+    const payload = {
+      model: 'claude-sonnet-4',
+      max_tokens: 100,
+      messages: [{
+        role: 'user' as const,
+        content: [{
+          type: 'document' as const,
+          source: { type: 'file' as const, file_id: 'file-abc123' },
+        }],
+      }],
+    }
+    expect(expandDocumentBlocks(payload as any)).rejects.toThrow(/Files API/)
   })
 
   test('blocks URLs targeting localhost and private networks', async () => {
