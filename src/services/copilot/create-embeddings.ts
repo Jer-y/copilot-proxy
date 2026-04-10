@@ -9,10 +9,16 @@ export async function createEmbeddings(
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
+  const normalizedPayload = {
+    ...payload,
+    // Copilot upstream rejects scalar input even though OpenAI embeddings accepts it.
+    input: Array.isArray(payload.input) ? payload.input : [payload.input],
+  }
+
   const response = await fetch(`${copilotBaseUrl(state)}/embeddings`, {
     method: 'POST',
     headers: copilotHeaders(state),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(normalizedPayload),
     signal: options?.signal,
   })
 
