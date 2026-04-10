@@ -6,6 +6,7 @@ export interface LiveCopilotProbeConfig {
   claudeModel: string
   responsesModel: string
   imageUrl: string
+  fileUrl: string
 }
 
 export interface ProbeErrorDetails {
@@ -453,6 +454,40 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     }),
   },
   {
+    id: 'responses-text-format-json-schema',
+    title: 'Responses accepts text.format=json_schema',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Map Chat Completions response_format=json_schema or Anthropic json_schema output to Responses text.format=json_schema only if upstream accepts it.',
+    candidateMapping: 'OpenAI/Anthropic structured output -> Responses text.format=json_schema',
+    rationale: 'Official OpenAI structured outputs support json_schema on the Responses surface.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'text',
+      'format',
+      'json_schema',
+      'schema',
+    ]),
+    buildPayload: config => ({
+      model: config.responsesModel,
+      input: 'What is 2+2? Return JSON with answer as a string.',
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'math_answer',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+            additionalProperties: false,
+          },
+        },
+      },
+      max_output_tokens: 64,
+    }),
+  },
+  {
     id: 'responses-input-image-url',
     title: 'Responses accepts URL-based image input',
     tier: 'optional',
@@ -486,6 +521,35 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
         },
       ],
       max_output_tokens: 16,
+    }),
+  },
+  {
+    id: 'responses-input-file-url',
+    title: 'Responses accepts file_url input_file parts',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Preserve Responses input_file parts only if Copilot upstream accepts file_url-based input_file payloads.',
+    candidateMapping: 'Responses input_file.file_url -> Copilot /responses input_file',
+    rationale: 'Official OpenAI Responses supports input_file parts; we need a direct probe to separate proxy bugs from backend incompatibility.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'input_file',
+      'file_url',
+      'file url',
+      'file type',
+    ]),
+    buildPayload: config => ({
+      model: config.responsesModel,
+      input: [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Reply with yes if you can read this file.' },
+            { type: 'input_file', file_url: config.fileUrl },
+          ],
+        },
+      ],
+      max_output_tokens: 128,
     }),
   },
 
@@ -544,20 +608,20 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
   },
   {
     id: 'native-anthropic-document-text',
-    title: 'Native Anthropic document source=text',
+    title: 'Native Anthropic document source=data',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'must_support',
     candidateFix: 'N/A',
     candidateMapping: 'N/A',
-    rationale: 'Official document source type for inline text.',
+    rationale: 'Official inline plain-text document source uses source.type=text with a data field.',
     buildPayload: config => ({
       model: config.claudeModel,
       max_tokens: 64,
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'text', media_type: 'text/plain', text: 'Hello world.' } },
+          { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'Hello world.' } },
           { type: 'text', text: 'What does the document say?' },
         ],
       }],
@@ -569,8 +633,8 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'must_support',
-    candidateFix: 'N/A',
-    candidateMapping: 'N/A',
+    candidateFix: 'Proxy should bypass native /v1/messages, fetch the URL-backed document locally, expand it to text, and continue via a translated backend instead of blindly forwarding an unsupported URL document source.',
+    candidateMapping: 'Anthropic document source=url -> local fetch/extract -> text block(s) -> translated backend request',
     rationale: 'Official document URL source with a real PDF.',
     buildPayload: config => ({
       model: config.claudeModel,
@@ -599,7 +663,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'text', media_type: 'text/plain', text: 'The capital of France is Paris.' }, citations: { enabled: true } },
+          { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'The capital of France is Paris.' }, citations: { enabled: true } },
           { type: 'text', text: 'What is the capital?' },
         ],
       }],
@@ -611,8 +675,8 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'must_support',
-    candidateFix: 'N/A',
-    candidateMapping: 'N/A',
+    candidateFix: 'Proxy should strip or otherwise contain top-level cache_control locally on the native path instead of forwarding a field the Copilot /v1/messages backend rejects.',
+    candidateMapping: 'Anthropic top-level cache_control -> proxy-local compatibility handling (no native passthrough)',
     rationale: 'Official top-level cache_control field.',
     buildPayload: config => ({
       model: config.claudeModel,

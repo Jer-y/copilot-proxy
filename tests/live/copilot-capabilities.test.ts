@@ -98,6 +98,9 @@ function getLiveEnvConfig(): LiveEnvConfig {
     imageUrl:
       process.env.COPILOT_LIVE_IMAGE_URL
       ?? 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png',
+    fileUrl:
+      process.env.COPILOT_LIVE_FILE_URL
+      ?? 'https://www.berkshirehathaway.com/letters/2024ltr.pdf',
   }
 }
 
