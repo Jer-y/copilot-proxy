@@ -72,6 +72,42 @@ describe('chat-completions error paths', () => {
     expect(json.error.type).toBe('invalid_request_error')
   })
 
+  test('external image URLs are rejected locally before forwarding upstream', async () => {
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'What is in this image?' },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: 'https://example.com/image.png',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+
+    const json = await res.json() as {
+      error: {
+        type: string
+        message: string
+      }
+    }
+    expect(json.error.type).toBe('invalid_request_error')
+    expect(json.error.message).toContain('external image URLs')
+  })
+
   test('rate limit exceeded returns 429', async () => {
     const origRateLimitSeconds = state.rateLimitSeconds
     const origRateLimitWait = state.rateLimitWait
@@ -205,5 +241,85 @@ describe('chat-completions error paths', () => {
     expect(calledUrls).toEqual([
       'https://api.githubcopilot.com/chat/completions',
     ])
+  })
+
+  test('responses-routed chat-completions map response_format json_schema to Responses text.format', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url.endsWith('/responses')) {
+        const forwardedPayload = JSON.parse(String(init?.body)) as {
+          text?: {
+            format?: {
+              type?: string
+              name?: string
+              strict?: boolean
+              schema?: Record<string, unknown>
+            }
+          }
+        }
+
+        expect(forwardedPayload.text).toEqual({
+          format: {
+            type: 'json_schema',
+            name: 'math_answer',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: { answer: { type: 'string' } },
+              required: ['answer'],
+              additionalProperties: false,
+            },
+          },
+        })
+
+        return new Response(JSON.stringify({
+          id: 'resp_json_schema',
+          object: 'response',
+          model: 'gpt-5.4',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: '{"answer":"4"}' }],
+            },
+          ],
+          status: 'completed',
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        messages: [{ role: 'user', content: 'What is 2+2? Return JSON.' }],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'math_answer',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: { answer: { type: 'string' } },
+              required: ['answer'],
+              additionalProperties: false,
+            },
+          },
+        },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const json = await res.json() as {
+      choices: Array<{ message: { content: string } }>
+    }
+    expect(JSON.parse(json.choices[0].message.content)).toEqual({ answer: '4' })
   })
 })

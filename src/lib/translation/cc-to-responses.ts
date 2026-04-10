@@ -36,6 +36,7 @@ export function translateCCRequestToResponses(payload: ChatCompletionsPayload): 
   const { instructions, input } = translateCCMessagesToResponsesInput(payload.messages)
   const tools = translateCCToolsToResponses(payload.tools)
   const toolChoice = translateCCToolChoiceToResponses(payload.tool_choice)
+  const text = translateCCResponseFormatToResponsesText(payload.response_format)
 
   return {
     model: payload.model,
@@ -54,10 +55,37 @@ export function translateCCRequestToResponses(payload: ChatCompletionsPayload): 
           : payload.reasoning_effort,
       },
     }),
-    ...(payload.response_format?.type === 'json_object' && {
-      text: { format: { type: 'json_object' } },
-    }),
+    ...(text && { text }),
   }
+}
+
+function translateCCResponseFormatToResponsesText(
+  responseFormat: ChatCompletionsPayload['response_format'],
+): ResponsesPayload['text'] | undefined {
+  if (!responseFormat) {
+    return undefined
+  }
+
+  if (responseFormat.type === 'json_object') {
+    return {
+      format: { type: 'json_object' },
+    }
+  }
+
+  if (responseFormat.type === 'json_schema') {
+    return {
+      format: {
+        type: 'json_schema',
+        name: responseFormat.json_schema.name,
+        ...(responseFormat.json_schema.strict !== undefined && {
+          strict: responseFormat.json_schema.strict,
+        }),
+        schema: responseFormat.json_schema.schema,
+      },
+    }
+  }
+
+  return undefined
 }
 
 function translateCCMessagesToResponsesInput(messages: Array<Message>): {

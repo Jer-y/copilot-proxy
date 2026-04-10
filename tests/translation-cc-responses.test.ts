@@ -189,6 +189,40 @@ describe('translateCCRequestToResponses', () => {
     expect(result.reasoning).toEqual({ effort: 'xhigh' })
   })
 
+  test('response_format json_schema maps to Responses text.format json_schema', () => {
+    const result = translateCCRequestToResponses({
+      model: 'gpt-5.4',
+      messages: [{ role: 'user', content: 'Return JSON.' }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'math_answer',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+            additionalProperties: false,
+          },
+        },
+      },
+    })
+
+    expect(result.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'math_answer',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer'],
+          additionalProperties: false,
+        },
+      },
+    })
+  })
+
   test('unsupported fields (stop, n, logit_bias) are ignored', () => {
     const result = translateCCRequestToResponses({
       model: 'gpt-5.4',

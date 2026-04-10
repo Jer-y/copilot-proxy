@@ -10,6 +10,11 @@ import { isUnsupportedApiError, recordProbeResult } from '~/lib/api-probe'
 import { awaitApproval } from '~/lib/approval'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { resolveBackend } from '~/lib/model-config'
+import {
+  chatCompletionsHasExternalImageUrls,
+  OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
+  throwOpenAIInvalidRequestError,
+} from '~/lib/openai-compat'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
@@ -29,6 +34,10 @@ export async function handleCompletion(c: Context) {
   let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
   if (consola.level >= 4) {
     consola.debug('Request payload:', JSON.stringify(payload).slice(-400))
+  }
+
+  if (chatCompletionsHasExternalImageUrls(payload)) {
+    throwOpenAIInvalidRequestError(OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE)
   }
 
   // Find the selected model

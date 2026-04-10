@@ -12,6 +12,11 @@ import { awaitApproval } from '~/lib/approval'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { resolveBackend } from '~/lib/model-config'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
+import {
+  OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
+  responsesHasExternalImageUrls,
+  throwOpenAIInvalidRequestError,
+} from '~/lib/openai-compat'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { ResponsesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
@@ -39,6 +44,10 @@ export async function handleResponses(c: Context) {
     ...summarizeResponsesPayload(payload),
     contentLength: c.req.header('content-length') ?? undefined,
   })
+
+  if (responsesHasExternalImageUrls(payload)) {
+    throwOpenAIInvalidRequestError(OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE)
+  }
 
   if (state.manualApprove) {
     await awaitApproval()
@@ -268,27 +277,6 @@ async function handleViaChatCompletions(c: Context, payload: ResponsesPayload, s
   })
 }
 
-/** Check if a Responses payload contains external (non-data:) image URLs */
-function payloadHasExternalImageUrls(payload: ResponsesPayload): boolean {
-  if (typeof payload.input === 'string' || !Array.isArray(payload.input))
-    return false
-
-  for (const item of payload.input) {
-    if (!('content' in item) || !Array.isArray(item.content))
-      continue
-    for (const part of item.content) {
-      if (part.type === 'input_image' || part.type === 'image_url') {
-        const url = typeof part.image_url === 'string'
-          ? part.image_url
-          : (part.image_url as Record<string, unknown>)?.url as string | undefined
-        if (url && !url.startsWith('data:'))
-          return true
-      }
-    }
-  }
-  return false
-}
-
 function getAnthropicResponsesBypassReason(_payload: ResponsesPayload): string | undefined {
   return undefined
 }
@@ -296,10 +284,6 @@ function getAnthropicResponsesBypassReason(_payload: ResponsesPayload): string |
 function getAnthropicChatCompletionsBypassReason(payload: ResponsesPayload): string | undefined {
   if (payload.text?.format?.type === 'json_object') {
     return 'json_object structured output'
-  }
-
-  if (payloadHasExternalImageUrls(payload)) {
-    return 'external image URLs'
   }
 
   return undefined
