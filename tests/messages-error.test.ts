@@ -148,6 +148,65 @@ describe('messages error paths', () => {
     expect(json.error.message).toContain('thinking.budget_tokens')
   })
 
+  test('adaptive thinking with budget_tokens is rejected locally', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: {
+          type: 'adaptive',
+          budget_tokens: 4096,
+        },
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    const json = await res.json() as {
+      type: string
+      error: { type: string, message: string }
+    }
+    expect(json.type).toBe('error')
+    expect(json.error.type).toBe('invalid_request_error')
+    expect(json.error.message).toContain('thinking.adaptive.budget_tokens')
+  })
+
+  test('adaptive thinking with budget_tokens is rejected before translated backend routing', async () => {
+    state.copilotToken = 'test-token'
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 100,
+        thinking: {
+          type: 'adaptive',
+          budget_tokens: 4096,
+        },
+        output_config: {
+          format: { type: 'json_object' },
+        },
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+
+    const json = await res.json() as {
+      type: string
+      error: { type: string, message: string }
+    }
+    expect(json.type).toBe('error')
+    expect(json.error.type).toBe('invalid_request_error')
+    expect(json.error.message).toContain('thinking.adaptive.budget_tokens')
+  })
+
   test('missing "max_tokens" is backfilled from model limits before forwarding', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'

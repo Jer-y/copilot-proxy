@@ -141,7 +141,7 @@ describe('expandDocumentBlocks', () => {
     expect(content[0].text).toBe(html)
   })
 
-  test('decodes native text-source document block', async () => {
+  test('decodes official data-based text-source document block', async () => {
     const payload = makePayload([
       {
         role: 'user',
@@ -151,7 +151,7 @@ describe('expandDocumentBlocks', () => {
             source: {
               type: 'text',
               media_type: 'text/plain',
-              text: 'Hello from text source',
+              data: 'Hello from text source',
             },
           },
         ],
@@ -163,6 +163,30 @@ describe('expandDocumentBlocks', () => {
     const content = payload.messages[0].content as Array<{ type: string, text?: string }>
     expect(content[0].type).toBe('text')
     expect(content[0].text).toBe('Hello from text source')
+  })
+
+  test('accepts legacy text-based text-source document block for compatibility', async () => {
+    const payload = makePayload([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain',
+              text: 'Hello from legacy text source',
+            },
+          },
+        ],
+      },
+    ])
+
+    await expandDocumentBlocks(payload)
+
+    const content = payload.messages[0].content as Array<{ type: string, text?: string }>
+    expect(content[0].type).toBe('text')
+    expect(content[0].text).toBe('Hello from legacy text source')
   })
 
   test('decodes native content-source document block', async () => {

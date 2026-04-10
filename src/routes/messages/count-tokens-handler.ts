@@ -9,7 +9,7 @@ import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
 import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
-import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
+import { expandDocumentBlocks, normalizeLegacyDocumentTextSources } from '~/lib/translation/anthropic-documents'
 import { validateBody } from '~/lib/validate'
 
 import { applyModelVariant, parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
@@ -66,6 +66,7 @@ export async function handleCountTokens(c: Context) {
       })
     }
 
+    normalizeLegacyDocumentTextSources(anthropicPayload)
     await expandDocumentBlocks(anthropicPayload)
     assertCopilotCompatibleAnthropicRequest(anthropicPayload)
 

@@ -668,6 +668,96 @@ describe('messages route upstream adaptation', () => {
     ])
   })
 
+  test('Claude native passthrough accepts official text-source documents with source.data', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'text',
+                  media_type: 'text/plain',
+                  data: 'Hello from source.data',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      messages?: Array<{ content?: Array<Record<string, unknown>> }>
+    }
+
+    expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
+      type: 'document',
+      source: {
+        type: 'text',
+        media_type: 'text/plain',
+        data: 'Hello from source.data',
+      },
+    })
+  })
+
+  test('Claude native passthrough normalizes legacy source.text to source.data', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'text',
+                  media_type: 'text/plain',
+                  text: 'Hello from legacy source.text',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      messages?: Array<{ content?: Array<Record<string, unknown>> }>
+    }
+
+    expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
+      type: 'document',
+      source: {
+        type: 'text',
+        media_type: 'text/plain',
+        data: 'Hello from legacy source.text',
+      },
+    })
+  })
+
   test('Claude with file source type is rejected with 400', async () => {
     // Send a request with source.type = 'file' through the proxy
     const res = await server.request('/v1/messages', {
@@ -690,7 +780,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.error.message).toContain('Files API')
   })
 
-  test('Claude native passthrough preserves top-level cache_control and adaptive display', async () => {
+  test('Claude native passthrough strips unsupported top-level cache_control and preserves adaptive display', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -713,8 +803,49 @@ describe('messages route upstream adaptation', () => {
       cache_control?: { type?: string }
       thinking?: { type?: string, display?: string }
     }
-    expect(forwardedPayload.cache_control).toEqual({ type: 'ephemeral' })
+    expect(forwardedPayload.cache_control).toBeUndefined()
     expect(forwardedPayload.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
+  })
+
+  test('Claude document URL requests bypass native passthrough and expand locally', async () => {
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === 'https://example.com/doc.txt') {
+        return new Response('The capital of France is Paris.', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        })
+      }
+
+      return defaultFetchMock(url, init)
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'url', url: 'https://example.com/doc.txt' },
+            },
+            { type: 'text', text: 'What is the capital mentioned in the document?' },
+          ],
+        }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const calledUrls = fetchMock.mock.calls.map(([url]) => String(url))
+    expect(calledUrls).toEqual([
+      'https://example.com/doc.txt',
+      'https://api.githubcopilot.com/chat/completions',
+    ])
   })
 
   test('/v1/responses routes Claude json_object requests to /chat/completions before considering /responses', async () => {

@@ -94,11 +94,7 @@ export interface AnthropicDocumentBlock {
       type: 'url'
       url: string
     }
-    | {
-      type: 'text'
-      media_type: string
-      text: string
-    }
+    | AnthropicTextDocumentSource
     | {
       type: 'content'
       content: Array<AnthropicTextBlock>
@@ -113,6 +109,15 @@ export interface AnthropicDocumentBlock {
     enabled: boolean
   }
   cache_control?: AnthropicCacheControl
+}
+
+export interface AnthropicTextDocumentSource {
+  type: 'text'
+  media_type: string
+  // Official Anthropic SDKs use `data`; keep legacy `text` for compatibility
+  // and normalize it before native passthrough.
+  data?: string
+  text?: string
 }
 
 export interface AnthropicToolResultBlock {

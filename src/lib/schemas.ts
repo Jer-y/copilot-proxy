@@ -42,8 +42,19 @@ const AnthropicDocumentBlockSchema = z.object({
     z.object({
       type: z.literal('text'),
       media_type: z.string(),
-      text: z.string(),
-    }).passthrough(),
+      data: z.string().optional(),
+      text: z.string().optional(),
+    }).passthrough().superRefine((value, ctx) => {
+      if (typeof value.data === 'string' || typeof value.text === 'string') {
+        return
+      }
+
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'document.source.type="text" requires "data" (official) or legacy "text"',
+        path: ['data'],
+      })
+    }),
     z.object({
       type: z.literal('content'),
       content: z.array(AnthropicTextBlockSchema),

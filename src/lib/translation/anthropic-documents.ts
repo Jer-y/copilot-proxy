@@ -2,6 +2,8 @@ import type {
   AnthropicDocumentBlock,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
+  AnthropicTextDocumentSource,
+  AnthropicUserContentBlock,
 } from './types'
 
 import { Buffer } from 'node:buffer'
@@ -316,9 +318,62 @@ export async function expandDocumentBlocks(
   }
 }
 
+export function normalizeLegacyDocumentTextSources(
+  payload: AnthropicMessagesPayload,
+): void {
+  for (const message of payload.messages) {
+    if (message.role !== 'user' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    normalizeUserContentDocumentSources(message.content)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+function normalizeUserContentDocumentSources(
+  blocks: Array<AnthropicUserContentBlock>,
+): void {
+  for (const block of blocks) {
+    if (block.type === 'document') {
+      normalizeTextDocumentSource(block.source)
+      continue
+    }
+
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      normalizeUserContentDocumentSources(block.content)
+    }
+  }
+}
+
+function normalizeTextDocumentSource(
+  source: AnthropicDocumentBlock['source'],
+): void {
+  if (source.type !== 'text') {
+    return
+  }
+
+  const textSource = source as AnthropicTextDocumentSource
+
+  if (typeof textSource.data === 'string') {
+    if (typeof textSource.text === 'string') {
+      delete textSource.text
+    }
+    return
+  }
+
+  if (typeof textSource.text === 'string') {
+    logLossyAnthropicCompatibility(
+      'document.source.text',
+      'legacy source.text normalized to source.data for Copilot compatibility',
+    )
+    textSource.data = textSource.text
+    delete textSource.text
+  }
+}
 
 async function documentToTextBlock(
   block: AnthropicDocumentBlock,
@@ -402,8 +457,10 @@ async function resolveDocumentSource(
       )
     }
 
+    const inlineText = getTextDocumentSourceData(source)
+
     return {
-      buffer: new TextEncoder().encode(source.text),
+      buffer: new TextEncoder().encode(inlineText),
       mediaType,
       charset,
     }
@@ -509,6 +566,24 @@ async function resolveDocumentSource(
       `Failed to fetch document from URL: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
+}
+
+function getTextDocumentSourceData(source: AnthropicTextDocumentSource): string {
+  if (typeof source.data === 'string') {
+    return source.data
+  }
+
+  if (typeof source.text === 'string') {
+    logLossyAnthropicCompatibility(
+      'document.source.text',
+      'legacy source.text accepted for document expansion; official Anthropic shape uses source.data',
+    )
+    return source.text
+  }
+
+  throwAnthropicInvalidRequestError(
+    'Document text source requires "data" (official) or legacy "text"',
+  )
 }
 
 async function extractDocumentText(

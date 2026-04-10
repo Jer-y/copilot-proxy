@@ -16,8 +16,8 @@ import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
-import { assertCopilotCompatibleAnthropicRequest, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
-import { expandDocumentBlocks } from '~/lib/translation/anthropic-documents'
+import { assertCopilotCompatibleAnthropicRequest, logLossyAnthropicCompatibility, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
+import { expandDocumentBlocks, normalizeLegacyDocumentTextSources } from '~/lib/translation/anthropic-documents'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
@@ -80,12 +80,14 @@ export async function handleCompletion(c: Context) {
     }
   }
 
+  normalizeAnthropicThinkingForCopilot(anthropicPayload)
+
   const signal = c.req.raw.signal
   const backend = resolveBackend(effectiveModel, 'anthropic-messages')
-  const requiresTranslatedBackend = requiresTranslatedAnthropicBackend(anthropicPayload)
+  const nativeAnthropicBypassReason = getNativeAnthropicBypassReason(anthropicPayload)
 
   // Native Anthropic passthrough for Claude models — no translation needed
-  if (backend === 'anthropic-messages' && !requiresTranslatedBackend) {
+  if (backend === 'anthropic-messages' && !nativeAnthropicBypassReason) {
     assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
     try {
       return await handleViaNativeAnthropic(
@@ -116,8 +118,8 @@ export async function handleCompletion(c: Context) {
     }
   }
 
-  if (backend === 'anthropic-messages' && requiresTranslatedBackend) {
-    consola.debug(`Skipping native Anthropic passthrough for ${effectiveModel} because json_object requires an OpenAI-compatible backend`)
+  if (backend === 'anthropic-messages' && nativeAnthropicBypassReason) {
+    consola.debug(`Skipping native Anthropic passthrough for ${effectiveModel} because ${nativeAnthropicBypassReason}`)
     return await handleViaTranslatedBackends(
       c,
       anthropicPayload,
@@ -747,24 +749,15 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
     delete (payload as Record<string, unknown>).context_management
   }
 
-  // 2. thinking.adaptive + extra legacy fields
-  //    Copilot rejects any extra fields inside adaptive thinking.
-  //    Claude API spec: budget_tokens is only valid with type:"enabled";
-  //    some clients also still send budget_tokens_max even though it is
-  //    not part of the official adaptive thinking shape.
-  if (payload.thinking && typeof payload.thinking === 'object' && 'type' in payload.thinking) {
-    if (payload.thinking.type === 'adaptive') {
-      const thinking = payload.thinking as Record<string, unknown>
-      if ('budget_tokens' in thinking) {
-        consola.debug('Stripping budget_tokens from adaptive thinking (only valid with type:enabled)')
-        delete thinking.budget_tokens
-      }
-      if ('budget_tokens_max' in thinking) {
-        consola.debug('Stripping budget_tokens_max from adaptive thinking (unsupported by Copilot)')
-        delete thinking.budget_tokens_max
-      }
-    }
+  if (payload.cache_control) {
+    logLossyAnthropicCompatibility(
+      'cache_control',
+      'Copilot native /v1/messages rejects top-level cache_control, so the proxy drops it before passthrough.',
+    )
+    delete (payload as Record<string, unknown>).cache_control
   }
+
+  normalizeLegacyDocumentTextSources(payload)
 
   const format = payload.output_config?.format
   if (!format || typeof format !== 'object' || format.type !== 'json_schema') {
@@ -821,17 +814,83 @@ function getAnthropicOutputFormatType(
   return format && typeof format.type === 'string' ? format.type : undefined
 }
 
-function requiresTranslatedAnthropicBackend(
+function normalizeAnthropicThinkingForCopilot(
   payload: AnthropicMessagesPayload,
-): boolean {
-  return getAnthropicOutputFormatType(payload) === 'json_object'
+): void {
+  if (!payload.thinking || typeof payload.thinking !== 'object' || !('type' in payload.thinking)) {
+    return
+  }
+
+  if (payload.thinking.type !== 'adaptive') {
+    return
+  }
+
+  const thinking = payload.thinking as Record<string, unknown>
+  if ('budget_tokens' in thinking) {
+    throwAnthropicInvalidRequestError(
+      'thinking.adaptive.budget_tokens: Extra inputs are not permitted',
+    )
+  }
+
+  if ('budget_tokens_max' in thinking) {
+    consola.debug('Stripping budget_tokens_max from adaptive thinking (unsupported by Copilot)')
+    delete thinking.budget_tokens_max
+  }
+}
+
+function getNativeAnthropicBypassReason(
+  payload: AnthropicMessagesPayload,
+): string | undefined {
+  if (getAnthropicOutputFormatType(payload) === 'json_object') {
+    return 'json_object requires an OpenAI-compatible backend'
+  }
+
+  if (payloadHasUrlDocumentSources(payload)) {
+    return 'document.source.type="url" is expanded locally because Copilot native /v1/messages rejects URL-backed documents'
+  }
+
+  return undefined
 }
 
 async function prepareAnthropicPayloadForTranslatedBackends(
   payload: AnthropicMessagesPayload,
 ): Promise<void> {
+  normalizeLegacyDocumentTextSources(payload)
   await expandDocumentBlocks(payload)
   assertCopilotCompatibleAnthropicRequest(payload)
+}
+
+function payloadHasUrlDocumentSources(payload: AnthropicMessagesPayload): boolean {
+  for (const message of payload.messages) {
+    if (message.role !== 'user' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    if (contentBlocksHaveUrlDocumentSource(message.content as Array<Record<string, unknown>>)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function contentBlocksHaveUrlDocumentSource(
+  blocks: Array<Record<string, unknown>>,
+): boolean {
+  for (const block of blocks) {
+    if (block.type === 'document') {
+      const source = block.source
+      if (source && typeof source === 'object' && 'type' in source && source.type === 'url') {
+        return true
+      }
+    }
+
+    if (block.type === 'tool_result' && Array.isArray(block.content) && contentBlocksHaveUrlDocumentSource(block.content as Array<Record<string, unknown>>)) {
+      return true
+    }
+  }
+
+  return false
 }
 
 interface NativeAnthropicPassthroughState {
