@@ -6,16 +6,16 @@ import type { ResponsesResponse, ResponsesStreamEvent } from '~/services/copilot
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
-import { isUnsupportedApiError, recordProbeResult } from '~/lib/api-probe'
 import { awaitApproval } from '~/lib/approval'
-import { HTTPError, JSONResponseError } from '~/lib/error'
-import { resolveBackend } from '~/lib/model-config'
+import { runBackendPlan } from '~/lib/backend-plan'
+import { JSONResponseError } from '~/lib/error'
 import {
   chatCompletionsHasExternalImageUrls,
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
 import { checkRateLimit } from '~/lib/rate-limit'
+import { planChatCompletionsBackends } from '~/lib/routing-policy'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
@@ -74,39 +74,30 @@ export async function handleCompletion(c: Context) {
 
   const signal = c.req.raw.signal
 
-  // Resolve which backend API to use
-  const backend = resolveBackend(payload.model, 'chat-completions')
+  const routingPolicy = planChatCompletionsBackends(payload.model)
+  const steps = routingPolicy.steps.map(step => ({
+    ...step,
+    run: async () => {
+      switch (step.api) {
+        case 'chat-completions':
+          return await handleViaChatCompletions(c, payload, signal)
+        case 'responses':
+          return await handleViaResponses(c, payload, signal)
+        case 'anthropic-messages':
+          throw new Error('anthropic-messages is not routable from chat-completions')
+      }
+    },
+  }))
 
-  if (backend === 'responses') {
-    try {
-      return await handleViaResponses(c, payload, signal)
-    }
-    catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return c.body(null)
-      throw error
-    }
-  }
-
-  // Try chat-completions first; if unsupported, fall back to responses
   try {
-    return await handleViaChatCompletions(c, payload, signal)
+    return await runBackendPlan({
+      model: payload.model,
+      steps,
+    })
   }
   catch (error) {
     if (error instanceof Error && error.name === 'AbortError')
       return c.body(null)
-    if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
-      consola.info(`Model ${payload.model} does not support /chat/completions, falling back to /responses`)
-      recordProbeResult(payload.model, 'chat-completions')
-      try {
-        return await handleViaResponses(c, payload, signal)
-      }
-      catch (fallbackError) {
-        if (fallbackError instanceof Error && fallbackError.name === 'AbortError')
-          return c.body(null)
-        throw fallbackError
-      }
-    }
     throw error
   }
 }

@@ -7,11 +7,11 @@ import type { Model } from '~/services/copilot/get-models'
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
-import { isUnsupportedApiError, recordProbeResult } from '~/lib/api-probe'
 import { awaitApproval } from '~/lib/approval'
-import { HTTPError, JSONResponseError } from '~/lib/error'
-import { resolveBackend } from '~/lib/model-config'
+import { runBackendPlan } from '~/lib/backend-plan'
+import { JSONResponseError } from '~/lib/error'
 import { checkRateLimit } from '~/lib/rate-limit'
+import { planMessagesBackends } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
 import { state } from '~/lib/state'
@@ -83,114 +83,67 @@ export async function handleCompletion(c: Context) {
   normalizeAnthropicThinkingForCopilot(anthropicPayload)
 
   const signal = c.req.raw.signal
-  const backend = resolveBackend(effectiveModel, 'anthropic-messages')
-  const nativeAnthropicBypassReason = getNativeAnthropicBypassReason(anthropicPayload)
+  const ensureTranslatedPayloadPrepared = onceAsync(async () => {
+    await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
+  })
+  const routingPolicy = planMessagesBackends(effectiveModel, anthropicPayload)
 
-  // Native Anthropic passthrough for Claude models — no translation needed
-  if (backend === 'anthropic-messages' && !nativeAnthropicBypassReason) {
-    assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
-    try {
-      return await handleViaNativeAnthropic(
-        c,
-        anthropicPayload,
-        anthropicBeta,
-        effectiveModel,
-        requestedModel,
-        signal,
-      )
-    }
-    catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return c.body(null)
-      if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
-        consola.info(`Model ${effectiveModel} does not support /v1/messages, falling back to /chat/completions`)
-        recordProbeResult(effectiveModel, 'anthropic-messages')
-        return await handleViaTranslatedBackends(
-          c,
-          anthropicPayload,
-          anthropicBeta,
-          effectiveModel,
-          requestedModel,
-          signal,
-        )
+  if (
+    routingPolicy.resolvedBackend === 'anthropic-messages'
+    && routingPolicy.steps[0]?.api !== 'anthropic-messages'
+    && routingPolicy.steps[0]?.context
+  ) {
+    consola.debug(`Skipping native Anthropic passthrough for ${effectiveModel} because ${routingPolicy.steps[0].context}`)
+  }
+
+  const steps = routingPolicy.steps.map(step => ({
+    ...step,
+    run: async () => {
+      switch (step.api) {
+        case 'anthropic-messages': {
+          assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
+          return await handleViaNativeAnthropic(
+            c,
+            anthropicPayload,
+            anthropicBeta,
+            effectiveModel,
+            requestedModel,
+            signal,
+          )
+        }
+        case 'chat-completions': {
+          await ensureTranslatedPayloadPrepared()
+          return await handleViaChatCompletions(
+            c,
+            anthropicPayload,
+            anthropicBeta,
+            requestedModel,
+            signal,
+          )
+        }
+        case 'responses': {
+          await ensureTranslatedPayloadPrepared()
+          return await handleViaResponses(
+            c,
+            anthropicPayload,
+            effectiveModel,
+            requestedModel,
+            signal,
+          )
+        }
       }
-      throw error
-    }
-  }
-
-  if (backend === 'anthropic-messages' && nativeAnthropicBypassReason) {
-    consola.debug(`Skipping native Anthropic passthrough for ${effectiveModel} because ${nativeAnthropicBypassReason}`)
-    return await handleViaTranslatedBackends(
-      c,
-      anthropicPayload,
-      anthropicBeta,
-      effectiveModel,
-      requestedModel,
-      signal,
-    )
-  }
-
-  if (backend === 'responses') {
-    try {
-      return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, signal)
-    }
-    catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return c.body(null)
-      if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
-        consola.info(`Model ${effectiveModel} does not support /responses, falling back to /chat/completions`)
-        recordProbeResult(effectiveModel, 'responses')
-        return await handleViaTranslatedBackends(
-          c,
-          anthropicPayload,
-          anthropicBeta,
-          effectiveModel,
-          requestedModel,
-          signal,
-        )
-      }
-      throw error
-    }
-  }
-
-  return await handleViaTranslatedBackends(
-    c,
-    anthropicPayload,
-    anthropicBeta,
-    effectiveModel,
-    requestedModel,
-    signal,
-  )
-}
-
-async function handleViaTranslatedBackends(
-  c: Context,
-  anthropicPayload: AnthropicMessagesPayload,
-  anthropicBeta: string | undefined,
-  effectiveModel: string,
-  requestedModel: string,
-  signal: AbortSignal,
-) {
-  await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
+    },
+  }))
 
   try {
-    return await handleViaChatCompletions(c, anthropicPayload, anthropicBeta, requestedModel, signal)
+    return await runBackendPlan({
+      model: effectiveModel,
+      steps,
+    })
   }
   catch (error) {
     if (error instanceof Error && error.name === 'AbortError')
       return c.body(null)
-    if (error instanceof HTTPError && await isUnsupportedApiError(error.response)) {
-      consola.info(`Model ${effectiveModel} does not support /chat/completions, falling back to /responses`)
-      recordProbeResult(effectiveModel, 'chat-completions')
-      try {
-        return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, signal)
-      }
-      catch (fallbackError) {
-        if (fallbackError instanceof Error && fallbackError.name === 'AbortError')
-          return c.body(null)
-        throw fallbackError
-      }
-    }
     throw error
   }
 }
@@ -429,8 +382,6 @@ async function handleViaResponses(
   requestedModel: string,
   signal: AbortSignal,
 ) {
-  await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
-
   const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, { model: effectiveModel })
   if (consola.level >= 4) {
     consola.debug('Translated Anthropic→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
@@ -807,13 +758,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function getAnthropicOutputFormatType(
-  payload: AnthropicMessagesPayload,
-): string | undefined {
-  const format = payload.output_config?.format
-  return format && typeof format.type === 'string' ? format.type : undefined
-}
-
 function normalizeAnthropicThinkingForCopilot(
   payload: AnthropicMessagesPayload,
 ): void {
@@ -838,20 +782,6 @@ function normalizeAnthropicThinkingForCopilot(
   }
 }
 
-function getNativeAnthropicBypassReason(
-  payload: AnthropicMessagesPayload,
-): string | undefined {
-  if (getAnthropicOutputFormatType(payload) === 'json_object') {
-    return 'json_object requires an OpenAI-compatible backend'
-  }
-
-  if (payloadHasUrlDocumentSources(payload)) {
-    return 'document.source.type="url" is expanded locally because Copilot native /v1/messages rejects URL-backed documents'
-  }
-
-  return undefined
-}
-
 async function prepareAnthropicPayloadForTranslatedBackends(
   payload: AnthropicMessagesPayload,
 ): Promise<void> {
@@ -860,37 +790,12 @@ async function prepareAnthropicPayloadForTranslatedBackends(
   assertCopilotCompatibleAnthropicRequest(payload)
 }
 
-function payloadHasUrlDocumentSources(payload: AnthropicMessagesPayload): boolean {
-  for (const message of payload.messages) {
-    if (message.role !== 'user' || !Array.isArray(message.content)) {
-      continue
-    }
-
-    if (contentBlocksHaveUrlDocumentSource(message.content as Array<Record<string, unknown>>)) {
-      return true
-    }
+function onceAsync(factory: () => Promise<void>): () => Promise<void> {
+  let pending: Promise<void> | undefined
+  return async () => {
+    pending ??= factory()
+    await pending
   }
-
-  return false
-}
-
-function contentBlocksHaveUrlDocumentSource(
-  blocks: Array<Record<string, unknown>>,
-): boolean {
-  for (const block of blocks) {
-    if (block.type === 'document') {
-      const source = block.source
-      if (source && typeof source === 'object' && 'type' in source && source.type === 'url') {
-        return true
-      }
-    }
-
-    if (block.type === 'tool_result' && Array.isArray(block.content) && contentBlocksHaveUrlDocumentSource(block.content as Array<Record<string, unknown>>)) {
-      return true
-    }
-  }
-
-  return false
 }
 
 interface NativeAnthropicPassthroughState {
