@@ -44,7 +44,7 @@ beforeEach(() => {
 })
 
 describe('compat routing fallback', () => {
-  test('/v1/responses falls back to /responses when CC is unsupported for an unknown model', async () => {
+  test('/v1/responses only tries /chat/completions for unknown models', async () => {
     const response = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -54,15 +54,11 @@ describe('compat routing fallback', () => {
       }),
     })
 
-    expect(response.status).toBe(200)
-    const body = await response.json() as Record<string, unknown>
-    expect(body.object).toBe('response')
-    expect(body.model).toBe('gpt-next')
+    expect(response.status).toBe(400)
 
     const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
     expect(calledUrls).toEqual([
       'https://api.githubcopilot.com/chat/completions',
-      'https://api.githubcopilot.com/responses',
     ])
   })
 
@@ -89,7 +85,7 @@ describe('compat routing fallback', () => {
     ])
   })
 
-  test('/v1/responses prefers /chat/completions for Claude json_object and falls back to /responses when CC is unsupported', async () => {
+  test('/v1/responses keeps Claude json_object requests on /chat/completions only', async () => {
     const response = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -104,12 +100,11 @@ describe('compat routing fallback', () => {
       }),
     })
 
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(400)
 
     const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
     expect(calledUrls).toEqual([
       'https://api.githubcopilot.com/chat/completions',
-      'https://api.githubcopilot.com/responses',
     ])
   })
 

@@ -1,5 +1,3 @@
-import { isApiProbedUnsupported } from './api-probe'
-
 export type BackendApiType = 'chat-completions' | 'responses' | 'anthropic-messages'
 
 export interface ModelConfig {
@@ -219,51 +217,24 @@ export function isThinkingModeModel(modelId: string): boolean {
 }
 
 /**
- * Resolve which backend API to use for a given model.
+ * Resolve the static preferred backend for a given model.
  *
- * Strategy:
- * 1. Filter out APIs known-unsupported from probe cache
- * 2. If all configured APIs are probed, try any handler-routable API not yet probed
- * 3. Pick the best candidate: requested API > preferred API > first available
+ * Runtime probe cache and unsupported fallback are handled by backend-plan.
+ * This helper only answers "which supported backend should be preferred first?"
  */
 export function resolveBackend(modelId: string, requestedApi: BackendApiType): BackendApiType {
-  const config = getModelConfig(modelId)
+  return resolveBackendForConfig(getModelConfig(modelId), requestedApi)
+}
 
-  // Filter out APIs that are known-unsupported from probe cache
-  const candidates = config.supportedApis.filter(
-    api => !isApiProbedUnsupported(modelId, api),
-  )
-
-  let pool: BackendApiType[]
-  if (candidates.length > 0) {
-    pool = candidates
-  }
-  else {
-    // All configured APIs probed as unsupported (e.g., unknown model only has CC, CC probed bad).
-    // Try any handler-routable API that hasn't been probed yet.
-    // Use requestedApi to infer which handler is calling (resolveBackend has no handler context).
-    const ROUTABLE_FROM: Record<BackendApiType, BackendApiType[]> = {
-      'anthropic-messages': ['anthropic-messages', 'responses', 'chat-completions'],
-      'responses': ['responses', 'chat-completions', 'anthropic-messages'],
-      'chat-completions': ['chat-completions', 'responses'], // CC handler has no AM branch
-    }
-    const routable = ROUTABLE_FROM[requestedApi]
-    const anyUnprobed = routable.filter(api => !isApiProbedUnsupported(modelId, api))
-    // Absolute last resort: TTL will expire and allow retry
-    pool = anyUnprobed.length > 0 ? anyUnprobed : config.supportedApis
-  }
-
-  // If pool contains the requested API, use it directly
-  if (pool.includes(requestedApi))
+export function resolveBackendForConfig(
+  config: ModelConfig,
+  requestedApi: BackendApiType,
+): BackendApiType {
+  if (config.supportedApis.includes(requestedApi))
     return requestedApi
 
-  // Only one candidate — use it
-  if (pool.length === 1)
-    return pool[0]
-
-  // Multiple candidates — use preferred if available in pool
-  if (config.preferredApi && pool.includes(config.preferredApi))
+  if (config.preferredApi && config.supportedApis.includes(config.preferredApi))
     return config.preferredApi
 
-  return pool[0]
+  return config.supportedApis[0] ?? requestedApi
 }

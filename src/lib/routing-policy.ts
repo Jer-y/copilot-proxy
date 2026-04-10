@@ -2,7 +2,8 @@ import type { BackendApiType } from './model-config'
 
 import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
-import { getModelConfig, resolveBackend } from './model-config'
+import { formatBackendApi } from './backend-api'
+import { getModelConfig, resolveBackendForConfig } from './model-config'
 
 export interface BackendRouteStep {
   api: BackendApiType
@@ -16,22 +17,27 @@ export interface BackendRoutePolicy {
   exhaustedError?: string
 }
 
+interface BackendRoutingContext {
+  resolvedBackend: BackendApiType
+  supportedApis: ReadonlySet<BackendApiType>
+}
+
 const RESPONSES_JSON_OBJECT_BYPASS_REASON = 'json_object structured output'
 const RESPONSES_INPUT_FILE_REJECTION_MESSAGE = 'input_file is not supported when routing this model through native Anthropic translation. Use a model that supports /responses directly, or provide content that can be represented as translated text/image blocks.'
 const MESSAGES_JSON_OBJECT_BYPASS_REASON = 'json_object requires an OpenAI-compatible backend'
 const MESSAGES_URL_DOCUMENT_BYPASS_REASON = 'document.source.type="url" is expanded locally because Copilot native /v1/messages rejects URL-backed documents'
 
 export function planChatCompletionsBackends(model: string): BackendRoutePolicy {
-  const resolvedBackend = resolveBackend(model, 'chat-completions')
+  const routing = createRoutingContext(model, 'chat-completions')
   const steps = supportedSteps(
-    model,
-    resolvedBackend === 'responses'
+    routing.supportedApis,
+    routing.resolvedBackend === 'responses'
       ? [{ api: 'responses' }, { api: 'chat-completions' }]
       : [{ api: 'chat-completions' }, { api: 'responses' }],
   )
 
   return {
-    resolvedBackend,
+    resolvedBackend: routing.resolvedBackend,
     steps,
   }
 }
@@ -40,23 +46,23 @@ export function planMessagesBackends(
   model: string,
   payload: AnthropicMessagesPayload,
 ): BackendRoutePolicy {
-  const resolvedBackend = resolveBackend(model, 'anthropic-messages')
+  const routing = createRoutingContext(model, 'anthropic-messages')
   const nativeAnthropicBypassReason = getMessagesNativeAnthropicBypassReason(payload)
 
-  if (resolvedBackend === 'anthropic-messages') {
+  if (routing.resolvedBackend === 'anthropic-messages') {
     const steps = nativeAnthropicBypassReason
-      ? supportedSteps(model, [
+      ? supportedSteps(routing.supportedApis, [
           { api: 'chat-completions', context: nativeAnthropicBypassReason },
           { api: 'responses', context: nativeAnthropicBypassReason },
         ])
-      : supportedSteps(model, [
+      : supportedSteps(routing.supportedApis, [
           { api: 'anthropic-messages' },
           { api: 'chat-completions' },
           { api: 'responses' },
         ])
 
     return {
-      resolvedBackend,
+      resolvedBackend: routing.resolvedBackend,
       localError: nativeAnthropicBypassReason && steps.length === 0
         ? buildNoCompatibleBackendError(model, nativeAnthropicBypassReason)
         : undefined,
@@ -64,16 +70,16 @@ export function planMessagesBackends(
     }
   }
 
-  if (resolvedBackend === 'responses') {
+  if (routing.resolvedBackend === 'responses') {
     return {
-      resolvedBackend,
-      steps: supportedSteps(model, [{ api: 'responses' }, { api: 'chat-completions' }]),
+      resolvedBackend: routing.resolvedBackend,
+      steps: supportedSteps(routing.supportedApis, [{ api: 'responses' }, { api: 'chat-completions' }]),
     }
   }
 
   return {
-    resolvedBackend,
-    steps: supportedSteps(model, [{ api: 'chat-completions' }, { api: 'responses' }]),
+    resolvedBackend: routing.resolvedBackend,
+    steps: supportedSteps(routing.supportedApis, [{ api: 'chat-completions' }, { api: 'responses' }]),
   }
 }
 
@@ -81,33 +87,33 @@ export function planResponsesBackends(
   model: string,
   payload: ResponsesPayload,
 ): BackendRoutePolicy {
-  const resolvedBackend = resolveBackend(model, 'responses')
+  const routing = createRoutingContext(model, 'responses')
   const anthropicBypassReason = getResponsesAnthropicBypassReason(payload)
-  const localError = resolvedBackend === 'anthropic-messages'
+  const localError = routing.resolvedBackend === 'anthropic-messages'
     ? getResponsesAnthropicTranslationRejectionReason(payload)
     : undefined
 
-  if (resolvedBackend === 'chat-completions') {
+  if (routing.resolvedBackend === 'chat-completions') {
     return {
-      resolvedBackend,
-      steps: supportedSteps(model, [{ api: 'chat-completions' }, { api: 'responses' }]),
+      resolvedBackend: routing.resolvedBackend,
+      steps: supportedSteps(routing.supportedApis, [{ api: 'chat-completions' }, { api: 'responses' }]),
     }
   }
 
-  if (resolvedBackend === 'anthropic-messages') {
+  if (routing.resolvedBackend === 'anthropic-messages') {
     const steps = anthropicBypassReason
-      ? supportedSteps(model, [
+      ? supportedSteps(routing.supportedApis, [
           { api: 'chat-completions', context: anthropicBypassReason },
           { api: 'responses', context: anthropicBypassReason },
         ])
-      : supportedSteps(model, [
+      : supportedSteps(routing.supportedApis, [
           { api: 'anthropic-messages' },
           { api: 'chat-completions' },
           { api: 'responses' },
         ])
 
     return {
-      resolvedBackend,
+      resolvedBackend: routing.resolvedBackend,
       localError,
       exhaustedError: anthropicBypassReason
         ? buildExhaustedUnsupportedError(model, steps, anthropicBypassReason)
@@ -117,16 +123,26 @@ export function planResponsesBackends(
   }
 
   return {
-    resolvedBackend,
-    steps: supportedSteps(model, [{ api: 'responses' }, { api: 'chat-completions' }]),
+    resolvedBackend: routing.resolvedBackend,
+    steps: supportedSteps(routing.supportedApis, [{ api: 'responses' }, { api: 'chat-completions' }]),
+  }
+}
+
+function createRoutingContext(
+  model: string,
+  requestedApi: BackendApiType,
+): BackendRoutingContext {
+  const config = getModelConfig(model)
+  return {
+    resolvedBackend: resolveBackendForConfig(config, requestedApi),
+    supportedApis: new Set(config.supportedApis),
   }
 }
 
 function supportedSteps(
-  model: string,
+  supportedApis: ReadonlySet<BackendApiType>,
   steps: Array<BackendRouteStep>,
 ): Array<BackendRouteStep> {
-  const supportedApis = new Set(getModelConfig(model).supportedApis)
   const seen = new Set<BackendApiType>()
   const filtered: Array<BackendRouteStep> = []
 
@@ -155,17 +171,6 @@ function buildExhaustedUnsupportedError(
 
 function buildNoCompatibleBackendError(model: string, context: string): string {
   return `Model ${model} does not support any backend compatible with ${context}.`
-}
-
-function formatBackendApi(api: BackendApiType): string {
-  switch (api) {
-    case 'anthropic-messages':
-      return '/v1/messages'
-    case 'chat-completions':
-      return '/chat/completions'
-    case 'responses':
-      return '/responses'
-  }
 }
 
 function joinWithOr(values: string[]): string {

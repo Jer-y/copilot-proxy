@@ -848,7 +848,7 @@ describe('messages route upstream adaptation', () => {
     ])
   })
 
-  test('/v1/responses routes Claude json_object requests to /chat/completions before considering /responses', async () => {
+  test('/v1/responses routes Claude json_object requests to /chat/completions only', async () => {
     const res = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -321,56 +321,26 @@ async function handleViaChatCompletions(
 
         const events = translateChunkToAnthropicEvents(chunk, streamState)
 
-        for (const event of events) {
-          if (consola.level >= 4) {
-            consola.debug('Translated Anthropic event:', JSON.stringify(event))
-          }
-          await anthropicWriter.writeEvent(event)
-        }
+        await writeAnthropicEvents(anthropicWriter, events, { debugTranslatedEvents: true })
       }
 
       const finalEvents = finalizeAnthropicStreamFromState(streamState)
-      for (const event of finalEvents) {
-        if (consola.level >= 4) {
-          consola.debug('Translated Anthropic event:', JSON.stringify(event))
-        }
-        await anthropicWriter.writeEvent(event)
-      }
+      await writeAnthropicEvents(anthropicWriter, finalEvents, { debugTranslatedEvents: true })
     }
     catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return
-
-      const upstreamTerminated = isRecoverableUpstreamTermination(error)
-      const recoveredEvents = upstreamTerminated && canRecoverUpstreamTerminationAsMessage(streamState)
-        ? finalizeAnthropicStreamFromState(streamState)
-        : []
-
-      if (recoveredEvents.length > 0) {
-        consola.warn('Chat Completions stream terminated without a finish chunk; synthesizing Anthropic message_stop.')
-        for (const event of recoveredEvents) {
-          if (consola.level >= 4) {
-            consola.debug('Translated Anthropic event:', JSON.stringify(event))
-          }
-          await anthropicWriter.writeEvent(event)
-        }
-        return
-      }
-
-      if (upstreamTerminated) {
-        const message = streamState.hasThinkingContent && !streamState.hasNonThinkingContent
-          ? 'Upstream Copilot connection terminated after reasoning output, before any assistant text or tool call was produced.'
-          : 'Upstream Copilot connection terminated before the response completed.'
-        consola.warn('Chat Completions stream terminated without recoverable assistant output; returning Anthropic error event.')
-        await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
-        return
-      }
-
-      const message = error instanceof Error
-        ? error.message
-        : 'An unexpected error occurred while translating the Copilot stream.'
-      consola.error('Chat Completions stream translation failed:', error)
-      await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
+      await handleAnthropicStreamFailure({
+        completionTerm: 'finish chunk',
+        error,
+        errorLabel: 'Chat Completions stream translation',
+        streamLabel: 'Chat Completions stream',
+        state: streamState,
+        unexpectedErrorMessage: 'An unexpected error occurred while translating the Copilot stream.',
+        writer: anthropicWriter,
+        finalizeRecoveredEvents: () => finalizeAnthropicStreamFromState(streamState),
+        canRecoverTermination: () => canRecoverUpstreamTerminationAsMessage(streamState),
+        debugTranslatedEvents: true,
+      })
+      return
     }
     finally {
       await anthropicWriter.close()
@@ -445,41 +415,21 @@ async function handleViaResponses(
       }
 
       const finalEvents = finalizeAnthropicStreamFromState(streamState)
-      for (const evt of finalEvents) {
-        await anthropicWriter.writeEvent(evt)
-      }
+      await writeAnthropicEvents(anthropicWriter, finalEvents)
     }
     catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return
-
-      const upstreamTerminated = isRecoverableUpstreamTermination(error)
-      const recoveredEvents = upstreamTerminated && canRecoverUpstreamTerminationAsMessage(streamState)
-        ? finalizeAnthropicStreamFromState(streamState)
-        : []
-
-      if (recoveredEvents.length > 0) {
-        consola.warn('Responses stream terminated without a completion event; synthesizing Anthropic message_stop.')
-        for (const evt of recoveredEvents) {
-          await anthropicWriter.writeEvent(evt)
-        }
-        return
-      }
-
-      if (upstreamTerminated) {
-        const message = streamState.hasThinkingContent && !streamState.hasNonThinkingContent
-          ? 'Upstream Copilot connection terminated after reasoning output, before any assistant text or tool call was produced.'
-          : 'Upstream Copilot connection terminated before the response completed.'
-        consola.warn('Responses stream terminated without recoverable assistant output; returning Anthropic error event.')
-        await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
-        return
-      }
-
-      const message = error instanceof Error
-        ? error.message
-        : 'An unexpected error occurred while translating the Copilot Responses stream.'
-      consola.error('Responses stream translation failed:', error)
-      await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
+      await handleAnthropicStreamFailure({
+        completionTerm: 'completion event',
+        error,
+        errorLabel: 'Responses stream translation',
+        streamLabel: 'Responses stream',
+        state: streamState,
+        unexpectedErrorMessage: 'An unexpected error occurred while translating the Copilot Responses stream.',
+        writer: anthropicWriter,
+        finalizeRecoveredEvents: () => finalizeAnthropicStreamFromState(streamState),
+        canRecoverTermination: () => canRecoverUpstreamTerminationAsMessage(streamState),
+      })
+      return
     }
     finally {
       await anthropicWriter.close()
@@ -493,6 +443,87 @@ function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>
 
 function isResponsesNonStreaming(body: Awaited<ReturnType<typeof createResponses>>['body']): body is ResponsesResponse {
   return Object.hasOwn(body, 'output')
+}
+
+type AnthropicEventWriter = ReturnType<typeof createAnthropicSSEWriter>
+
+interface RecoverableAnthropicOutputState {
+  hasNonThinkingContent: boolean
+  hasThinkingContent: boolean
+}
+
+interface AnthropicStreamFailureOptions {
+  completionTerm: string
+  error: unknown
+  errorLabel: string
+  streamLabel: string
+  state: RecoverableAnthropicOutputState
+  unexpectedErrorMessage: string
+  writer: AnthropicEventWriter
+  finalizeRecoveredEvents: () => Array<AnthropicStreamEventData>
+  canRecoverTermination?: () => boolean
+  shouldEmitTerminationError?: () => boolean
+  debugTranslatedEvents?: boolean
+}
+
+async function writeAnthropicEvents(
+  writer: AnthropicEventWriter,
+  events: Array<AnthropicStreamEventData>,
+  options?: {
+    debugTranslatedEvents?: boolean
+  },
+): Promise<void> {
+  for (const event of events) {
+    if (options?.debugTranslatedEvents && consola.level >= 4) {
+      consola.debug('Translated Anthropic event:', JSON.stringify(event))
+    }
+    await writer.writeEvent(event)
+  }
+}
+
+async function handleAnthropicStreamFailure(
+  options: AnthropicStreamFailureOptions,
+): Promise<void> {
+  if (options.error instanceof Error && options.error.name === 'AbortError') {
+    return
+  }
+
+  const upstreamTerminated = isRecoverableUpstreamTermination(options.error)
+  const recoveredEvents = upstreamTerminated && (options.canRecoverTermination?.() ?? true)
+    ? options.finalizeRecoveredEvents()
+    : []
+
+  if (recoveredEvents.length > 0) {
+    consola.warn(`${options.streamLabel} terminated without a ${options.completionTerm}; synthesizing Anthropic message_stop.`)
+    await writeAnthropicEvents(options.writer, recoveredEvents, {
+      debugTranslatedEvents: options.debugTranslatedEvents,
+    })
+    return
+  }
+
+  if (upstreamTerminated && (options.shouldEmitTerminationError?.() ?? true)) {
+    consola.warn(`${options.streamLabel} terminated without recoverable assistant output; returning Anthropic error event.`)
+    await options.writer.writeEvent(
+      translateErrorToAnthropicErrorEvent(
+        getUpstreamTerminationErrorMessage(options.state),
+      ),
+    )
+    return
+  }
+
+  const message = options.error instanceof Error
+    ? options.error.message
+    : options.unexpectedErrorMessage
+  consola.error(`${options.errorLabel} failed:`, options.error)
+  await options.writer.writeEvent(translateErrorToAnthropicErrorEvent(message))
+}
+
+function getUpstreamTerminationErrorMessage(
+  state: RecoverableAnthropicOutputState,
+): string {
+  return state.hasThinkingContent && !state.hasNonThinkingContent
+    ? 'Upstream Copilot connection terminated after reasoning output, before any assistant text or tool call was produced.'
+    : 'Upstream Copilot connection terminated before the response completed.'
 }
 
 function isRecoverableUpstreamTermination(error: unknown): boolean {
@@ -635,9 +666,7 @@ async function handleViaNativeAnthropic(
       const finalEvents = finalizeNativeAnthropicPassthroughState(passthroughState)
       if (finalEvents.length > 0) {
         consola.warn('Native Anthropic stream terminated without a completion event; synthesizing Anthropic message_stop.')
-        for (const event of finalEvents) {
-          await anthropicWriter.writeEvent(event)
-        }
+        await writeAnthropicEvents(anthropicWriter, finalEvents)
         return
       }
 
@@ -650,36 +679,18 @@ async function handleViaNativeAnthropic(
       }
     }
     catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return
-
-      const upstreamTerminated = isRecoverableUpstreamTermination(error)
-      const recoveredEvents = upstreamTerminated
-        ? finalizeNativeAnthropicPassthroughState(passthroughState)
-        : []
-
-      if (recoveredEvents.length > 0) {
-        consola.warn('Native Anthropic stream terminated without a completion event; synthesizing Anthropic message_stop.')
-        for (const event of recoveredEvents) {
-          await anthropicWriter.writeEvent(event)
-        }
-        return
-      }
-
-      if (upstreamTerminated && shouldEmitNativeAnthropicTerminationError(passthroughState)) {
-        const message = passthroughState.hasThinkingContent && !passthroughState.hasNonThinkingContent
-          ? 'Upstream Copilot connection terminated after reasoning output, before any assistant text or tool call was produced.'
-          : 'Upstream Copilot connection terminated before the response completed.'
-        consola.warn('Native Anthropic stream terminated without recoverable assistant output; returning Anthropic error event.')
-        await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
-        return
-      }
-
-      const message = error instanceof Error
-        ? error.message
-        : 'An unexpected error occurred during native Anthropic stream passthrough.'
-      consola.error('Native Anthropic stream passthrough failed:', error)
-      await anthropicWriter.writeEvent(translateErrorToAnthropicErrorEvent(message))
+      await handleAnthropicStreamFailure({
+        completionTerm: 'completion event',
+        error,
+        errorLabel: 'Native Anthropic stream passthrough',
+        streamLabel: 'Native Anthropic stream',
+        state: passthroughState,
+        unexpectedErrorMessage: 'An unexpected error occurred during native Anthropic stream passthrough.',
+        writer: anthropicWriter,
+        finalizeRecoveredEvents: () => finalizeNativeAnthropicPassthroughState(passthroughState),
+        shouldEmitTerminationError: () => shouldEmitNativeAnthropicTerminationError(passthroughState),
+      })
+      return
     }
     finally {
       await anthropicWriter.close()

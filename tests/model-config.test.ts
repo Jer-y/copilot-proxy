@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 
-import { clearProbeCache } from '../src/lib/api-probe'
+import { clearProbeCache, recordProbeResult } from '../src/lib/api-probe'
 import { getModelConfig, isThinkingModeModel, resolveBackend } from '../src/lib/model-config'
 
 beforeEach(() => {
@@ -219,5 +219,13 @@ describe('resolveBackend', () => {
   test('should return responses for o-series mini models', () => {
     expect(resolveBackend('o3-mini', 'chat-completions')).toBe('responses')
     expect(resolveBackend('o4-mini', 'chat-completions')).toBe('responses')
+  })
+
+  test('should ignore probe cache and keep returning the static preferred backend', () => {
+    recordProbeResult('claude-opus-4.6', 'anthropic-messages')
+    recordProbeResult('gpt-5.4', 'responses')
+
+    expect(resolveBackend('claude-opus-4.6', 'responses')).toBe('anthropic-messages')
+    expect(resolveBackend('gpt-5.4', 'chat-completions')).toBe('responses')
   })
 })

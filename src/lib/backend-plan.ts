@@ -3,6 +3,7 @@ import type { BackendApiType } from './model-config'
 import consola from 'consola'
 
 import { isApiProbedUnsupported, isUnsupportedApiError, recordProbeResult } from './api-probe'
+import { formatBackendApi } from './backend-api'
 import { HTTPError } from './error'
 
 export interface BackendPlanStep<T> {
@@ -132,17 +133,6 @@ function findNextCachedStep<T>(
   }
 
   return undefined
-}
-
-function formatBackendApi(api: BackendApiType): string {
-  switch (api) {
-    case 'anthropic-messages':
-      return '/v1/messages'
-    case 'chat-completions':
-      return '/chat/completions'
-    case 'responses':
-      return '/responses'
-  }
 }
 
 function formatContext(context: string | undefined): string {
