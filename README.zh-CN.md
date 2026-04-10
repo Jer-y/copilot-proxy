@@ -23,18 +23,26 @@
 
 **注意：** 如果你在使用 [opencode](https://github.com/sst/opencode)，则不需要本项目。Opencode 已原生支持 GitHub Copilot Provider。
 
+> [!NOTE]
+> GitHub 现在已经在部分产品中提供了官方的一方 Anthropic / Claude 支持，包括由 Copilot 驱动的 Anthropic Claude coding agent，以及 Copilot CLI 的 Anthropic BYOK 支持。
+>
+> - [Anthropic Claude - GitHub Docs](https://docs.github.com/en/copilot/concepts/agents/anthropic-claude)
+> - [在 GitHub Copilot CLI 中使用自带 LLM 模型 - GitHub Docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models)
+>
+> 如果你的目标是给 Claude Code、Codex、SDK 或自定义工具提供一个由 GitHub Copilot 订阅驱动的本地 OpenAI / Anthropic 兼容 HTTP 代理，本项目仍然有意义。
+
 ---
 
 ## 项目概览
 
-这是一个面向 GitHub Copilot API 的逆向代理，将其暴露为 OpenAI/Anthropic 兼容服务。你可以用任何支持 OpenAI Chat Completions/Responses 或 Anthropic Messages 的工具来调用 GitHub Copilot，包括 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 与 OpenAI Codex。
+这是一个面向 GitHub Copilot API 的逆向代理，把你的 Copilot 订阅暴露为 OpenAI / Anthropic 兼容 HTTP 端点。你可以用任何支持 OpenAI Chat Completions / Responses 或 Anthropic Messages 的外部工具来调用 GitHub Copilot，包括 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 与 OpenAI Codex。
 
 ## 功能特性
 
-- **OpenAI & Anthropic 兼容**：提供 OpenAI 兼容端点（`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`）与 Anthropic 兼容端点（`/v1/messages`）。
-- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.1-codex`、`gpt-5.2-codex`、`o3-mini`、`o4-mini` 等思考型模型。
+- **OpenAI & Anthropic 兼容**：提供 OpenAI 兼容端点（`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`）与 Anthropic 兼容端点（`/v1/messages`），并在上游支持时优先走 Claude 原生 `/v1/messages`。
+- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.4`、`gpt-5.3-codex`、`o3-mini`、`o4-mini` 等原生 Responses 模型，同时会对非 Responses 模型做按模型能力的 fallback。
 - **Codex 可用**：将 OpenAI Codex CLI/SDK 的 base URL 指向本代理即可使用。
-- **模型感知翻译**：自动应用模型优化 —— Claude 的提示缓存（`copilot_cache_control`）、`adaptive thinking` / `output_config.effort` 兼容并保留历史 `thinking.budget_tokens` 映射，以及模型名归一化（如 `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`）。
+- **模型感知路由与翻译**：会按模型族选择最合适的后端，自动应用 Claude 的提示缓存（`copilot_cache_control`），保留 `adaptive thinking` / `output_config.effort` 兼容，以及模型名归一化（如 `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`）。
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。
@@ -255,7 +263,7 @@ Copilot API 使用子命令结构，主要命令如下：
 
 ### OpenAI Responses API 端点
 
-支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.1-codex`、`gpt-5.2-codex`、`o3-mini`、`o4-mini` 等思考型模型。请求会被直接转发到 Copilot `/responses`。
+支持 OpenAI Responses API（`/v1/responses`）。对于原生支持 Copilot `/responses` 的模型，请求会直接转发到上游；对于不支持原生 `/responses` 的模型，代理会自动选择其支持的最佳后端并完成必要的协议转换。
 
 | 端点               | 方法 | 说明                                                   |
 | ------------------ | ---- | ------------------------------------------------------ |
@@ -263,7 +271,7 @@ Copilot API 使用子命令结构，主要命令如下：
 
 ### Anthropic 兼容端点
 
-这些端点与 Anthropic Messages API 兼容。收到 Anthropic 格式请求后会自动翻译为 OpenAI 格式转发给 Copilot，再将响应翻译回 Anthropic 格式。
+这些端点与 Anthropic Messages API 兼容。Claude 系列模型会优先走 Copilot 原生 `/v1/messages`，其他模型则根据能力路由到 `/chat/completions` 或 `/responses`，并按需做协议转换。结构化输出和文档相关边缘场景也会按模型能力选择路径，而不是固定走单一路由。
 
 | 端点                            | 方法 | 说明                                         |
 | ------------------------------- | ---- | -------------------------------------------- |

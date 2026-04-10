@@ -7,6 +7,9 @@ node_modules/
 # aider
 .aider*
 
+# local agent config
+.codex/
+
 # eslint cache
 .eslintcache
 

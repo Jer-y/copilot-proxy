@@ -23,18 +23,26 @@ English | [简体中文](README.zh-CN.md)
 
 **Note:** If you are using [opencode](https://github.com/sst/opencode), you do not need this project. Opencode supports GitHub Copilot provider out of the box.
 
+> [!NOTE]
+> GitHub now offers first-party Anthropic / Claude experiences in some products, including the Anthropic Claude coding agent powered by Copilot and BYOK Anthropic support in Copilot CLI.
+>
+> - [Anthropic Claude - GitHub Docs](https://docs.github.com/en/copilot/concepts/agents/anthropic-claude)
+> - [Using your own LLM models in GitHub Copilot CLI - GitHub Docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models)
+>
+> This project is still useful when you specifically want a local OpenAI- or Anthropic-compatible HTTP proxy backed by your GitHub Copilot subscription for external clients such as Claude Code, Codex, SDKs, or custom tooling.
+
 ---
 
 ## Project Overview
 
-A reverse-engineered proxy for the GitHub Copilot API that exposes it as an OpenAI- and Anthropic-compatible service. This lets you use GitHub Copilot with tools that support OpenAI Chat Completions/Responses or Anthropic Messages, including [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and OpenAI Codex.
+A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot subscription through OpenAI- and Anthropic-compatible HTTP endpoints. This lets you use GitHub Copilot with external tools that speak OpenAI Chat Completions/Responses or Anthropic Messages, including [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and OpenAI Codex.
 
 ## Features
 
-- **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
-- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for thinking-mode models like `gpt-5`, `gpt-5.1-codex`, `gpt-5.2-codex`, `o3-mini`, and `o4-mini`.
+- **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) APIs, with native Claude `/v1/messages` passthrough when the upstream supports it.
+- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for native Responses models such as `gpt-5`, `gpt-5.4`, `gpt-5.3-codex`, `o3-mini`, and `o4-mini`, with model-aware fallback for non-Responses models.
 - **Codex Ready**: Works with OpenAI Codex CLI/SDK by pointing its base URL to this proxy.
-- **Model-Aware Translation**: Automatically applies model-specific optimizations — prompt caching (`copilot_cache_control`) for Claude models, adaptive-thinking / `output_config.effort` compatibility with legacy `thinking.budget_tokens` mapping, and intelligent model name normalization (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
+- **Model-Aware Routing and Translation**: Automatically picks the best supported backend for each model family, applies Claude prompt caching (`copilot_cache_control`), preserves adaptive-thinking / `output_config.effort` compatibility, and normalizes model names (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
@@ -261,7 +269,7 @@ These endpoints mimic the OpenAI API structure.
 
 ### OpenAI Responses API Endpoint
 
-This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format, used by thinking-mode models such as `gpt-5`, `gpt-5.1-codex`, `gpt-5.2-codex`, `o3-mini`, and `o4-mini`. Requests are forwarded directly to Copilot's `/responses` endpoint.
+This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format. For models with native Copilot `/responses` support, requests are forwarded directly upstream. For models without native `/responses`, the proxy routes to the best supported backend and translates as needed.
 
 | Endpoint              | Method | Description                                                              |
 | --------------------- | ------ | ------------------------------------------------------------------------ |
@@ -269,7 +277,7 @@ This endpoint supports the [OpenAI Responses API](https://platform.openai.com/do
 
 ### Anthropic Compatible Endpoints
 
-These endpoints are designed to be compatible with the Anthropic Messages API. Incoming Anthropic-format requests are automatically translated to the OpenAI format before being sent to Copilot, and responses are translated back.
+These endpoints are designed to be compatible with the Anthropic Messages API. Claude-family models use Copilot's native `/v1/messages` surface first, while other models are routed through `/chat/completions` or `/responses` and translated as needed. Structured-output and document edge cases are handled by model-aware routing rules instead of a single fixed translation path.
 
 | Endpoint                         | Method | Description                                                  |
 | -------------------------------- | ------ | ------------------------------------------------------------ |
