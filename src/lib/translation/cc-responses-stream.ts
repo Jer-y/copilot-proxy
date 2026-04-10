@@ -106,7 +106,8 @@ export function translateResponsesStreamEventToCC(
       break
     }
 
-    case 'response.completed': {
+    case 'response.completed':
+    case 'response.incomplete': {
       if (event.response.status === 'failed') {
         throw createResponsesStreamCCError(event.response)
       }
@@ -562,7 +563,8 @@ export function translateResponsesStreamEventToAnthropic(
       break
     }
 
-    case 'response.completed': {
+    case 'response.completed':
+    case 'response.incomplete': {
       if (event.response.status === 'failed') {
         closeOpenAnthropicBlock(events, state)
         events.push({

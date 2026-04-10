@@ -274,7 +274,10 @@ function hasInlineImageData(part: Record<string, unknown>): boolean {
 export type ResponsesToolChoice = 'none' | 'auto' | 'required' | { type: 'function', name: string }
 
 export interface ResponsesTextConfig {
-  format?: { type: 'text' | 'json_object' | string }
+  format?: {
+    type: string
+    [key: string]: unknown
+  }
   verbosity?: 'medium'
 }
 
@@ -353,8 +356,19 @@ export interface ResponsesResponseError {
 export interface ResponsesResponse {
   id: string
   object: 'response'
+  created_at?: number
+  completed_at?: number | null
+  instructions?: string | null
+  max_output_tokens?: number | null
+  previous_response_id?: string | null
   model: string
   output: Array<ResponsesOutputItem>
+  text?: ResponsesTextConfig
+  reasoning?: {
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | null
+    summary?: Array<{ type: 'summary_text', text: string }> | null
+  }
+  metadata?: Record<string, unknown>
   usage?: {
     input_tokens: number
     output_tokens: number
@@ -388,10 +402,12 @@ export type ResponsesStreamEvent
   = | { type: 'response.created', response: ResponsesResponse }
     | { type: 'response.in_progress', response: ResponsesResponse }
     | { type: 'response.output_item.added', output_index: number, item: ResponsesOutputItem }
-    | { type: 'response.output_text.delta', output_index: number, content_index: number, delta: string }
+    | { type: 'response.output_text.delta', output_index: number, content_index: number, delta: string, item_id?: string }
+    | { type: 'response.output_text.done', output_index: number, content_index: number, text: string, item_id?: string }
     | { type: 'response.function_call_arguments.delta', output_index: number, item_id: string, delta: string }
-    | { type: 'response.content_part.added', output_index: number, content_index: number, part: Record<string, unknown> }
-    | { type: 'response.content_part.done', output_index: number, content_index: number, part: Record<string, unknown> }
+    | { type: 'response.function_call_arguments.done', output_index: number, item_id: string, arguments: string, item?: ResponsesOutputItem }
+    | { type: 'response.content_part.added', output_index: number, content_index: number, part: Record<string, unknown>, item_id?: string }
+    | { type: 'response.content_part.done', output_index: number, content_index: number, part: Record<string, unknown>, item_id?: string }
     | { type: 'response.output_item.done', output_index: number, item: ResponsesOutputItem }
     | { type: 'response.completed', response: ResponsesResponse }
     | { type: 'response.failed', response: ResponsesResponse }

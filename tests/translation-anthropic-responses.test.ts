@@ -1,10 +1,10 @@
 import type { AnthropicMessagesPayload } from '../src/lib/translation/types'
-import type { ResponsesResponse } from '../src/services/copilot/create-responses'
+import type { ResponsesPayload, ResponsesResponse } from '../src/services/copilot/create-responses'
 
 import { describe, expect, test } from 'bun:test'
 
 import { translateAnthropicRequestToResponses } from '../src/lib/translation/anthropic-to-responses'
-import { translateResponsesResponseToAnthropic } from '../src/lib/translation/responses-to-anthropic'
+import { translateResponsesRequestToAnthropic, translateResponsesResponseToAnthropic } from '../src/lib/translation/responses-to-anthropic'
 
 // ─── T7: Anthropic Request → Responses Request ──────────────────
 
@@ -203,6 +203,46 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
+  test('Anthropic tool strict is preserved on Responses tools', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      tools: [
+        {
+          name: 'strict_weather',
+          description: 'Get weather info',
+          input_schema: { type: 'object', properties: { city: { type: 'string' } } },
+          strict: true,
+        },
+        {
+          name: 'loose_weather',
+          description: 'Get forecast info',
+          input_schema: { type: 'object', properties: { city: { type: 'string' } } },
+          strict: false,
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.tools).toEqual([
+      {
+        type: 'function',
+        name: 'strict_weather',
+        description: 'Get weather info',
+        parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        strict: true,
+      },
+      {
+        type: 'function',
+        name: 'loose_weather',
+        description: 'Get forecast info',
+        parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        strict: false,
+      },
+    ])
+  })
+
   test('Claude tool cache_control is forwarded to Responses tools when supported', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'claude-opus-4.6',
@@ -228,6 +268,30 @@ describe('translateAnthropicRequestToResponses', () => {
         copilot_cache_control: { type: 'ephemeral' },
       },
     ])
+  })
+
+  test('should ignore top-level cache_control on Responses path', () => {
+    const result = translateAnthropicRequestToResponses({
+      model: 'claude-sonnet-4',
+      max_tokens: 100,
+      cache_control: { type: 'ephemeral' },
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    // top-level cache_control should not appear in the Responses output
+    expect((result as any).cache_control).toBeUndefined()
+  })
+
+  test('thinking.display is not representable in Responses format', () => {
+    const result = translateAnthropicRequestToResponses({
+      model: 'claude-sonnet-4.6',
+      max_tokens: 8192,
+      thinking: { type: 'adaptive', display: 'omitted' },
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    // Responses API has no display concept — reasoning should still be mapped
+    expect(result.reasoning).toBeDefined()
+    // display should not leak into the Responses output
+    expect((result.reasoning as any)?.display).toBeUndefined()
   })
 
   test('tool_choice mappings', () => {
@@ -446,7 +510,7 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(result.text).toEqual({ format: { type: 'json_object' } })
   })
 
-  test('schema-like output_config.format is still ignored on the Responses path', () => {
+  test('should map json_schema output_config.format to flat Responses text.format', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
       max_tokens: 1024,
@@ -455,15 +519,13 @@ describe('translateAnthropicRequestToResponses', () => {
         effort: 'high',
         format: {
           type: 'json_schema',
-          json_schema: {
-            name: 'sample',
-            schema: {
-              type: 'object',
-              properties: {
-                answer: { type: 'string' },
-              },
-              required: ['answer'],
+          name: 'sample',
+          schema: {
+            type: 'object',
+            properties: {
+              answer: { type: 'string' },
             },
+            required: ['answer'],
           },
         },
       },
@@ -471,7 +533,230 @@ describe('translateAnthropicRequestToResponses', () => {
 
     const result = translateAnthropicRequestToResponses(payload)
     expect(result.reasoning).toEqual({ effort: 'high' })
-    expect(result.text).toBeUndefined()
+    expect(result.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'sample',
+        schema: {
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer'],
+        },
+      },
+    })
+  })
+
+  test('legacy nested json_schema input is normalized to flat Responses text.format', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      output_config: {
+        format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'legacy',
+            schema: {
+              type: 'object',
+              properties: {
+                ok: { type: 'boolean' },
+              },
+              required: ['ok'],
+            },
+          },
+        },
+      },
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'legacy',
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+        },
+      },
+    })
+  })
+})
+
+describe('translateResponsesRequestToAnthropic', () => {
+  test('json_schema structured output is forwarded to native Anthropic output_config in flat shape', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Return JSON.',
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'answer',
+          schema: {
+            type: 'object',
+            properties: {
+              value: { type: 'string' },
+            },
+            required: ['value'],
+          },
+        },
+      },
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.output_config).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'answer',
+        schema: {
+          type: 'object',
+          properties: {
+            value: { type: 'string' },
+          },
+          required: ['value'],
+        },
+      },
+    })
+  })
+
+  test('nested json_schema input is normalized to Anthropic flat schema shape', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Return JSON.',
+      text: {
+        format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'answer',
+            schema: {
+              type: 'object',
+              properties: {
+                value: { type: 'string' },
+              },
+              required: ['value'],
+            },
+          },
+        },
+      },
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.output_config).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'answer',
+        schema: {
+          type: 'object',
+          properties: {
+            value: { type: 'string' },
+          },
+          required: ['value'],
+        },
+      },
+    })
+  })
+
+  test('json_schema without schema is rejected instead of being passed through', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Return JSON.',
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'answer',
+        },
+      },
+    }
+
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      'Responses text.format.type="json_schema" requires an object "schema"',
+    )
+  })
+
+  test('conflicting strict locations are rejected instead of guessed', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Return JSON.',
+      text: {
+        format: {
+          type: 'json_schema',
+          strict: true,
+          json_schema: {
+            strict: false,
+            schema: {
+              type: 'object',
+              properties: {
+                value: { type: 'string' },
+              },
+              required: ['value'],
+            },
+          },
+        },
+      },
+    }
+
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      'Responses text.format for json_schema must use either "strict" or "json_schema.strict", not both',
+    )
+  })
+
+  test('json_object structured output is not emitted on native Anthropic requests', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Return JSON.',
+      text: {
+        format: {
+          type: 'json_object',
+        },
+      },
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.output_config).toBeUndefined()
+  })
+
+  test('tool strict is forwarded to native Anthropic tools', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Call tools as needed.',
+      tools: [
+        {
+          type: 'function',
+          name: 'strict_true_tool',
+          parameters: { type: 'object', properties: { q: { type: 'string' } } },
+          strict: true,
+        },
+        {
+          type: 'function',
+          name: 'strict_false_tool',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+          strict: false,
+        },
+        {
+          type: 'function',
+          name: 'no_strict_tool',
+          parameters: { type: 'object', properties: { id: { type: 'string' } } },
+        },
+      ],
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.tools).toEqual([
+      {
+        name: 'strict_true_tool',
+        input_schema: { type: 'object', properties: { q: { type: 'string' } } },
+        strict: true,
+      },
+      {
+        name: 'strict_false_tool',
+        input_schema: { type: 'object', properties: { city: { type: 'string' } } },
+        strict: false,
+      },
+      {
+        name: 'no_strict_tool',
+        input_schema: { type: 'object', properties: { id: { type: 'string' } } },
+      },
+    ])
   })
 })
 
@@ -573,6 +858,25 @@ describe('translateResponsesResponseToAnthropic', () => {
 
     const result = translateResponsesResponseToAnthropic(response)
     expect(result.stop_reason).toBe('refusal')
+  })
+
+  test('incomplete without reason maps to pause_turn stop_reason', () => {
+    const response: ResponsesResponse = {
+      id: 'resp_pause_turn',
+      object: 'response',
+      model: 'gpt-5.4',
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: 'Continue this turn later.' }],
+        },
+      ],
+      status: 'incomplete',
+      incomplete_details: null,
+    }
+
+    const result = translateResponsesResponseToAnthropic(response)
+    expect(result.stop_reason).toBe('pause_turn')
   })
 
   test('mixed text and function_call output', () => {

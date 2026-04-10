@@ -28,6 +28,29 @@ export function parseBetaFeatures(anthropicBeta: string | undefined): Set<string
 }
 
 /**
+ * Beta features consumed by the proxy for variant selection.
+ * These are stripped from the anthropic-beta header before forwarding to
+ * Copilot upstream, which rejects unrecognized beta headers.
+ */
+const PROXY_CONSUMED_BETA_FEATURES = new Set([
+  'context-1m-2025-08-07',
+  'fast-mode-2026-02-01',
+])
+
+/**
+ * Strip proxy-consumed beta features from the anthropic-beta header.
+ * Returns undefined if no features remain after stripping.
+ */
+export function sanitizeAnthropicBetaHeader(anthropicBeta: string | undefined): string | undefined {
+  if (!anthropicBeta) {
+    return undefined
+  }
+  const features = anthropicBeta.split(',').map(s => s.trim()).filter(Boolean)
+  const remaining = features.filter(f => !PROXY_CONSUMED_BETA_FEATURES.has(f))
+  return remaining.length > 0 ? remaining.join(',') : undefined
+}
+
+/**
  * Resolve the Anthropic request model to the effective Copilot model ID.
  * Claude fast/1m requests stay as distinct variant IDs, but inherit the same
  * backend and capability support as the base Opus 4.6 model.
@@ -73,6 +96,13 @@ export function translateToOpenAI(
     logIgnoredAnthropicParameter(
       'top_k',
       'Chat Completions does not expose an OpenAI-compatible top_k field.',
+    )
+  }
+
+  if (payload.cache_control) {
+    logIgnoredAnthropicParameter(
+      'cache_control',
+      'Top-level cache_control is not representable in Chat Completions format.',
     )
   }
 

@@ -10,6 +10,7 @@ export interface AnthropicMessagesPayload {
   messages: Array<AnthropicMessage>
   max_tokens?: number
   system?: string | Array<AnthropicTextBlock>
+  cache_control?: AnthropicCacheControl
   metadata?: {
     user_id?: string
   }
@@ -31,21 +32,38 @@ export interface AnthropicMessagesPayload {
     }
     | {
       type: 'adaptive'
+      display?: 'summarized' | 'omitted' | null
     }
     | {
       type: 'disabled'
     }
   output_config?: {
     effort?: 'low' | 'medium' | 'high' | 'max'
-    format?: Record<string, unknown>
+    format?: AnthropicOutputConfigFormat
   }
   service_tier?: 'auto' | 'standard_only'
   speed?: 'fast' | 'normal'
 }
 
+export interface AnthropicOutputConfigJsonSchemaFormat {
+  type: 'json_schema'
+  schema: Record<string, unknown>
+  name?: string
+}
+
+export interface AnthropicOutputConfigJsonObjectFormat {
+  type: 'json_object'
+}
+
+export type AnthropicOutputConfigFormat
+  = | AnthropicOutputConfigJsonSchemaFormat
+    | AnthropicOutputConfigJsonObjectFormat
+    | Record<string, unknown>
+
 export interface AnthropicTextBlock {
   type: 'text'
   text: string
+  citations?: Array<Record<string, unknown>>
   cache_control?: AnthropicCacheControl
 }
 
@@ -76,8 +94,24 @@ export interface AnthropicDocumentBlock {
       type: 'url'
       url: string
     }
+    | {
+      type: 'text'
+      media_type: string
+      text: string
+    }
+    | {
+      type: 'content'
+      content: Array<AnthropicTextBlock>
+    }
+    | {
+      type: 'file'
+      file_id: string
+    }
   title?: string
   context?: string
+  citations?: {
+    enabled: boolean
+  }
   cache_control?: AnthropicCacheControl
 }
 
@@ -134,6 +168,7 @@ export interface AnthropicTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
+  strict?: boolean
   cache_control?: AnthropicCacheControl
 }
 
@@ -262,4 +297,36 @@ export interface AnthropicStreamState {
   }
   /** When set, overrides the upstream model name in translated responses. */
   requestedModel?: string
+}
+
+// State for Anthropic → Responses streaming translation (T12)
+export interface AnthropicToResponsesStreamState {
+  responseId: string
+  model: string
+  createdSent: boolean
+  nextOutputIndex: number
+  /** Current Anthropic content block type (needed because content_block_stop has no type info) */
+  currentBlockType: 'text' | 'thinking' | 'tool_use' | 'redacted_thinking' | null
+  currentBlockIndex: number
+  /** Output index of the current open message item */
+  messageOutputIndex: number | undefined
+  messageItemOpen: boolean
+  messageParts: Array<{ type: 'output_text', text: string }>
+  /** Text accumulated for the current streaming text part */
+  currentPartText: string
+  contentPartIndex: number
+  /** Tracks Anthropic content block index → tool call state */
+  toolCalls: Map<number, {
+    outputIndex: number
+    callId: string
+    name: string
+    arguments: string
+  }>
+  /** Accumulated thinking text for current thinking block */
+  currentThinkingText: string
+  /** Accumulated completed output items for the final response.completed payload */
+  completedOutputItems: Array<Record<string, unknown>>
+  stopReason: string | undefined
+  inputTokens: number
+  outputTokens: number
 }

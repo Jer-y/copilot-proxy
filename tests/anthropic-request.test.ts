@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { z } from 'zod'
 
-import { applyModelVariant, parseBetaFeatures, translateToOpenAI } from '../src/routes/messages/non-stream-translation'
+import { applyModelVariant, parseBetaFeatures, sanitizeAnthropicBetaHeader, translateToOpenAI } from '../src/routes/messages/non-stream-translation'
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
@@ -447,6 +447,17 @@ describe('copilot_cache_control injection for Claude models', () => {
     expect(result.tools![1].copilot_cache_control).toEqual({ type: 'ephemeral' })
   })
 
+  test('should ignore top-level cache_control on chat-completions path', () => {
+    const result = translateToOpenAI({
+      model: 'claude-sonnet-4',
+      max_tokens: 100,
+      cache_control: { type: 'ephemeral' },
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    // top-level cache_control should not appear in the CC output
+    expect((result as any).cache_control).toBeUndefined()
+  })
+
   test('should NOT add copilot_cache_control for non-Claude models', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-4o',
@@ -678,7 +689,7 @@ describe('structured output mapping', () => {
     expect(result.response_format).toEqual({ type: 'json_object' })
   })
 
-  test('should ignore schema-like output_config.format on chat-completions path', () => {
+  test('should map json_schema output_config.format to chat-completions response_format', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'claude-opus-4.6',
       messages: [{ role: 'user', content: 'Return JSON.' }],
@@ -686,18 +697,29 @@ describe('structured output mapping', () => {
       output_config: {
         format: {
           type: 'json_schema',
-          json_schema: {
-            name: 'sample',
-            schema: {
-              type: 'object',
-            },
+          name: 'sample',
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
           },
         },
       },
     }
 
     const result = translateToOpenAI(payload)
-    expect(result.response_format).toBeUndefined()
+    expect(result.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: {
+        name: 'sample',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer'],
+        },
+      },
+    })
   })
 })
 
@@ -1021,5 +1043,20 @@ describe('Model variant routing', () => {
 
   test('parseBetaFeatures returns empty set for empty string', () => {
     expect(parseBetaFeatures('').size).toBe(0)
+  })
+
+  test('sanitizeAnthropicBetaHeader strips proxy-consumed features', () => {
+    expect(sanitizeAnthropicBetaHeader('context-1m-2025-08-07')).toBeUndefined()
+    expect(sanitizeAnthropicBetaHeader('fast-mode-2026-02-01')).toBeUndefined()
+    expect(sanitizeAnthropicBetaHeader('context-1m-2025-08-07,fast-mode-2026-02-01')).toBeUndefined()
+  })
+
+  test('sanitizeAnthropicBetaHeader preserves non-consumed features', () => {
+    expect(sanitizeAnthropicBetaHeader('claude-code-2025-01-01')).toBe('claude-code-2025-01-01')
+    expect(sanitizeAnthropicBetaHeader('claude-code-2025-01-01, context-1m-2025-08-07')).toBe('claude-code-2025-01-01')
+  })
+
+  test('sanitizeAnthropicBetaHeader returns undefined for undefined input', () => {
+    expect(sanitizeAnthropicBetaHeader(undefined)).toBeUndefined()
   })
 })

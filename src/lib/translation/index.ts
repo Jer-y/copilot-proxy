@@ -1,5 +1,10 @@
 // Anthropic ↔ Responses translations
-export { translateAnthropicRequestToResponses } from './anthropic-to-responses'
+export {
+  createAnthropicToResponsesStreamState,
+  translateAnthropicRequestToResponses,
+  translateAnthropicResponseToResponses,
+  translateAnthropicStreamEventToResponses,
+} from './anthropic-to-responses'
 // Streaming translations
 export {
   createAnthropicFromResponsesStreamState,
@@ -13,7 +18,7 @@ export {
 // CC ↔ Responses translations
 export { translateCCRequestToResponses, translateResponsesResponseToCC } from './cc-to-responses'
 
-export { translateResponsesResponseToAnthropic } from './responses-to-anthropic'
+export { translateResponsesRequestToAnthropic, translateResponsesResponseToAnthropic } from './responses-to-anthropic'
 export { translateCCResponseToResponses, translateResponsesRequestToCC } from './responses-to-cc'
 
 // Shared types

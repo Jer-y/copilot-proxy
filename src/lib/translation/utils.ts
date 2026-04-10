@@ -101,7 +101,10 @@ export function mapResponsesStatusToAnthropicStopReason(
     if (incompleteDetails?.reason === 'content_filter') {
       return 'refusal'
     }
-    return 'max_tokens'
+    if (incompleteDetails?.reason === 'max_output_tokens') {
+      return 'max_tokens'
+    }
+    return 'pause_turn'
   }
 
   const hasFunctionCall = output.some(item => item.type === 'function_call')

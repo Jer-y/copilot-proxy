@@ -184,4 +184,133 @@ describe('Responses stream failure handling', () => {
       },
     ])
   })
+
+  test('translateResponsesStreamEventToCC finalizes response.incomplete like a terminal event', () => {
+    const state = createResponsesToCCStreamState()
+
+    translateResponsesStreamEventToCC({
+      type: 'response.created',
+      response: {
+        id: 'resp_1',
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status: 'in_progress',
+      },
+    }, state)
+
+    const chunks = translateResponsesStreamEventToCC({
+      type: 'response.incomplete',
+      response: {
+        id: 'resp_1',
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+      },
+    }, state)
+
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]?.choices[0]?.finish_reason).toBe('length')
+  })
+
+  test('translateResponsesStreamEventToAnthropic finalizes response.incomplete with mapped stop_reason', () => {
+    const state = createAnthropicFromResponsesStreamState()
+
+    const events = translateResponsesStreamEventToAnthropic({
+      type: 'response.incomplete',
+      response: {
+        id: 'resp_1',
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status: 'incomplete',
+        incomplete_details: { reason: 'content_filter' },
+        usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+      },
+    }, state)
+
+    expect(events).toEqual([
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'refusal', stop_sequence: null },
+        usage: { output_tokens: 1 },
+      },
+      {
+        type: 'message_stop',
+      },
+    ])
+  })
+
+  test('translateResponsesStreamEventToAnthropic maps reasonless response.incomplete to pause_turn', () => {
+    const state = createAnthropicFromResponsesStreamState()
+
+    const events = translateResponsesStreamEventToAnthropic({
+      type: 'response.incomplete',
+      response: {
+        id: 'resp_pause',
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status: 'incomplete',
+        incomplete_details: null,
+        usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+      },
+    }, state)
+
+    expect(events).toEqual([
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'pause_turn', stop_sequence: null },
+        usage: { output_tokens: 1 },
+      },
+      {
+        type: 'message_stop',
+      },
+    ])
+  })
+
+  test('translators ignore output_text.done and function_call_arguments.done helper events', () => {
+    const ccState = createResponsesToCCStreamState()
+    const anthropicState = createAnthropicFromResponsesStreamState()
+
+    translateResponsesStreamEventToCC({
+      type: 'response.created',
+      response: {
+        id: 'resp_1',
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status: 'in_progress',
+      },
+    }, ccState)
+
+    const outputTextDoneEvent: ResponsesStreamEvent = {
+      type: 'response.output_text.done',
+      output_index: 0,
+      content_index: 0,
+      item_id: 'msg_1',
+      text: 'done',
+    }
+    const functionCallDoneEvent: ResponsesStreamEvent = {
+      type: 'response.function_call_arguments.done',
+      output_index: 1,
+      item_id: 'fc_1',
+      arguments: '{"ok":true}',
+      item: {
+        type: 'function_call',
+        id: 'fc_1',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{"ok":true}',
+        status: 'completed',
+      },
+    }
+
+    expect(translateResponsesStreamEventToCC(outputTextDoneEvent, ccState)).toEqual([])
+    expect(translateResponsesStreamEventToCC(functionCallDoneEvent, ccState)).toEqual([])
+    expect(translateResponsesStreamEventToAnthropic(outputTextDoneEvent, anthropicState)).toEqual([])
+    expect(translateResponsesStreamEventToAnthropic(functionCallDoneEvent, anthropicState)).toEqual([])
+  })
 })
