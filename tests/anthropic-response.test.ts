@@ -119,7 +119,7 @@ describe('OpenAI to Anthropic Non-Streaming Response Translation', () => {
     }
   })
 
-  test('should translate reasoning_text into an Anthropic thinking block', () => {
+  test('should omit reasoning_text when translating chat completions back to Anthropic', () => {
     const openAIResponse: ChatCompletionResponse = {
       id: 'chatcmpl-thinking',
       object: 'chat.completion',
@@ -147,17 +147,14 @@ describe('OpenAI to Anthropic Non-Streaming Response Translation', () => {
     const anthropicResponse = translateToAnthropic(openAIResponse)
 
     expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    expect(anthropicResponse.content).toHaveLength(1)
     expect(anthropicResponse.content[0]).toEqual({
-      type: 'thinking',
-      thinking: 'Let me reason this through first.',
-    })
-    expect(anthropicResponse.content[1]).toEqual({
       type: 'text',
       text: 'Final answer.',
     })
   })
 
-  test('should translate reasoning_opaque into an Anthropic thinking signature', () => {
+  test('should omit reasoning_opaque instead of replaying it as an Anthropic thinking signature', () => {
     const openAIResponse: ChatCompletionResponse = {
       id: 'chatcmpl-thinking-signature',
       object: 'chat.completion',
@@ -186,10 +183,10 @@ describe('OpenAI to Anthropic Non-Streaming Response Translation', () => {
     const anthropicResponse = translateToAnthropic(openAIResponse)
 
     expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    expect(anthropicResponse.content).toHaveLength(1)
     expect(anthropicResponse.content[0]).toEqual({
-      type: 'thinking',
-      thinking: 'Replayable hidden reasoning.',
-      signature: 'sig_reasoning_opaque_123',
+      type: 'text',
+      text: 'Visible answer.',
     })
   })
 

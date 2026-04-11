@@ -547,16 +547,23 @@ export function translateToAnthropic(
   let stopReason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null
     = null // default
   stopReason = response.choices[0]?.finish_reason ?? stopReason
+  const hasReplayUnsafeReasoning = response.choices.some(choice =>
+    typeof choice.message.reasoning_text === 'string'
+    && choice.message.reasoning_text.length > 0,
+  )
+
+  if (hasReplayUnsafeReasoning) {
+    logLossyAnthropicCompatibility(
+      'chat completions reasoning replay',
+      'Copilot Chat Completions reasoning cannot be replayed as Anthropic thinking blocks: native /v1/messages requires Anthropic-issued thinking signatures, and Copilot reasoning_opaque is rejected there. The proxy omits translated thinking blocks to keep follow-up turns valid.',
+    )
+  }
 
   for (const choice of response.choices) {
-    const thinkingBlocks = getAnthropicThinkingBlocks(
-      choice.message.reasoning_text,
-      choice.message.reasoning_opaque,
-    )
     const textBlocks = getAnthropicTextBlocks(choice.message.content)
     const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls)
 
-    allContentBlocks.push(...thinkingBlocks, ...textBlocks, ...toolUseBlocks)
+    allContentBlocks.push(...textBlocks, ...toolUseBlocks)
 
     // Use the finish_reason from the first choice, or prioritize tool_calls
     if (choice.finish_reason === 'tool_calls' || stopReason === 'stop') {
@@ -584,23 +591,6 @@ export function translateToAnthropic(
       }),
     },
   }
-}
-
-function getAnthropicThinkingBlocks(
-  reasoningText: Message['reasoning_text'],
-  reasoningOpaque?: Message['reasoning_opaque'],
-): Array<AnthropicThinkingBlock> {
-  if (typeof reasoningText !== 'string' || reasoningText.length === 0) {
-    return []
-  }
-
-  return [{
-    type: 'thinking',
-    thinking: reasoningText,
-    ...(typeof reasoningOpaque === 'string' && reasoningOpaque.length > 0
-      ? { signature: reasoningOpaque }
-      : {}),
-  }]
 }
 
 function getAnthropicTextBlocks(

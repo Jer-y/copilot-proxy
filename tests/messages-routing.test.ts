@@ -440,6 +440,172 @@ describe('messages route upstream adaptation', () => {
     expect(res.status).toBe(502)
   })
 
+  test('Claude native passthrough retries once after stripping replayed assistant thinking blocks', async () => {
+    const forwardedPayloads: Array<{
+      messages?: Array<{
+        role?: string
+        content?: unknown
+      }>
+    }> = []
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith('/v1/messages')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      const forwardedPayload = init?.body
+        ? JSON.parse(String(init.body)) as {
+          messages?: Array<{
+            role?: string
+            content?: unknown
+          }>
+        }
+        : {}
+      forwardedPayloads.push(forwardedPayload)
+
+      if (forwardedPayloads.length === 1) {
+        return new Response(JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'messages.1.content.0: Invalid `signature` in `thinking` block',
+          },
+        }), {
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': 'req_invalid_signature',
+          },
+        })
+      }
+
+      return new Response(JSON.stringify({
+        id: 'msg_self_healed',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'healed' }],
+        model: 'claude-opus-4.6',
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 9, output_tokens: 1 },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [
+          { role: 'user', content: 'Hello.' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'Old replay-only reasoning.',
+                signature: 'sig_old_only',
+              },
+            ],
+          },
+          { role: 'user', content: 'Continue.' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'Signed reasoning to strip.',
+                signature: 'sig_mixed',
+              },
+              { type: 'text', text: 'Visible answer.' },
+            ],
+          },
+          { role: 'user', content: 'Follow up.' },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    expect(forwardedPayloads[0]?.messages?.[1]?.content).toEqual([
+      {
+        type: 'thinking',
+        thinking: 'Old replay-only reasoning.',
+        signature: 'sig_old_only',
+      },
+    ])
+    expect(forwardedPayloads[0]?.messages?.[3]?.content).toEqual([
+      {
+        type: 'thinking',
+        thinking: 'Signed reasoning to strip.',
+        signature: 'sig_mixed',
+      },
+      { type: 'text', text: 'Visible answer.' },
+    ])
+
+    expect(forwardedPayloads[1]?.messages?.map(message => message.role)).toEqual([
+      'user',
+      'user',
+      'assistant',
+      'user',
+    ])
+    expect(forwardedPayloads[1]?.messages?.[2]?.content).toEqual([
+      { type: 'text', text: 'Visible answer.' },
+    ])
+
+    const body = await res.json() as {
+      content?: Array<Record<string, unknown>>
+    }
+    expect(body.content).toEqual([{ type: 'text', text: 'healed' }])
+  })
+
+  test('Claude invalid signature errors are forwarded when there is no assistant thinking history to strip', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (!url.endsWith('/v1/messages')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response(JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'messages.1.content.0: Invalid `signature` in `thinking` block',
+        },
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const body = await res.json() as {
+      error?: {
+        type?: string
+        message?: string
+      }
+    }
+
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('Invalid `signature` in `thinking` block')
+  })
+
   test('Claude URL image requests fail locally with Anthropic invalid_request_error', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',

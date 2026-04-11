@@ -9,7 +9,7 @@ import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { awaitApproval } from '~/lib/approval'
 import { runBackendPlan } from '~/lib/backend-plan'
-import { JSONResponseError } from '~/lib/error'
+import { HTTPError, JSONResponseError } from '~/lib/error'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { planMessagesBackends } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
@@ -41,6 +41,8 @@ import {
 } from './non-stream-translation'
 import { createAnthropicSSEWriter } from './sse-writer'
 import { canRecoverUpstreamTerminationAsMessage, finalizeAnthropicStreamFromState, translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from './stream-translation'
+
+const INVALID_THINKING_SIGNATURE_PATTERN = /invalid [`'"]?signature[`'"]? in [`'"]?thinking[`'"]? block/i
 
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
@@ -603,7 +605,7 @@ async function handleViaNativeAnthropic(
     consola.debug('Native Anthropic passthrough payload:', JSON.stringify(payload))
   }
 
-  const result = await createAnthropicMessages(payload, {
+  const result = await createAnthropicMessagesWithThinkingSignatureRetry(payload, {
     anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
   })
 
@@ -690,6 +692,48 @@ async function handleViaNativeAnthropic(
   })
 }
 
+async function createAnthropicMessagesWithThinkingSignatureRetry(
+  payload: AnthropicMessagesPayload,
+  options?: { signal?: AbortSignal, anthropicBeta?: string },
+): ReturnType<typeof createAnthropicMessages> {
+  try {
+    return await createAnthropicMessages(payload, options)
+  }
+  catch (error) {
+    if (!await isInvalidThinkingSignatureError(error)) {
+      throw error
+    }
+
+    const stripped = stripAssistantThinkingBlocks(payload)
+    if (!stripped.stripped) {
+      throw error
+    }
+
+    logLossyAnthropicCompatibility(
+      'assistant thinking replay',
+      'Native /v1/messages rejected a replayed assistant thinking signature, so the proxy retried once after stripping assistant thinking/redacted_thinking history.',
+    )
+
+    const requestId = error instanceof HTTPError
+      ? error.response.headers.get('x-request-id')
+      : null
+    const requestIdSuffix = requestId ? ` (request id: ${requestId})` : ''
+    const droppedSuffix = stripped.droppedAssistantMessages > 0
+      ? ` and dropping ${stripped.droppedAssistantMessages} thinking-only assistant turn(s)`
+      : ''
+
+    consola.warn(
+      `Native Anthropic passthrough retrying once after removing ${stripped.strippedBlocks} assistant thinking/redacted_thinking block(s)${droppedSuffix}${requestIdSuffix}.`,
+    )
+
+    if (consola.level >= 4) {
+      consola.debug('Native Anthropic self-heal payload:', JSON.stringify(stripped.payload))
+    }
+
+    return await createAnthropicMessages(stripped.payload, options)
+  }
+}
+
 /**
  * Minimal sanitization for the native Anthropic passthrough path.
  *
@@ -762,6 +806,110 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
   if ('strict' in formatRecord) {
     consola.debug('Stripping output_config.format.strict (unsupported by Copilot /v1/messages backend)')
     delete formatRecord.strict
+  }
+}
+
+async function isInvalidThinkingSignatureError(error: unknown): Promise<boolean> {
+  if (!(error instanceof HTTPError) || error.response.status !== 400) {
+    return false
+  }
+
+  const upstreamMessage = await readUpstreamErrorMessage(error.response)
+  return typeof upstreamMessage === 'string'
+    && INVALID_THINKING_SIGNATURE_PATTERN.test(upstreamMessage)
+}
+
+async function readUpstreamErrorMessage(response: Response): Promise<string | undefined> {
+  let errorText: string
+  try {
+    errorText = await response.clone().text()
+  }
+  catch {
+    return undefined
+  }
+
+  if (!errorText) {
+    return undefined
+  }
+
+  try {
+    return extractUpstreamErrorMessage(JSON.parse(errorText)) ?? errorText
+  }
+  catch {
+    return errorText
+  }
+}
+
+function extractUpstreamErrorMessage(payload: unknown): string | undefined {
+  if (!isRecord(payload)) {
+    return undefined
+  }
+
+  if (typeof payload.message === 'string') {
+    return payload.message
+  }
+
+  const error = payload.error
+  if (isRecord(error) && typeof error.message === 'string') {
+    return error.message
+  }
+
+  return undefined
+}
+
+function stripAssistantThinkingBlocks(
+  payload: AnthropicMessagesPayload,
+): {
+  payload: AnthropicMessagesPayload
+  stripped: boolean
+  strippedBlocks: number
+  droppedAssistantMessages: number
+} {
+  let strippedBlocks = 0
+  let droppedAssistantMessages = 0
+
+  const messages = payload.messages.flatMap((message) => {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      return [message]
+    }
+
+    const content = message.content.filter((block) => {
+      const shouldStrip = block.type === 'thinking' || block.type === 'redacted_thinking'
+      if (shouldStrip) {
+        strippedBlocks += 1
+      }
+      return !shouldStrip
+    })
+
+    if (content.length === message.content.length) {
+      return [message]
+    }
+
+    if (content.length === 0) {
+      droppedAssistantMessages += 1
+      return []
+    }
+
+    return [{ ...message, content }]
+  })
+
+  if (strippedBlocks === 0) {
+    return {
+      payload,
+      stripped: false,
+      strippedBlocks: 0,
+      droppedAssistantMessages: 0,
+    }
+  }
+
+  return {
+    payload: {
+      ...payload,
+      messages,
+    },
+    stripped: true,
+    strippedBlocks,
+    droppedAssistantMessages,
   }
 }
 

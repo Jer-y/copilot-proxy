@@ -193,7 +193,7 @@ describe('Stream translation edge cases', () => {
     }
   })
 
-  test('reasoning text opens a thinking block', () => {
+  test('reasoning text is omitted from translated Anthropic events', () => {
     const state = freshState()
     const events = translateChunkToAnthropicEvents(
       makeChunk({
@@ -211,35 +211,13 @@ describe('Stream translation edge cases', () => {
 
     expect(events.map(event => event.type)).toEqual([
       'message_start',
-      'content_block_start',
-      'content_block_delta',
     ])
-
-    const thinkingStart = events[1]
-    const thinkingDelta = events[2]
-
-    if (thinkingStart?.type === 'content_block_start') {
-      expect(thinkingStart.content_block.type).toBe('thinking')
-      if (thinkingStart.content_block.type === 'thinking') {
-        expect(thinkingStart.content_block.signature).toBeUndefined()
-      }
-    }
-    else {
-      throw new Error('Expected content_block_start event')
-    }
-
-    if (thinkingDelta?.type === 'content_block_delta') {
-      expect(thinkingDelta.delta.type).toBe('thinking_delta')
-    }
-    else {
-      throw new Error('Expected content_block_delta event')
-    }
-
-    expect(state.contentBlockOpen).toBe(true)
-    expect(state.currentBlockType).toBe('thinking')
+    expect(state.hasThinkingContent).toBe(true)
+    expect(state.contentBlockOpen).toBe(false)
+    expect(state.currentBlockType).toBeNull()
   })
 
-  test('reasoning_opaque is replayed as the Anthropic thinking signature', () => {
+  test('reasoning_opaque is omitted while visible text still streams', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -269,25 +247,17 @@ describe('Stream translation edge cases', () => {
     )
 
     expect(events.map(event => event.type)).toEqual([
-      'content_block_delta',
-      'content_block_stop',
       'content_block_start',
       'content_block_delta',
     ])
-
-    const signatureDelta = events[0]
-    if (signatureDelta?.type === 'content_block_delta') {
-      expect(signatureDelta.delta.type).toBe('signature_delta')
-      if (signatureDelta.delta.type === 'signature_delta') {
-        expect(signatureDelta.delta.signature).toBe('sig_reasoning_opaque_123')
-      }
-    }
-    else {
-      throw new Error('Expected signature delta event')
-    }
+    expect(events.some(event =>
+      event.type === 'content_block_delta'
+      && event.delta.type === 'signature_delta',
+    )).toBe(false)
+    expect(state.currentBlockType).toBe('text')
   })
 
-  test('leading whitespace is suppressed when thinking starts next', () => {
+  test('leading whitespace stays buffered when a reasoning chunk is omitted', () => {
     const state = freshState()
 
     const firstEvents = translateChunkToAnthropicEvents(
@@ -323,24 +293,9 @@ describe('Stream translation edge cases', () => {
       state,
     )
 
-    expect(secondEvents.map(event => event.type)).toEqual([
-      'content_block_start',
-      'content_block_delta',
-    ])
-
-    const startEvent = secondEvents[0]
-    if (startEvent?.type === 'content_block_start') {
-      expect(startEvent.index).toBe(0)
-      expect(startEvent.content_block.type).toBe('thinking')
-      if (startEvent.content_block.type === 'thinking') {
-        expect(startEvent.content_block.signature).toBeUndefined()
-      }
-    }
-    else {
-      throw new Error('Expected content_block_start event')
-    }
-
-    expect(state.pendingLeadingText).toBe('')
+    expect(secondEvents).toEqual([])
+    expect(state.pendingLeadingText).toBe('\n\n')
+    expect(state.hasThinkingContent).toBe(true)
   })
 
   test('leading whitespace is preserved when real text follows', () => {
@@ -396,7 +351,7 @@ describe('Stream translation edge cases', () => {
     }
   })
 
-  test('text followed by reasoning closes the text block first', () => {
+  test('text followed by reasoning keeps the text block open', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -422,28 +377,12 @@ describe('Stream translation edge cases', () => {
       state,
     )
 
-    expect(events.map(event => event.type)).toEqual([
-      'content_block_stop',
-      'content_block_start',
-      'content_block_delta',
-    ])
-
-    const thinkingStart = events[1]
-    if (thinkingStart?.type === 'content_block_start') {
-      expect(thinkingStart.content_block.type).toBe('thinking')
-      if (thinkingStart.content_block.type === 'thinking') {
-        expect(thinkingStart.content_block.signature).toBeUndefined()
-      }
-    }
-    else {
-      throw new Error('Expected content_block_start event')
-    }
-
-    expect(state.currentBlockType).toBe('thinking')
-    expect(state.contentBlockIndex).toBe(1)
+    expect(events).toEqual([])
+    expect(state.currentBlockType).toBe('text')
+    expect(state.contentBlockIndex).toBe(0)
   })
 
-  test('reasoning followed by text closes the thinking block first', () => {
+  test('reasoning followed by text opens a text block directly', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -470,12 +409,11 @@ describe('Stream translation edge cases', () => {
     )
 
     expect(events.map(event => event.type)).toEqual([
-      'content_block_stop',
       'content_block_start',
       'content_block_delta',
     ])
 
-    const textStart = events[1]
+    const textStart = events[0]
     if (textStart?.type === 'content_block_start') {
       expect(textStart.content_block.type).toBe('text')
     }
@@ -486,7 +424,7 @@ describe('Stream translation edge cases', () => {
     expect(state.currentBlockType).toBe('text')
   })
 
-  test('reasoning followed by tool use closes the thinking block first', () => {
+  test('reasoning followed by tool use opens a tool block directly', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -522,12 +460,11 @@ describe('Stream translation edge cases', () => {
     )
 
     expect(events.map(event => event.type)).toEqual([
-      'content_block_stop',
       'content_block_start',
       'content_block_delta',
     ])
 
-    const toolStart = events[1]
+    const toolStart = events[0]
     if (toolStart?.type === 'content_block_start') {
       expect(toolStart.content_block.type).toBe('tool_use')
     }
@@ -538,7 +475,7 @@ describe('Stream translation edge cases', () => {
     expect(state.currentBlockType).toBe('tool_use')
   })
 
-  test('finish_reason closes an open thinking block', () => {
+  test('finish_reason on reasoning-only output emits only message completion events', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -565,7 +502,6 @@ describe('Stream translation edge cases', () => {
     )
 
     expect(events.map(event => event.type)).toEqual([
-      'content_block_stop',
       'message_delta',
       'message_stop',
     ])
@@ -574,7 +510,7 @@ describe('Stream translation edge cases', () => {
     expect(state.currentBlockType).toBeNull()
   })
 
-  test('finish_reason uses the latest reasoning_opaque as the thinking signature', () => {
+  test('finish_reason omits any reasoning_opaque signature replay', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -600,19 +536,17 @@ describe('Stream translation edge cases', () => {
       state,
     )
 
-    const signatureDelta = events[0]
-    if (signatureDelta?.type === 'content_block_delta') {
-      expect(signatureDelta.delta.type).toBe('signature_delta')
-      if (signatureDelta.delta.type === 'signature_delta') {
-        expect(signatureDelta.delta.signature).toBe('sig_finish_opaque_456')
-      }
-    }
-    else {
-      throw new Error('Expected signature delta event')
-    }
+    expect(events.map(event => event.type)).toEqual([
+      'message_delta',
+      'message_stop',
+    ])
+    expect(events.some(event =>
+      event.type === 'content_block_delta'
+      && event.delta.type === 'signature_delta',
+    )).toBe(false)
   })
 
-  test('finalizeAnthropicStreamFromState closes open thinking blocks and emits message_stop', () => {
+  test('finalizeAnthropicStreamFromState emits message_stop for reasoning-only state without thinking blocks', () => {
     const state = freshState()
 
     translateChunkToAnthropicEvents(
@@ -631,7 +565,6 @@ describe('Stream translation edge cases', () => {
 
     const events = finalizeAnthropicStreamFromState(state)
     expect(events.map(event => event.type)).toEqual([
-      'content_block_stop',
       'message_delta',
       'message_stop',
     ])

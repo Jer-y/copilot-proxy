@@ -15,23 +15,6 @@ function closeOpenAnthropicBlock(
     return
   }
 
-  if (state.currentBlockType === 'thinking') {
-    // Anthropic emits a signature_delta immediately before closing thinking
-    // blocks. Copilot exposes the equivalent opaque reasoning payload as
-    // reasoning_opaque, so we replay it through the Anthropic signature field
-    // when available.
-    if (typeof state.thinkingSignature === 'string' && state.thinkingSignature.length > 0) {
-      events.push({
-        type: 'content_block_delta',
-        index: state.contentBlockIndex,
-        delta: {
-          type: 'signature_delta',
-          signature: state.thinkingSignature,
-        },
-      })
-    }
-  }
-
   events.push({
     type: 'content_block_stop',
     index: state.contentBlockIndex,
@@ -85,31 +68,6 @@ function ensureTextBlockOpen(
     })
     state.contentBlockOpen = true
     state.currentBlockType = 'text'
-  }
-}
-
-function ensureThinkingBlockOpen(
-  events: Array<AnthropicStreamEventData>,
-  state: AnthropicStreamState,
-): void {
-  if (state.contentBlockOpen && state.currentBlockType !== 'thinking') {
-    closeOpenAnthropicBlock(events, state)
-  }
-
-  if (!state.contentBlockOpen) {
-    events.push({
-      type: 'content_block_start',
-      index: state.contentBlockIndex,
-      content_block: {
-        type: 'thinking',
-        thinking: '',
-        ...(typeof state.thinkingSignature === 'string' && state.thinkingSignature.length > 0
-          ? { signature: state.thinkingSignature }
-          : {}),
-      },
-    })
-    state.contentBlockOpen = true
-    state.currentBlockType = 'thinking'
   }
 }
 
@@ -181,10 +139,6 @@ export function translateChunkToAnthropicEvents(
   const choice = chunk.choices[0]
   const { delta } = choice
 
-  if (typeof delta.reasoning_opaque === 'string' && delta.reasoning_opaque.length > 0) {
-    state.thinkingSignature = delta.reasoning_opaque
-  }
-
   if (!state.messageStartSent) {
     events.push({
       type: 'message_start',
@@ -215,24 +169,12 @@ export function translateChunkToAnthropicEvents(
   }
 
   if (typeof delta.reasoning_text === 'string' && delta.reasoning_text.length > 0) {
-    // Some Copilot streams emit a leading "\n\n" text chunk before the first
-    // reasoning chunk. Buffering and dropping that whitespace keeps the stream
-    // shape closer to Anthropic's native "thinking first" pattern.
-    if (isBeforeFirstContentBlock(state)) {
-      state.pendingLeadingText = ''
-    }
-
-    ensureThinkingBlockOpen(events, state)
+    // Copilot chat-completions reasoning cannot be replayed as Anthropic
+    // thinking because native /v1/messages requires Anthropic-issued
+    // signatures for assistant thinking history. Keep tracking that reasoning
+    // occurred for recovery/error handling, but omit translated thinking
+    // events so follow-up turns stay valid.
     state.hasThinkingContent = true
-
-    events.push({
-      type: 'content_block_delta',
-      index: state.contentBlockIndex,
-      delta: {
-        type: 'thinking_delta',
-        thinking: delta.reasoning_text,
-      },
-    })
   }
 
   if (typeof delta.content === 'string' && delta.content.length > 0) {
