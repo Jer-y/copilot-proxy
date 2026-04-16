@@ -946,7 +946,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.error.message).toContain('Files API')
   })
 
-  test('Claude native passthrough strips unsupported top-level cache_control and preserves adaptive display', async () => {
+  test('Claude native passthrough preserves top-level cache_control and adaptive display', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -969,7 +969,7 @@ describe('messages route upstream adaptation', () => {
       cache_control?: { type?: string }
       thinking?: { type?: string, display?: string }
     }
-    expect(forwardedPayload.cache_control).toBeUndefined()
+    expect(forwardedPayload.cache_control).toEqual({ type: 'ephemeral' })
     expect(forwardedPayload.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
   })
 

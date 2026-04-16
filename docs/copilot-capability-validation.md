@@ -57,6 +57,9 @@ The executable probe definitions live in [tests/live/copilot-capability-matrix.t
 | `responses-reasoning-effort-xhigh` | Validate the Responses-side adaptation target for Anthropic max-effort on non-Claude models | `/responses` | `gpt-5.4` | `supported` or clean `unsupported` |
 | `responses-parallel-tool-calls-false` | Map `disable_parallel_tool_use = true` | `/responses` | `gpt-5.4` | `supported` or clean `unsupported` |
 | `responses-input-image-url` | Pass `image.source.type = "url"` upstream | `/responses` | `gpt-5.4` | `supported` or clean `unsupported` |
+| `native-anthropic-reasoning-effort-high` | Preserve native Anthropic `output_config.effort = high` passthrough | `/v1/messages` | `claude-opus-4.6` | Must succeed |
+| `native-anthropic-reasoning-effort-max` | Record current native Anthropic `output_config.effort = max` rejection | `/v1/messages` | `claude-opus-4.6` | Must return clean `unsupported` |
+| `native-anthropic-cache-control` | Preserve native Anthropic top-level `cache_control` passthrough | `/v1/messages` | `claude-opus-4.6` | Must succeed |
 
 ## How to run the live probes
 

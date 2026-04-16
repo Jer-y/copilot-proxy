@@ -755,14 +755,6 @@ function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
     delete payloadWithContextManagement.context_management
   }
 
-  if (payload.cache_control) {
-    logLossyAnthropicCompatibility(
-      'cache_control',
-      'Copilot native /v1/messages rejects top-level cache_control, so the proxy drops it before passthrough.',
-    )
-    delete payload.cache_control
-  }
-
   normalizeLegacyDocumentTextSources(payload)
 
   const format = payload.output_config?.format
