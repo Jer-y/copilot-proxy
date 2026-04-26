@@ -182,7 +182,7 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
   })
 
-  test('Claude json_schema requests are routed natively to /v1/messages with Copilot-safe output_config normalization', async () => {
+  test('Claude json_schema requests are routed natively so unsupported output_config.format is not falsely treated as supported', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -230,6 +230,73 @@ describe('messages route upstream adaptation', () => {
         },
       },
     })
+  })
+
+  test('Claude json_schema native rejection is not retried through chat-completions', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/v1/messages')) {
+        return new Response(JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'output_config.format: Extra inputs are not permitted',
+          },
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url.endsWith('/chat/completions')) {
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_false_success',
+          object: 'chat.completion',
+          created: 0,
+          model: 'claude-opus-4.6',
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: '4' },
+            logprobs: null,
+            finish_reason: 'stop',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      throw new Error(`Unexpected upstream URL: ${url} body=${String(init?.body)}`)
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'What is 2+2? Return answer.' }],
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema: {
+              type: 'object',
+              properties: { answer: { type: 'string' } },
+              required: ['answer'],
+              additionalProperties: false,
+            },
+          },
+        },
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const body = await res.json() as { error?: { message?: string } }
+    expect(body.error?.message).toContain('output_config.format')
   })
 
   test('Claude non-streaming requests are forwarded natively and return Anthropic JSON directly', async () => {

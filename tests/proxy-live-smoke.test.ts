@@ -27,7 +27,7 @@ const TIMEOUT = 90_000
 const LIVE_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
 const describeLive = LIVE_TEST_ENABLED ? describe : describe.skip
 
-const RESPONSES_MODEL = process.env.COPILOT_LIVE_RESPONSES_MODEL ?? 'gpt-5.4'
+const RESPONSES_MODEL = process.env.COPILOT_LIVE_RESPONSES_MODEL ?? 'gpt-5.5'
 const EMBEDDING_MODEL = process.env.COPILOT_LIVE_EMBEDDING_MODEL ?? 'text-embedding-3-small'
 const IMAGE_URL
   = process.env.COPILOT_LIVE_IMAGE_URL
@@ -92,6 +92,25 @@ function hasResponsesFunctionCall(body: Record<string, unknown>): boolean {
   return Array.isArray(body.output) && body.output.some(item =>
     item && typeof item === 'object' && (item as Record<string, unknown>).type === 'function_call',
   )
+}
+
+async function readErrorMessage(res: Response): Promise<string> {
+  const raw = await res.text()
+  try {
+    const body = JSON.parse(raw) as Record<string, unknown>
+    const error = body.error as Record<string, unknown> | undefined
+    if (typeof error?.message === 'string') {
+      return error.message
+    }
+    if (typeof body.message === 'string') {
+      return body.message
+    }
+  }
+  catch {
+    // Fall through to raw text.
+  }
+
+  return raw
 }
 
 beforeAll(async () => {
@@ -331,7 +350,7 @@ describeLive('Proxy live smoke', () => {
       expect(String(error.message)).toContain('external image URLs')
     }, TIMEOUT)
 
-    test('input_file URL → 200', async () => {
+    test('input_file URL → supported or clean upstream rejection', async () => {
       const res = await sendJsonRequest('/v1/responses', {
         model: RESPONSES_MODEL,
         input: [
@@ -346,11 +365,18 @@ describeLive('Proxy live smoke', () => {
         max_output_tokens: 256,
       })
 
-      expect(res.status).toBe(200)
       const body = await parseJson<Record<string, unknown>>(res)
-      expect(body.status).toBe('completed')
-      expect(Array.isArray(body.output)).toBe(true)
-      expect((body.output as Array<unknown>).length).toBeGreaterThan(0)
+      if (res.status === 200) {
+        expect(body.status).toBe('completed')
+        expect(Array.isArray(body.output)).toBe(true)
+        expect((body.output as Array<unknown>).length).toBeGreaterThan(0)
+        return
+      }
+
+      expect(res.status).toBe(400)
+      const error = body.error as Record<string, unknown>
+      expect(error.type).toBe('invalid_request_error')
+      expect(String(error.message)).toMatch(/file|input_file/i)
     }, TIMEOUT)
 
     test('tools + tool_choice required → returns function_call item', async () => {
@@ -391,6 +417,117 @@ describeLive('Proxy live smoke', () => {
       expect(res.status).toBe(200)
       const body = await parseJson<Record<string, unknown>>(res)
       expect(body.status).toBe('completed')
+    }, TIMEOUT)
+
+    test('text.verbosity high → 200', async () => {
+      const res = await sendJsonRequest('/v1/responses', {
+        model: RESPONSES_MODEL,
+        input: 'Reply with the single word OK.',
+        max_output_tokens: 32,
+        text: {
+          verbosity: 'high',
+        },
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseJson<Record<string, unknown>>(res)
+      expect(body.status).toBe('completed')
+    }, TIMEOUT)
+
+    test('encrypted reasoning include with store=false → 200', async () => {
+      const res = await sendJsonRequest('/v1/responses', {
+        model: RESPONSES_MODEL,
+        input: 'Reply with the single word OK.',
+        max_output_tokens: 64,
+        reasoning: {
+          effort: 'low',
+        },
+        include: ['reasoning.encrypted_content'],
+        store: false,
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseJson<Record<string, unknown>>(res)
+      expect(body.status).toBe('completed')
+    }, TIMEOUT)
+
+    test('prompt_cache_key, truncation, and context_management → 200', async () => {
+      const res = await sendJsonRequest('/v1/responses', {
+        model: RESPONSES_MODEL,
+        input: 'Reply with the single word OK.',
+        max_output_tokens: 32,
+        prompt_cache_key: 'copilot-proxy-live-smoke',
+        truncation: 'auto',
+        store: false,
+        context_management: [
+          {
+            type: 'compaction',
+            compact_threshold: 1000,
+          },
+        ],
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseJson<Record<string, unknown>>(res)
+      expect(body.status).toBe('completed')
+    }, TIMEOUT)
+
+    test('stateful/background Responses params → clean Copilot rejection', async () => {
+      const cases = [
+        {
+          body: { store: true },
+          pattern: /store/i,
+        },
+        {
+          body: { previous_response_id: 'resp_live_probe_missing' },
+          pattern: /previous_response_id|previous response/i,
+        },
+        {
+          body: { background: true },
+          pattern: /background/i,
+        },
+        {
+          body: { service_tier: 'auto' },
+          pattern: /service_tier|service tier/i,
+        },
+      ]
+
+      for (const item of cases) {
+        const res = await sendJsonRequest('/v1/responses', {
+          model: RESPONSES_MODEL,
+          input: 'Reply with the single word OK.',
+          max_output_tokens: 32,
+          ...item.body,
+        })
+
+        expect(res.status).toBe(400)
+        const message = await readErrorMessage(res)
+        expect(message).toMatch(item.pattern)
+      }
+    }, TIMEOUT)
+
+    test('stored-state Responses subroutes → upstream-aligned unsupported', async () => {
+      const cases = [
+        { path: '/v1/responses/resp_live_probe_missing', method: 'GET' },
+        { path: '/v1/responses/resp_live_probe_missing/input_items', method: 'GET' },
+        { path: '/v1/responses/resp_live_probe_missing/cancel', method: 'POST' },
+        { path: '/v1/responses/resp_live_probe_missing', method: 'DELETE' },
+        {
+          path: '/v1/responses/input_tokens',
+          method: 'POST',
+          body: { model: RESPONSES_MODEL, input: 'hello' },
+        },
+        {
+          path: '/v1/responses/compact',
+          method: 'POST',
+          body: { model: RESPONSES_MODEL, input: 'hello' },
+        },
+      ]
+
+      for (const item of cases) {
+        const res = await sendJsonRequest(item.path, item.body, { method: item.method })
+        expect(res.status).toBe(404)
+      }
     }, TIMEOUT)
   })
 

@@ -715,6 +715,28 @@ describe('translateResponsesRequestToAnthropic', () => {
     expect(result.output_config).toBeUndefined()
   })
 
+  test('reasoning.effort none is omitted on native Anthropic requests', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Hi',
+      reasoning: { effort: 'none' },
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.output_config).toBeUndefined()
+  })
+
+  test('reasoning.effort minimal is downgraded to low on native Anthropic requests', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: 'Hi',
+      reasoning: { effort: 'minimal' },
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.output_config).toEqual({ effort: 'low' })
+  })
+
   test('tool strict is forwarded to native Anthropic tools', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',

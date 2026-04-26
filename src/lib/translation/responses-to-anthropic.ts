@@ -399,12 +399,21 @@ function translateResponsesToolsToAnthropic(
     return undefined
   }
 
-  return tools.map(tool => ({
+  const functionTools = tools.filter(isResponsesFunctionTool)
+  if (functionTools.length === 0) {
+    return undefined
+  }
+
+  return functionTools.map(tool => ({
     name: tool.name,
     ...(tool.description && { description: tool.description }),
     input_schema: (tool.parameters ?? {}) as Record<string, unknown>,
     ...(typeof tool.strict === 'boolean' && { strict: tool.strict }),
   }))
+}
+
+function isResponsesFunctionTool(tool: ResponsesTool): tool is ResponsesTool & { type: 'function', name: string } {
+  return tool.type === 'function' && typeof tool.name === 'string' && tool.name.length > 0
 }
 
 function translateResponsesToAnthropicToolChoice(
@@ -449,7 +458,7 @@ function buildOutputConfig(
   let format: AnthropicOutputConfigFormat | undefined
 
   if (payload.reasoning?.effort) {
-    effort = payload.reasoning.effort === 'xhigh' ? 'max' : payload.reasoning.effort
+    effort = mapResponsesReasoningEffortToAnthropic(payload.reasoning.effort)
   }
 
   if (payload.text?.format?.type === 'json_schema') {
@@ -470,6 +479,24 @@ function buildOutputConfig(
     ...(effort && { effort }),
     ...(format && { format }),
   }
+}
+
+function mapResponsesReasoningEffortToAnthropic(
+  effort: NonNullable<NonNullable<ResponsesPayload['reasoning']>['effort']>,
+): 'low' | 'medium' | 'high' | 'max' | undefined {
+  if (effort === 'none') {
+    return undefined
+  }
+
+  if (effort === 'minimal') {
+    return 'low'
+  }
+
+  if (effort === 'xhigh') {
+    return 'max'
+  }
+
+  return effort
 }
 
 function normalizeResponsesJsonSchemaFormat(

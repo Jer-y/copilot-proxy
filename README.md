@@ -40,7 +40,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) APIs, with native Claude `/v1/messages` passthrough when the upstream supports it.
-- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for native Responses models such as `gpt-5`, `gpt-5.4`, `gpt-5.3-codex`, `o3-mini`, and `o4-mini`, with model-aware fallback for non-Responses models.
+- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for native Responses models such as `gpt-5`, `gpt-5.4`, `gpt-5.5`, `gpt-5.3-codex`, `o3-mini`, and `o4-mini`, with model-aware fallback for non-Responses models.
 - **Codex Ready**: Works with OpenAI Codex CLI/SDK by pointing its base URL to this proxy.
 - **Model-Aware Routing and Translation**: Automatically picks the best supported backend for each model family, applies Claude prompt caching (`copilot_cache_control`), preserves adaptive-thinking / `output_config.effort` compatibility, and normalizes model names (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).

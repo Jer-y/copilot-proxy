@@ -40,7 +40,7 @@
 ## 功能特性
 
 - **OpenAI & Anthropic 兼容**：提供 OpenAI 兼容端点（`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`）与 Anthropic 兼容端点（`/v1/messages`），并在上游支持时优先走 Claude 原生 `/v1/messages`。
-- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.4`、`gpt-5.3-codex`、`o3-mini`、`o4-mini` 等原生 Responses 模型，同时会对非 Responses 模型做按模型能力的 fallback。
+- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.4`、`gpt-5.5`、`gpt-5.3-codex`、`o3-mini`、`o4-mini` 等原生 Responses 模型，同时会对非 Responses 模型做按模型能力的 fallback。
 - **Codex 可用**：将 OpenAI Codex CLI/SDK 的 base URL 指向本代理即可使用。
 - **模型感知路由与翻译**：会按模型族选择最合适的后端，自动应用 Claude 的提示缓存（`copilot_cache_control`），保留 `adaptive thinking` / `output_config.effort` 兼容，以及模型名归一化（如 `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`）。
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。

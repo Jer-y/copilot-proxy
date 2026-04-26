@@ -98,6 +98,37 @@ export async function createResponses(
   return { body: json, headers: response.headers }
 }
 
+export async function forwardResponsesEndpoint(
+  path: string,
+  options: {
+    method: 'GET' | 'POST' | 'DELETE'
+    body?: string
+    headers?: Record<string, string>
+    signal?: AbortSignal
+  },
+) {
+  if (!state.copilotToken)
+    throw new Error('Copilot token not found')
+
+  const response = await fetch(`${copilotBaseUrl(state)}${path}`, {
+    method: options.method,
+    headers: {
+      ...copilotHeaders(state),
+      'X-Initiator': 'user',
+      ...options.headers,
+    },
+    body: options.body,
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    consola.error(`Failed to forward ${options.method} ${path}`, response)
+    throw new HTTPError(`Failed to forward ${options.method} ${path}`, response)
+  }
+
+  return response
+}
+
 function hasVisionInput(input: Array<ResponsesInputItem>): boolean {
   return input.some((item) => {
     if (!isMessageInput(item) || !Array.isArray(item.content)) {
@@ -278,7 +309,7 @@ export interface ResponsesTextConfig {
     type: string
     [key: string]: unknown
   }
-  verbosity?: 'medium'
+  verbosity?: 'low' | 'medium' | 'high'
 }
 
 export interface ResponsesPayload {
@@ -288,17 +319,31 @@ export interface ResponsesPayload {
   tools?: Array<ResponsesTool>
   tool_choice?: ResponsesToolChoice
   reasoning?: {
-    effort?: 'low' | 'medium' | 'high' | 'xhigh'
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
     summary?: 'auto' | 'concise' | 'detailed' | 'none'
   }
   text?: ResponsesTextConfig
   parallel_tool_calls?: boolean
+  previous_response_id?: string | null
   store?: boolean
+  background?: boolean
   stream?: boolean
   include?: Array<string>
+  prompt_cache_key?: string
+  truncation?: 'auto' | 'disabled' | string
+  context_management?: Array<ResponsesContextManagementItem> | null
+  max_tool_calls?: number | null
+  service_tier?: string | null
+  metadata?: Record<string, unknown> | null
   temperature?: number | null
   top_p?: number | null
   max_output_tokens?: number | null
+}
+
+export interface ResponsesContextManagementItem {
+  type: string
+  compact_threshold?: number
+  [key: string]: unknown
 }
 
 // Input item types (discriminated union)
@@ -337,12 +382,13 @@ export type ResponsesInputItem
     | ResponsesOtherInputItem
 
 export interface ResponsesTool {
-  type: 'function'
-  name: string
+  type: string
+  name?: string
   description?: string
   parameters?: Record<string, unknown> | null
   strict?: boolean
   copilot_cache_control?: { type: 'ephemeral' } | null
+  [key: string]: unknown
 }
 
 // Response types
@@ -365,7 +411,7 @@ export interface ResponsesResponse {
   output: Array<ResponsesOutputItem>
   text?: ResponsesTextConfig
   reasoning?: {
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | null
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
     summary?: Array<{ type: 'summary_text', text: string }> | null
   }
   metadata?: Record<string, unknown>

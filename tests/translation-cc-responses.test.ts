@@ -498,6 +498,24 @@ describe('translateResponsesRequestToCC', () => {
     })
     expect(result.reasoning_effort).toBe('high')
   })
+
+  test('reasoning.effort none is omitted for chat-completions translation', () => {
+    const result = translateResponsesRequestToCC({
+      model: 'gpt-4o',
+      input: 'Hi',
+      reasoning: { effort: 'none' },
+    })
+    expect(result.reasoning_effort).toBeUndefined()
+  })
+
+  test('reasoning.effort minimal is downgraded to low for chat-completions translation', () => {
+    const result = translateResponsesRequestToCC({
+      model: 'gpt-4o',
+      input: 'Hi',
+      reasoning: { effort: 'minimal' },
+    })
+    expect(result.reasoning_effort).toBe('low')
+  })
 })
 
 // ─── T5: CC Response → Responses Response ───────────────────────

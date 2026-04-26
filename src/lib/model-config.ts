@@ -10,9 +10,9 @@ export interface ModelConfig {
   /** Whether to add copilot_cache_control headers for prompt caching */
   enableCacheControl?: boolean
   /** Default reasoning effort level */
-  defaultReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  defaultReasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Supported reasoning effort levels */
-  supportedReasoningEfforts?: Array<'low' | 'medium' | 'high' | 'xhigh' | 'max'>
+  supportedReasoningEfforts?: Array<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   /** Whether the model supports tool_choice parameter */
   supportsToolChoice?: boolean
   /** Whether the model supports parallel tool calls */
@@ -121,6 +121,14 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     reasoningMode: 'thinking',
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    supportsToolChoice: true,
+    supportsParallelToolCalls: true,
+  },
+  'gpt-5.5': {
+    supportedApis: ['responses'],
+    reasoningMode: 'thinking',
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh'],
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },

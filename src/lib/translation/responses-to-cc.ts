@@ -35,6 +35,7 @@ export function translateResponsesRequestToCC(payload: ResponsesPayload): ChatCo
     payload.instructions,
   )
   const tools = translateResponsesToolsToCC(payload.tools)
+  const reasoningEffort = translateResponsesReasoningEffortToCC(payload.reasoning?.effort)
 
   return {
     model: payload.model,
@@ -47,15 +48,31 @@ export function translateResponsesRequestToCC(payload: ResponsesPayload): ChatCo
     ...(payload.tool_choice !== undefined && {
       tool_choice: translateResponsesToCCToolChoice(payload.tool_choice),
     }),
-    ...(payload.reasoning?.effort && {
-      reasoning_effort: payload.reasoning.effort === 'xhigh'
-        ? 'high'
-        : payload.reasoning.effort,
+    ...(reasoningEffort && {
+      reasoning_effort: reasoningEffort,
     }),
     ...(payload.text?.format?.type === 'json_object' && {
       response_format: { type: 'json_object' as const },
     }),
   }
+}
+
+function translateResponsesReasoningEffortToCC(
+  effort: NonNullable<NonNullable<ResponsesPayload['reasoning']>['effort']> | undefined,
+): ChatCompletionsPayload['reasoning_effort'] | undefined {
+  if (!effort || effort === 'none') {
+    return undefined
+  }
+
+  if (effort === 'minimal') {
+    return 'low'
+  }
+
+  if (effort === 'xhigh') {
+    return 'high'
+  }
+
+  return effort
 }
 
 function translateResponsesInputToCCMessages(
@@ -141,7 +158,11 @@ function translateResponsesToolsToCC(tools: Array<ResponsesTool> | undefined): A
   if (!tools || tools.length === 0)
     return undefined
 
-  return tools.map(tool => ({
+  const functionTools = tools.filter(isResponsesFunctionTool)
+  if (functionTools.length === 0)
+    return undefined
+
+  return functionTools.map(tool => ({
     type: 'function' as const,
     function: {
       name: tool.name,
@@ -149,6 +170,10 @@ function translateResponsesToolsToCC(tools: Array<ResponsesTool> | undefined): A
       parameters: (tool.parameters ?? {}) as Record<string, unknown>,
     },
   }))
+}
+
+function isResponsesFunctionTool(tool: ResponsesTool): tool is ResponsesTool & { type: 'function', name: string } {
+  return tool.type === 'function' && typeof tool.name === 'string' && tool.name.length > 0
 }
 
 function translateResponsesToCCToolChoice(

@@ -50,6 +50,7 @@ interface LiveEnvConfig extends LiveCopilotProbeConfig {
 
 const LIVE_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
 const LIVE_TEST_TIMEOUT_MS = parseTimeout(process.env.COPILOT_LIVE_TIMEOUT_MS)
+const LIVE_TEST_RETRY_COUNT = parseRetryCount(process.env.COPILOT_LIVE_RETRY_COUNT)
 const runLiveTest = LIVE_TEST_ENABLED ? test : test.skip
 
 runLiveTest(
@@ -61,7 +62,7 @@ runLiveTest(
 
     try {
       for (const probe of copilotCapabilityProbes) {
-        const outcome = await runProbe(probe, config)
+        const outcome = await runProbeWithRetries(probe, config)
         outcomes.push(outcome)
 
         if (!isAcceptableOutcome(probe.expectation, outcome.status)) {
@@ -83,6 +84,37 @@ function parseTimeout(rawTimeout: string | undefined): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 180_000
 }
 
+function parseRetryCount(rawRetryCount: string | undefined): number {
+  const parsed = Number.parseInt(rawRetryCount ?? '', 10)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2
+}
+
+async function runProbeWithRetries(
+  probe: CapabilityProbe,
+  config: LiveEnvConfig,
+): Promise<ProbeOutcome> {
+  let outcome = await runProbe(probe, config)
+
+  for (let attempt = 1; attempt <= LIVE_TEST_RETRY_COUNT && isRetryableProbeOutcome(outcome); attempt++) {
+    process.stdout.write(
+      `Retrying live probe ${probe.id} after retryable ${outcome.status}${outcome.httpStatus ? ` http=${outcome.httpStatus}` : ''} (attempt ${attempt}/${LIVE_TEST_RETRY_COUNT})\n`,
+    )
+    outcome = await runProbe(probe, config)
+  }
+
+  return outcome
+}
+
+function isRetryableProbeOutcome(outcome: ProbeOutcome): boolean {
+  if (outcome.status === 'network_error') {
+    return true
+  }
+
+  return outcome.status === 'api_error'
+    && outcome.httpStatus !== undefined
+    && outcome.httpStatus >= 500
+}
+
 function getLiveEnvConfig(): LiveEnvConfig {
   const token = process.env.COPILOT_TOKEN
   if (!token) {
@@ -94,7 +126,7 @@ function getLiveEnvConfig(): LiveEnvConfig {
     accountType: process.env.COPILOT_ACCOUNT_TYPE ?? 'individual',
     vsCodeVersion: process.env.COPILOT_VSCODE_VERSION ?? '1.104.3',
     claudeModel: process.env.COPILOT_LIVE_CLAUDE_MODEL ?? 'claude-opus-4.6',
-    responsesModel: process.env.COPILOT_LIVE_RESPONSES_MODEL ?? 'gpt-5.4',
+    responsesModel: process.env.COPILOT_LIVE_RESPONSES_MODEL ?? 'gpt-5.5',
     imageUrl:
       process.env.COPILOT_LIVE_IMAGE_URL
       ?? 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png',
@@ -248,6 +280,64 @@ async function runProbe(
     }
   }
 
+  if (probe.endpoint === 'responses-raw') {
+    const request = probe.buildRequest(config)
+
+    try {
+      const result = await withLiveCopilotState(config, async () => {
+        const headers: Record<string, string> = {
+          ...copilotHeaders(state),
+          'X-Initiator': 'user',
+          ...(request.body ? { 'Content-Type': 'application/json' } : {}),
+        }
+        const response = await fetch(`${copilotBaseUrl(state)}${request.path}`, {
+          method: request.method,
+          headers,
+          ...(request.body ? { body: JSON.stringify(request.body) } : {}),
+        })
+        return { response, bodyText: await response.text() }
+      })
+
+      if (!result.response.ok) {
+        throw new HTTPError('Failed to run raw Responses probe', new Response(result.bodyText, {
+          status: result.response.status,
+          statusText: result.response.statusText,
+          headers: result.response.headers,
+        }))
+      }
+
+      const expectedBody = request.expectedBody ?? 'any'
+      if (!isExpectedRawResponsesBody(result.bodyText, expectedBody)) {
+        return {
+          id: probe.id,
+          endpoint: probe.endpoint,
+          title: probe.title,
+          status: 'unexpected_response',
+          model: request.model ?? 'N/A',
+          durationMs: Date.now() - startedAt,
+          message: `Expected ${expectedBody} body from ${request.method} ${request.path}`,
+        }
+      }
+
+      return {
+        id: probe.id,
+        endpoint: probe.endpoint,
+        title: probe.title,
+        status: 'supported',
+        model: request.model ?? 'N/A',
+        durationMs: Date.now() - startedAt,
+      }
+    }
+    catch (error) {
+      return classifyProbeError({
+        error,
+        probe,
+        model: request.model ?? 'N/A',
+        durationMs: Date.now() - startedAt,
+      })
+    }
+  }
+
   const payload = probe.buildPayload(config)
 
   try {
@@ -286,6 +376,35 @@ async function runProbe(
       durationMs: Date.now() - startedAt,
     })
   }
+}
+
+function isExpectedRawResponsesBody(
+  bodyText: string,
+  expectedBody: 'any' | 'response' | 'response_stream' | 'input_tokens',
+): boolean {
+  if (expectedBody === 'any') {
+    return true
+  }
+
+  if (expectedBody === 'response_stream') {
+    return bodyText.includes('event: response.created')
+      && bodyText.includes('event: response.completed')
+  }
+
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(bodyText) as Record<string, unknown>
+  }
+  catch {
+    return false
+  }
+
+  if (expectedBody === 'response') {
+    return parsed.object === 'response'
+  }
+
+  return parsed.object === 'response.input_tokens'
+    && typeof parsed.input_tokens === 'number'
 }
 
 async function withLiveCopilotState<T>(

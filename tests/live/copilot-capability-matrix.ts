@@ -16,7 +16,7 @@ export interface ProbeErrorDetails {
   rawBody?: string
 }
 
-export type CapabilityProbeEndpoint = 'chat-completions' | 'responses' | 'anthropic-messages' | 'anthropic-files'
+export type CapabilityProbeEndpoint = 'chat-completions' | 'responses' | 'responses-raw' | 'anthropic-messages' | 'anthropic-files'
 export type CapabilityProbeTier = 'baseline' | 'optional'
 export type CapabilityProbeExpectation
   = | 'must_support'
@@ -45,6 +45,19 @@ export interface ResponsesCapabilityProbe extends CapabilityProbeBase {
   buildPayload: (config: LiveCopilotProbeConfig) => ResponsesPayload | ResponsesReasoningProbePayload
 }
 
+export interface RawResponsesProbeRequest {
+  method: 'GET' | 'POST' | 'DELETE'
+  path: string
+  body?: Record<string, unknown>
+  expectedBody?: 'any' | 'response' | 'response_stream' | 'input_tokens'
+  model?: string
+}
+
+export interface RawResponsesCapabilityProbe extends CapabilityProbeBase {
+  endpoint: 'responses-raw'
+  buildRequest: (config: LiveCopilotProbeConfig) => RawResponsesProbeRequest
+}
+
 export interface AnthropicMessagesCapabilityProbe extends CapabilityProbeBase {
   endpoint: 'anthropic-messages'
   buildPayload: (config: LiveCopilotProbeConfig) => AnthropicMessagesPayload
@@ -55,11 +68,11 @@ export interface AnthropicFilesCapabilityProbe extends CapabilityProbeBase {
   buildPayload: (config: LiveCopilotProbeConfig) => { headers?: Record<string, string> }
 }
 
-export type CapabilityProbe = ChatCompletionsCapabilityProbe | ResponsesCapabilityProbe | AnthropicMessagesCapabilityProbe | AnthropicFilesCapabilityProbe
+export type CapabilityProbe = ChatCompletionsCapabilityProbe | ResponsesCapabilityProbe | RawResponsesCapabilityProbe | AnthropicMessagesCapabilityProbe | AnthropicFilesCapabilityProbe
 
 interface ResponsesReasoningProbePayload extends Omit<ResponsesPayload, 'reasoning'> {
   reasoning?: {
-    effort?: 'low' | 'medium' | 'high' | 'xhigh'
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
     summary?: 'auto' | 'concise' | 'detailed' | 'none'
   }
 }
@@ -109,9 +122,14 @@ function buildUnsupportedMatcher(fieldTerms: Array<string>) {
   }
 }
 
+function buildNotFoundOrUnsupportedMatcher(fieldTerms: Array<string>) {
+  const unsupportedMatcher = buildUnsupportedMatcher(fieldTerms)
+  return (details: ProbeErrorDetails): boolean => details.status === 404 || unsupportedMatcher(details)
+}
+
 function buildResponsesReasoningProbePayload(
   config: LiveCopilotProbeConfig,
-  effort: 'low' | 'medium' | 'high' | 'xhigh',
+  effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
 ): ResponsesReasoningProbePayload {
   return {
     model: config.responsesModel,
@@ -120,6 +138,31 @@ function buildResponsesReasoningProbePayload(
     reasoning: {
       effort,
     },
+  }
+}
+
+function buildBasicResponsesPayload(config: LiveCopilotProbeConfig): ResponsesPayload {
+  return {
+    model: config.responsesModel,
+    input: 'Reply with the single word OK.',
+    max_output_tokens: 16,
+  }
+}
+
+function buildNoopResponsesToolPayload(config: LiveCopilotProbeConfig): ResponsesPayload {
+  return {
+    model: config.responsesModel,
+    input: 'Call the noop tool exactly once.',
+    max_output_tokens: 64,
+    tools: [
+      {
+        type: 'function',
+        name: 'noop',
+        description: 'A no-op tool used for capability probing.',
+        parameters: { ...NOOP_TOOL_SCHEMA },
+      },
+    ],
+    tool_choice: 'required',
   }
 }
 
@@ -181,6 +224,54 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     }),
   },
   {
+    id: 'baseline-responses-model-chat-completions-unsupported',
+    title: 'Responses-only model is rejected on /chat/completions',
+    tier: 'baseline',
+    endpoint: 'chat-completions',
+    candidateFix: 'Keep GPT-5.5 and other Responses-only models routed to Copilot /responses.',
+    candidateMapping: 'Responses-only model -> Copilot /chat/completions',
+    rationale: 'GPT-5.5 is Responses-only in Copilot today; this catches accidental fallback to /chat/completions.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'unsupported_api_for_model',
+      'chat completions',
+      'chat/completions',
+    ]),
+    buildPayload: config => ({
+      model: config.responsesModel,
+      messages: [
+        {
+          role: 'user',
+          content: 'Reply with the single word OK.',
+        },
+      ],
+      max_tokens: 16,
+      temperature: 0,
+    }),
+  },
+  {
+    id: 'responses-streaming',
+    title: 'Responses streaming emits SSE lifecycle events',
+    tier: 'baseline',
+    endpoint: 'responses-raw',
+    candidateFix: 'Keep streaming Requests on Copilot /responses for Responses-only models.',
+    candidateMapping: 'OpenAI Responses stream=true -> Copilot /responses SSE',
+    rationale: 'Streaming is a core Responses API mode and cannot be validated through the non-streaming createResponses helper.',
+    expectation: 'must_support',
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/responses',
+      body: {
+        model: config.responsesModel,
+        input: 'Say hello.',
+        stream: true,
+        max_output_tokens: 32,
+      },
+      expectedBody: 'response_stream',
+      model: config.responsesModel,
+    }),
+  },
+  {
     id: 'claude-tool-choice-required',
     title: 'Claude /chat/completions accepts tool_choice=required',
     tier: 'optional',
@@ -235,7 +326,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       messages: [
         {
           role: 'user',
-          content: 'Call the noop tool exactly once.',
+          content: 'Reply with the single word OK without using tools.',
         },
       ],
       tools: [
@@ -248,7 +339,6 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
           },
         },
       ],
-      tool_choice: 'required',
       parallel_tool_calls: false,
       max_tokens: 64,
       temperature: 0,
@@ -307,6 +397,22 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       max_tokens: 16,
       temperature: 0,
     }),
+  },
+  {
+    id: 'responses-reasoning-effort-none',
+    title: 'Responses accepts reasoning.effort=none',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Allow explicit no-reasoning Responses requests only if Copilot accepts reasoning.effort=none.',
+    candidateMapping: 'OpenAI Responses reasoning.effort=none -> Copilot /responses',
+    rationale: 'GPT-5.5 accepts none as the latency-first reasoning setting; older models may reject it.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'reasoning',
+      'effort',
+      'none',
+    ]),
+    buildPayload: config => buildResponsesReasoningProbePayload(config, 'none'),
   },
   {
     id: 'responses-reasoning-effort-low',
@@ -373,6 +479,304 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     buildPayload: config => buildResponsesReasoningProbePayload(config, 'xhigh'),
   },
   {
+    id: 'responses-reasoning-effort-minimal-unsupported',
+    title: 'Responses rejects reasoning.effort=minimal',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Do not send reasoning.effort=minimal to Copilot /responses unless upstream starts accepting it.',
+    candidateMapping: 'OpenAI Responses reasoning.effort=minimal -> Copilot /responses',
+    rationale: 'Some OpenAI clients can emit minimal, but current Copilot GPT-5.5 validation rejects it.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'reasoning',
+      'effort',
+      'minimal',
+    ]),
+    buildPayload: config => buildResponsesReasoningProbePayload(config, 'minimal'),
+  },
+  {
+    id: 'responses-reasoning-summary-auto',
+    title: 'Responses accepts reasoning.summary=auto',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Preserve reasoning.summary=auto for Responses-backed models if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses reasoning.summary=auto -> Copilot /responses',
+    rationale: 'Reasoning summaries are a Responses-native capability and should be probed independently from effort values.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'reasoning',
+      'summary',
+    ]),
+    buildPayload: config => ({
+      ...buildResponsesReasoningProbePayload(config, 'low'),
+      reasoning: {
+        effort: 'low',
+        summary: 'auto',
+      },
+    }),
+  },
+  {
+    id: 'responses-include-encrypted-reasoning',
+    title: 'Responses accepts include=reasoning.encrypted_content',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Pass encrypted reasoning include flags through for stateless Responses clients only if Copilot accepts them.',
+    candidateMapping: 'OpenAI Responses include reasoning.encrypted_content -> Copilot /responses',
+    rationale: 'Encrypted reasoning is the official stateless alternative to server-side response state.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'include',
+      'encrypted_content',
+      'reasoning.encrypted_content',
+    ]),
+    buildPayload: config => ({
+      ...buildResponsesReasoningProbePayload(config, 'low'),
+      include: ['reasoning.encrypted_content'],
+      store: false,
+    }),
+  },
+  {
+    id: 'responses-text-verbosity-low',
+    title: 'Responses accepts text.verbosity=low',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Preserve text.verbosity=low for Responses-backed models if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses text.verbosity=low -> Copilot /responses',
+    rationale: 'GPT-5.5 exposes verbosity as a first-class output-length control.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'text',
+      'verbosity',
+      'low',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      text: { verbosity: 'low' },
+    }),
+  },
+  {
+    id: 'responses-text-verbosity-medium',
+    title: 'Responses accepts text.verbosity=medium',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Preserve text.verbosity=medium for Responses-backed models if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses text.verbosity=medium -> Copilot /responses',
+    rationale: 'Medium is the documented neutral verbosity setting for GPT-5.5 style models.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'text',
+      'verbosity',
+      'medium',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      text: { verbosity: 'medium' },
+    }),
+  },
+  {
+    id: 'responses-text-verbosity-high',
+    title: 'Responses accepts text.verbosity=high',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Preserve text.verbosity=high for Responses-backed models if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses text.verbosity=high -> Copilot /responses',
+    rationale: 'High verbosity should be validated separately because it changes generation constraints without changing reasoning effort.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'text',
+      'verbosity',
+      'high',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      text: { verbosity: 'high' },
+    }),
+  },
+  {
+    id: 'responses-prompt-cache-key',
+    title: 'Responses accepts prompt_cache_key',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Forward prompt_cache_key for Responses requests only if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses prompt_cache_key -> Copilot /responses',
+    rationale: 'Prompt cache keys are part of the official cache-control surface for repeated traffic.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'prompt_cache_key',
+      'cache',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      prompt_cache_key: 'copilot-proxy-live-probe',
+    }),
+  },
+  {
+    id: 'responses-truncation-auto',
+    title: 'Responses accepts truncation=auto',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Forward truncation=auto for Responses requests only if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses truncation=auto -> Copilot /responses',
+    rationale: 'Automatic truncation is part of the official Responses context-window management surface.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'truncation',
+      'auto',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      truncation: 'auto',
+    }),
+  },
+  {
+    id: 'responses-context-management',
+    title: 'Responses accepts context_management',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Forward server-side context_management only if Copilot accepts the documented shape.',
+    candidateMapping: 'OpenAI Responses context_management -> Copilot /responses',
+    rationale: 'Server-side context management is a distinct official Responses capability from the compact endpoint.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'context_management',
+      'compact_threshold',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      store: false,
+      context_management: [
+        {
+          type: 'compaction',
+          compact_threshold: 1000,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'responses-store-false',
+    title: 'Responses accepts store=false',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Preserve store=false for stateless Responses clients if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses store=false -> Copilot /responses',
+    rationale: 'Stateless clients use store=false together with returned items or encrypted reasoning.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'store',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      store: false,
+    }),
+  },
+  {
+    id: 'responses-store-true-unsupported',
+    title: 'Responses rejects store=true',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Do not claim server-side stored response state unless Copilot accepts store=true.',
+    candidateMapping: 'OpenAI Responses store=true -> Copilot /responses',
+    rationale: 'Stored response state is required by previous_response_id and retrieve/cancel flows; current Copilot does not expose it.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'store',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      store: true,
+    }),
+  },
+  {
+    id: 'responses-previous-response-id-unsupported',
+    title: 'Responses rejects previous_response_id',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Keep multi-turn state stateless until Copilot supports previous_response_id.',
+    candidateMapping: 'OpenAI Responses previous_response_id -> Copilot /responses',
+    rationale: 'previous_response_id is the official stateful follow-up mechanism, but it depends on stored response state.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'previous_response_id',
+      'previous response',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      previous_response_id: 'resp_live_probe_missing',
+    }),
+  },
+  {
+    id: 'responses-background-unsupported',
+    title: 'Responses rejects background=true',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Do not advertise background Responses jobs unless Copilot supports background=true.',
+    candidateMapping: 'OpenAI Responses background=true -> Copilot /responses',
+    rationale: 'Background mode is required for long-running async Responses and cancellation flows.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'background',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      background: true,
+    }),
+  },
+  {
+    id: 'responses-background-stream-unsupported',
+    title: 'Responses rejects background=true with stream=true',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Do not combine background and streaming on Copilot unless upstream begins accepting that mode.',
+    candidateMapping: 'OpenAI Responses background+stream -> Copilot /responses',
+    rationale: 'Background streaming is a separate async event flow from plain streaming.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'background',
+      'stream',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      background: true,
+      stream: true,
+    }),
+  },
+  {
+    id: 'responses-service-tier-auto-unsupported',
+    title: 'Responses rejects service_tier=auto',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Avoid forwarding unsupported service_tier values to Copilot unless upstream changes.',
+    candidateMapping: 'OpenAI Responses service_tier=auto -> Copilot /responses',
+    rationale: 'OpenAI-compatible clients may send service_tier, but current Copilot validation does not accept auto.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'service_tier',
+      'service tier',
+    ]),
+    buildPayload: config => ({
+      ...buildBasicResponsesPayload(config),
+      service_tier: 'auto',
+    }),
+  },
+  {
+    id: 'responses-max-tool-calls-1',
+    title: 'Responses accepts max_tool_calls=1',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Forward max_tool_calls for Responses-backed tool loops only if Copilot accepts it.',
+    candidateMapping: 'OpenAI Responses max_tool_calls -> Copilot /responses',
+    rationale: 'Tool-loop limiting is part of the official Responses agentic control surface.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'max_tool_calls',
+      'max tool calls',
+    ]),
+    buildPayload: config => ({
+      ...buildNoopResponsesToolPayload(config),
+      max_tool_calls: 1,
+    }),
+  },
+  {
     id: 'responses-parallel-tool-calls-false',
     title: 'Responses accepts parallel_tool_calls=false',
     tier: 'optional',
@@ -402,6 +806,82 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     }),
   },
   {
+    id: 'responses-web-search-tool',
+    title: 'Responses accepts web_search tool',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Forward web_search tools for Responses-backed models only if Copilot accepts them.',
+    candidateMapping: 'OpenAI hosted web_search tool -> Copilot /responses',
+    rationale: 'Web search is one of the core OpenAI-hosted Responses tools and should be tracked separately from function tools.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'web_search',
+      'web search',
+      'tool',
+    ]),
+    buildPayload: config => ({
+      model: config.responsesModel,
+      input: 'Reply with OK without using tools.',
+      max_output_tokens: 16,
+      tools: [
+        {
+          type: 'web_search',
+        },
+      ],
+    }),
+  },
+  {
+    id: 'responses-tool-search-tool',
+    title: 'Responses accepts tool_search shape',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Forward tool_search shapes only if Copilot accepts the hosted-tool discovery surface.',
+    candidateMapping: 'OpenAI Responses tool_search -> Copilot /responses',
+    rationale: 'Tool search lets large tool catalogs defer definitions, and it has a different schema from normal function tools.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'tool_search',
+      'tool search',
+      'tools',
+    ]),
+    buildPayload: config => ({
+      model: config.responsesModel,
+      input: 'Reply with OK without using tools.',
+      max_output_tokens: 16,
+      tools: [
+        {
+          type: 'tool_search',
+          max_tool_count: 1,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'responses-code-interpreter-tool-unsupported',
+    title: 'Responses rejects code_interpreter tool',
+    tier: 'optional',
+    endpoint: 'responses',
+    candidateFix: 'Do not advertise code_interpreter passthrough until Copilot accepts the hosted tool.',
+    candidateMapping: 'OpenAI hosted code_interpreter tool -> Copilot /responses',
+    rationale: 'Code interpreter is an official hosted tool, but current Copilot GPT-5.5 rejects it.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'code_interpreter',
+      'code interpreter',
+      'tool',
+    ]),
+    buildPayload: config => ({
+      model: config.responsesModel,
+      input: 'Reply with OK without using tools.',
+      max_output_tokens: 16,
+      tools: [
+        {
+          type: 'code_interpreter',
+        },
+      ],
+    }),
+  },
+  {
     id: 'claude-response-format-json-object',
     title: 'Claude /chat/completions accepts response_format=json_object',
     tier: 'optional',
@@ -425,6 +905,46 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       ],
       response_format: { type: 'json_object' },
       max_tokens: 32,
+      temperature: 0,
+    }),
+  },
+  {
+    id: 'claude-response-format-json-schema',
+    title: 'Claude /chat/completions parameter acceptance for response_format=json_schema',
+    tier: 'optional',
+    endpoint: 'chat-completions',
+    candidateFix: 'Do not route Anthropic json_schema structured-output requests through Copilot chat-completions unless upstream proves schema enforcement, not only parameter acceptance.',
+    candidateMapping: 'Direct Copilot chat-completions response_format=json_schema probe only; no automatic Anthropic output_config.format=json_schema mapping.',
+    rationale: 'Copilot native /v1/messages rejects output_config.format, and Claude chat-completions can accept response_format=json_schema without reliably enforcing equivalent schema output.',
+    expectation: 'support_or_clean_unsupported',
+    isUnsupported: buildUnsupportedMatcher([
+      'response_format',
+      'response format',
+      'json_schema',
+      'schema',
+    ]),
+    buildPayload: config => ({
+      model: config.claudeModel,
+      messages: [
+        {
+          role: 'user',
+          content: 'What is 2+2? Return JSON with answer as a string.',
+        },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'math_answer',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+            additionalProperties: false,
+          },
+        },
+      },
+      max_tokens: 64,
       temperature: 0,
     }),
   },
@@ -552,6 +1072,145 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       max_output_tokens: 128,
     }),
   },
+  {
+    id: 'responses-get-by-id-unsupported',
+    title: 'Responses retrieve by ID is not exposed',
+    tier: 'optional',
+    endpoint: 'responses-raw',
+    candidateFix: 'Forward /responses/{id} but do not claim stored response retrieval until Copilot stops returning 404.',
+    candidateMapping: 'OpenAI GET /responses/{id} -> Copilot /responses/{id}',
+    rationale: 'Retrieval is required for stored/background response flows and is separate from POST /responses generation.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'responses',
+      'response_id',
+      'not found',
+    ]),
+    buildRequest: () => ({
+      method: 'GET',
+      path: '/responses/resp_live_probe_missing',
+      expectedBody: 'response',
+      model: 'N/A',
+    }),
+  },
+  {
+    id: 'responses-delete-by-id-unsupported',
+    title: 'Responses delete by ID is not exposed',
+    tier: 'optional',
+    endpoint: 'responses-raw',
+    candidateFix: 'Forward DELETE /responses/{id} but do not claim stored response deletion until Copilot stops returning 404.',
+    candidateMapping: 'OpenAI DELETE /responses/{id} -> Copilot /responses/{id}',
+    rationale: 'Deletion only makes sense when stored responses are available.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'responses',
+      'response_id',
+      'not found',
+    ]),
+    buildRequest: () => ({
+      method: 'DELETE',
+      path: '/responses/resp_live_probe_missing',
+      expectedBody: 'any',
+      model: 'N/A',
+    }),
+  },
+  {
+    id: 'responses-cancel-unsupported',
+    title: 'Responses cancel endpoint is not exposed',
+    tier: 'optional',
+    endpoint: 'responses-raw',
+    candidateFix: 'Forward /responses/{id}/cancel but do not claim cancellation until Copilot supports background jobs.',
+    candidateMapping: 'OpenAI POST /responses/{id}/cancel -> Copilot /responses/{id}/cancel',
+    rationale: 'Cancel depends on background response state; current Copilot rejects the route.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'cancel',
+      'background',
+      'not found',
+    ]),
+    buildRequest: () => ({
+      method: 'POST',
+      path: '/responses/resp_live_probe_missing/cancel',
+      expectedBody: 'response',
+      model: 'N/A',
+    }),
+  },
+  {
+    id: 'responses-input-items-unsupported',
+    title: 'Responses input_items endpoint is not exposed',
+    tier: 'optional',
+    endpoint: 'responses-raw',
+    candidateFix: 'Forward /responses/{id}/input_items but do not claim stored input item retrieval until Copilot supports it.',
+    candidateMapping: 'OpenAI GET /responses/{id}/input_items -> Copilot /responses/{id}/input_items',
+    rationale: 'Input item retrieval is part of official stored Responses state, not plain generation.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'input_items',
+      'input items',
+      'not found',
+    ]),
+    buildRequest: () => ({
+      method: 'GET',
+      path: '/responses/resp_live_probe_missing/input_items',
+      expectedBody: 'any',
+      model: 'N/A',
+    }),
+  },
+  {
+    id: 'responses-input-tokens-unsupported',
+    title: 'Responses input_tokens endpoint is not exposed',
+    tier: 'optional',
+    endpoint: 'responses-raw',
+    candidateFix: 'Forward /responses/input_tokens but keep local token counting separate until Copilot supports this OpenAI route.',
+    candidateMapping: 'OpenAI POST /responses/input_tokens -> Copilot /responses/input_tokens',
+    rationale: 'The official Responses API has a dedicated input token counting endpoint.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'input_tokens',
+      'input tokens',
+      'not found',
+    ]),
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/responses/input_tokens',
+      body: {
+        model: config.responsesModel,
+        input: 'Tell me a joke.',
+      },
+      expectedBody: 'input_tokens',
+      model: config.responsesModel,
+    }),
+  },
+  {
+    id: 'responses-compact-unsupported',
+    title: 'Responses compact endpoint is not exposed',
+    tier: 'optional',
+    endpoint: 'responses-raw',
+    candidateFix: 'Forward /responses/compact but do not claim server-side compaction until Copilot supports the route.',
+    candidateMapping: 'OpenAI POST /responses/compact -> Copilot /responses/compact',
+    rationale: 'Compaction is an official long-running conversation feature distinct from context_management on POST /responses.',
+    expectation: 'must_be_unsupported',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'compact',
+      'compaction',
+      'not found',
+    ]),
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/responses/compact',
+      body: {
+        model: config.responsesModel,
+        input: [
+          {
+            role: 'user',
+            content: 'Summarize this state.',
+          },
+        ],
+      },
+      expectedBody: 'any',
+      model: config.responsesModel,
+    }),
+  },
 
   // Native Anthropic /v1/messages probes
   {
@@ -612,20 +1271,31 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
   },
   {
     id: 'native-anthropic-json-schema',
-    title: 'Native Anthropic json_schema structured output',
+    title: 'Native Anthropic json_schema structured output (expected rejection)',
     tier: 'optional',
     endpoint: 'anthropic-messages',
-    expectation: 'must_support',
-    candidateFix: 'N/A',
-    candidateMapping: 'N/A',
-    rationale: 'Official Anthropic structured output uses json_schema, not json_object.',
+    expectation: 'must_be_unsupported',
+    candidateFix: 'Keep native passthrough behavior and surface the upstream output_config.format rejection until Copilot implements Anthropic structured outputs.',
+    candidateMapping: 'Anthropic output_config.format=json_schema -> Copilot /v1/messages output_config.format rejection',
+    rationale: 'Official Anthropic structured output uses json_schema, but current Copilot native /v1/messages rejects output_config.format and Claude chat-completions does not enforce equivalent schema output reliably.',
+    isUnsupported: buildUnsupportedMatcher([
+      'output_config.format',
+      'format',
+      'json_schema',
+      'extra inputs',
+    ]),
     buildPayload: config => ({
       model: config.claudeModel,
       max_tokens: 128,
       output_config: {
         format: {
           type: 'json_schema',
-          schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] },
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+            additionalProperties: false,
+          },
         },
       },
       messages: [{ role: 'user', content: 'What is 2+2? Return as JSON.' }],
@@ -673,10 +1343,16 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     title: 'Native Anthropic document source=url (real PDF)',
     tier: 'optional',
     endpoint: 'anthropic-messages',
-    expectation: 'must_support',
+    expectation: 'must_be_unsupported',
     candidateFix: 'Proxy should bypass native /v1/messages, fetch the URL-backed document locally, expand it to text, and continue via a translated backend instead of blindly forwarding an unsupported URL document source.',
     candidateMapping: 'Anthropic document source=url -> local fetch/extract -> text block(s) -> translated backend request',
-    rationale: 'Official document URL source with a real PDF.',
+    rationale: 'Official document URL source with a real PDF, which current Copilot native /v1/messages rejects.',
+    isUnsupported: buildUnsupportedMatcher([
+      'url sources',
+      'url',
+      'document',
+      'image.source',
+    ]),
     buildPayload: config => ({
       model: config.claudeModel,
       max_tokens: 64,

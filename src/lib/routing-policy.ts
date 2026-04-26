@@ -23,8 +23,11 @@ interface BackendRoutingContext {
 }
 
 const RESPONSES_JSON_OBJECT_BYPASS_REASON = 'json_object structured output'
-const RESPONSES_INPUT_FILE_REJECTION_MESSAGE = 'input_file is not supported when routing this model through native Anthropic translation. Use a model that supports /responses directly, or provide content that can be represented as translated text/image blocks.'
+const RESPONSES_JSON_SCHEMA_NATIVE_ONLY_REASON = 'json_schema structured output requires native Anthropic /v1/messages passthrough'
+const RESPONSES_INPUT_FILE_REJECTION_MESSAGE = 'input_file is only supported when routing this model directly through /responses. Use a model that supports /responses directly, or provide content that can be represented as translated text/image blocks.'
+const RESPONSES_HOSTED_TOOL_REJECTION_MESSAGE = 'Hosted Responses tools are only supported when routing this model directly through /responses. Use a Responses-backed model or replace hosted tools with function tools.'
 const MESSAGES_JSON_OBJECT_BYPASS_REASON = 'json_object requires an OpenAI-compatible backend'
+const MESSAGES_JSON_SCHEMA_NATIVE_ONLY_REASON = 'json_schema structured output requires native Anthropic /v1/messages passthrough'
 const MESSAGES_URL_DOCUMENT_BYPASS_REASON = 'document.source.type="url" is expanded locally because Copilot native /v1/messages rejects URL-backed documents'
 
 export function planChatCompletionsBackends(model: string): BackendRoutePolicy {
@@ -48,18 +51,28 @@ export function planMessagesBackends(
 ): BackendRoutePolicy {
   const routing = createRoutingContext(model, 'anthropic-messages')
   const nativeAnthropicBypassReason = getMessagesNativeAnthropicBypassReason(payload)
+  const nativeAnthropicOnlyReason = getMessagesNativeAnthropicOnlyReason(payload)
 
   if (routing.resolvedBackend === 'anthropic-messages') {
-    const steps = nativeAnthropicBypassReason
-      ? supportedSteps(routing.supportedApis, [
-          { api: 'chat-completions', context: nativeAnthropicBypassReason },
-          { api: 'responses', context: nativeAnthropicBypassReason },
-        ])
-      : supportedSteps(routing.supportedApis, [
-          { api: 'anthropic-messages' },
-          { api: 'chat-completions' },
-          { api: 'responses' },
-        ])
+    let steps: Array<BackendRouteStep>
+    if (nativeAnthropicBypassReason) {
+      steps = supportedSteps(routing.supportedApis, [
+        { api: 'chat-completions', context: nativeAnthropicBypassReason },
+        { api: 'responses', context: nativeAnthropicBypassReason },
+      ])
+    }
+    else if (nativeAnthropicOnlyReason) {
+      steps = supportedSteps(routing.supportedApis, [
+        { api: 'anthropic-messages', context: nativeAnthropicOnlyReason },
+      ])
+    }
+    else {
+      steps = supportedSteps(routing.supportedApis, [
+        { api: 'anthropic-messages' },
+        { api: 'chat-completions' },
+        { api: 'responses' },
+      ])
+    }
 
     return {
       resolvedBackend: routing.resolvedBackend,
@@ -89,9 +102,10 @@ export function planResponsesBackends(
 ): BackendRoutePolicy {
   const routing = createRoutingContext(model, 'responses')
   const anthropicBypassReason = getResponsesAnthropicBypassReason(payload)
-  const localError = routing.resolvedBackend === 'anthropic-messages'
-    ? getResponsesAnthropicTranslationRejectionReason(payload)
-    : undefined
+  const anthropicOnlyReason = getResponsesAnthropicOnlyReason(payload)
+  const localError = routing.resolvedBackend === 'responses'
+    ? undefined
+    : getResponsesTranslationRejectionReason(payload)
 
   if (routing.resolvedBackend === 'chat-completions') {
     return {
@@ -101,16 +115,25 @@ export function planResponsesBackends(
   }
 
   if (routing.resolvedBackend === 'anthropic-messages') {
-    const steps = anthropicBypassReason
-      ? supportedSteps(routing.supportedApis, [
-          { api: 'chat-completions', context: anthropicBypassReason },
-          { api: 'responses', context: anthropicBypassReason },
-        ])
-      : supportedSteps(routing.supportedApis, [
-          { api: 'anthropic-messages' },
-          { api: 'chat-completions' },
-          { api: 'responses' },
-        ])
+    let steps: Array<BackendRouteStep>
+    if (anthropicBypassReason) {
+      steps = supportedSteps(routing.supportedApis, [
+        { api: 'chat-completions', context: anthropicBypassReason },
+        { api: 'responses', context: anthropicBypassReason },
+      ])
+    }
+    else if (anthropicOnlyReason) {
+      steps = supportedSteps(routing.supportedApis, [
+        { api: 'anthropic-messages', context: anthropicOnlyReason },
+      ])
+    }
+    else {
+      steps = supportedSteps(routing.supportedApis, [
+        { api: 'anthropic-messages' },
+        { api: 'chat-completions' },
+        { api: 'responses' },
+      ])
+    }
 
     return {
       resolvedBackend: routing.resolvedBackend,
@@ -197,12 +220,28 @@ function getResponsesAnthropicBypassReason(payload: ResponsesPayload): string | 
   return undefined
 }
 
-function getResponsesAnthropicTranslationRejectionReason(payload: ResponsesPayload): string | undefined {
+function getResponsesAnthropicOnlyReason(payload: ResponsesPayload): string | undefined {
+  if (payload.text?.format?.type === 'json_schema') {
+    return RESPONSES_JSON_SCHEMA_NATIVE_ONLY_REASON
+  }
+
+  return undefined
+}
+
+function getResponsesTranslationRejectionReason(payload: ResponsesPayload): string | undefined {
+  if (payloadHasHostedTools(payload)) {
+    return RESPONSES_HOSTED_TOOL_REJECTION_MESSAGE
+  }
+
   if (payloadHasInputFileParts(payload)) {
     return RESPONSES_INPUT_FILE_REJECTION_MESSAGE
   }
 
   return undefined
+}
+
+function payloadHasHostedTools(payload: ResponsesPayload): boolean {
+  return Boolean(payload.tools?.some(tool => tool.type !== 'function'))
 }
 
 function payloadHasInputFileParts(payload: ResponsesPayload): boolean {
@@ -232,12 +271,24 @@ function payloadHasInputFileParts(payload: ResponsesPayload): boolean {
 function getMessagesNativeAnthropicBypassReason(
   payload: AnthropicMessagesPayload,
 ): string | undefined {
-  if (getMessagesOutputFormatType(payload) === 'json_object') {
+  const outputFormatType = getMessagesOutputFormatType(payload)
+  if (outputFormatType === 'json_object') {
     return MESSAGES_JSON_OBJECT_BYPASS_REASON
   }
 
   if (payloadHasUrlDocumentSources(payload)) {
     return MESSAGES_URL_DOCUMENT_BYPASS_REASON
+  }
+
+  return undefined
+}
+
+function getMessagesNativeAnthropicOnlyReason(
+  payload: AnthropicMessagesPayload,
+): string | undefined {
+  const outputFormatType = getMessagesOutputFormatType(payload)
+  if (outputFormatType === 'json_schema') {
+    return MESSAGES_JSON_SCHEMA_NATIVE_ONLY_REASON
   }
 
   return undefined

@@ -101,6 +101,16 @@ describe('getModelConfig', () => {
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
   })
 
+  test('should configure gpt-5.5 as responses-only', () => {
+    const config = getModelConfig('gpt-5.5')
+    expect(config.supportedApis).toEqual(['responses'])
+    expect(config.reasoningMode).toBe('thinking')
+    expect(config.defaultReasoningEffort).toBe('medium')
+    expect(config.supportedReasoningEfforts).toEqual(['none', 'low', 'medium', 'high', 'xhigh'])
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportsParallelToolCalls).toBe(true)
+  })
+
   test('should configure gpt-5.1 as both APIs', () => {
     const config = getModelConfig('gpt-5.1')
     expect(config.supportedApis).toEqual(['chat-completions', 'responses'])
@@ -140,6 +150,10 @@ describe('isThinkingModeModel', () => {
 
   test('should return true for gpt-5.4', () => {
     expect(isThinkingModeModel('gpt-5.4')).toBe(true)
+  })
+
+  test('should return true for gpt-5.5', () => {
+    expect(isThinkingModeModel('gpt-5.5')).toBe(true)
   })
 
   test('should return true for gpt-5.1-codex', () => {
@@ -198,6 +212,11 @@ describe('resolveBackend', () => {
 
   test('should return responses for gpt-5.4 even if cc requested', () => {
     expect(resolveBackend('gpt-5.4', 'chat-completions')).toBe('responses')
+  })
+
+  test('should return responses for gpt-5.5 even if cc requested', () => {
+    expect(resolveBackend('gpt-5.5', 'responses')).toBe('responses')
+    expect(resolveBackend('gpt-5.5', 'chat-completions')).toBe('responses')
   })
 
   test('should return requested API for gpt-5.1 (both supported)', () => {

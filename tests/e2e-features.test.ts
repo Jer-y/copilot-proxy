@@ -346,7 +346,7 @@ describeE2E('Feature probes', () => {
       expect(res.status).toBe(200)
     }, TIMEOUT)
 
-    test('json_schema structured output → 200 with valid JSON response', async () => {
+    test('json_schema structured output → upstream-aligned unsupported', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 1024,
@@ -365,11 +365,10 @@ describeE2E('Feature probes', () => {
         },
         messages: [{ role: 'user', content: 'What is 2+2? Return answer as a string.' }],
       })
-      expect(res.status).toBe(200)
+      expect(res.status).toBe(400)
       const body = await parseResponse(res)
-      const textBlock = (body as any).content.find((b: any) => b.type === 'text')
-      expect(textBlock).toBeDefined()
-      expect(() => JSON.parse(textBlock.text)).not.toThrow()
+      const message = (body.error as Record<string, unknown> | undefined)?.message
+      expect(String(message).toLowerCase()).toContain('output_config.format')
     }, TIMEOUT)
 
     test('document source text → 200', async () => {

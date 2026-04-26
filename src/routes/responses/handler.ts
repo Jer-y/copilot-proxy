@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 
 import type { SSEMessage } from 'hono/streaming'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { AnthropicStreamEventData } from '~/lib/translation/types'
 import type { ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload, ResponsesResponse } from '~/services/copilot/create-responses'
@@ -34,7 +35,7 @@ import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { validateBody } from '~/lib/validate'
 import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 import { createChatCompletions } from '~/services/copilot/create-chat-completions'
-import { createResponses, summarizeResponsesPayload } from '~/services/copilot/create-responses'
+import { createResponses, forwardResponsesEndpoint, summarizeResponsesPayload } from '~/services/copilot/create-responses'
 
 export async function handleResponses(c: Context) {
   await checkRateLimit(state)
@@ -97,6 +98,46 @@ export async function handleResponses(c: Context) {
       return c.body(null)
     throw error
   }
+}
+
+export async function handleResponsesPassthrough(
+  c: Context,
+  path: string,
+  method: 'GET' | 'POST' | 'DELETE',
+) {
+  await checkRateLimit(state)
+
+  if (state.manualApprove) {
+    await awaitApproval()
+  }
+
+  const url = new URL(c.req.url)
+  const body = method === 'GET' ? undefined : await c.req.text()
+  const requestHeaders: Record<string, string> = {}
+  const contentType = c.req.header('content-type')
+  if (contentType && body !== undefined) {
+    requestHeaders['Content-Type'] = contentType
+  }
+
+  const response = await forwardResponsesEndpoint(`${path}${url.search}`, {
+    method,
+    body,
+    headers: requestHeaders,
+    signal: c.req.raw.signal,
+  })
+
+  forwardUpstreamHeaders(c, response.headers)
+  const responseHeaders: Record<string, string> = {}
+  const responseContentType = response.headers.get('content-type')
+  if (responseContentType) {
+    responseHeaders['content-type'] = responseContentType
+  }
+  const requestId = response.headers.get('x-request-id')
+  if (requestId) {
+    responseHeaders['x-request-id'] = requestId
+  }
+
+  return c.body(response.body, response.status as ContentfulStatusCode, responseHeaders)
 }
 
 /** Direct path: model supports responses API */

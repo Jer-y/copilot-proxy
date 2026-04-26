@@ -48,6 +48,34 @@ describe('planMessagesBackends', () => {
     })
   })
 
+  test('keeps json_schema requests on native Anthropic so Copilot can surface unsupported output_config.format', () => {
+    const policy = planMessagesBackends('claude-opus-4.6', {
+      model: 'claude-opus-4.6',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'Return JSON.' }],
+      output_config: {
+        format: {
+          type: 'json_schema',
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+          },
+        },
+      },
+    })
+
+    expect(policy).toEqual({
+      resolvedBackend: 'anthropic-messages',
+      steps: [
+        {
+          api: 'anthropic-messages',
+          context: 'json_schema structured output requires native Anthropic /v1/messages passthrough',
+        },
+      ],
+    })
+  })
+
   test('bypasses native Anthropic for URL-backed document blocks', () => {
     const policy = planMessagesBackends('claude-opus-4.6', {
       model: 'claude-opus-4.6',
@@ -142,6 +170,34 @@ describe('planResponsesBackends', () => {
     })
   })
 
+  test('keeps Claude json_schema responses requests on native Anthropic so unsupported format is not falsely treated as supported', () => {
+    const policy = planResponsesBackends('claude-opus-4.6', {
+      model: 'claude-opus-4.6',
+      input: 'Return JSON.',
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'sample',
+          schema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+          },
+        },
+      },
+    })
+
+    expect(policy).toEqual({
+      resolvedBackend: 'anthropic-messages',
+      steps: [
+        {
+          api: 'anthropic-messages',
+          context: 'json_schema structured output requires native Anthropic /v1/messages passthrough',
+        },
+      ],
+    })
+  })
+
   test('rejects input_file when Claude would need Anthropic translation', () => {
     const policy = planResponsesBackends('claude-opus-4.6', {
       model: 'claude-opus-4.6',
@@ -157,7 +213,27 @@ describe('planResponsesBackends', () => {
     })
 
     expect(policy.localError).toBe(
-      'input_file is not supported when routing this model through native Anthropic translation. Use a model that supports /responses directly, or provide content that can be represented as translated text/image blocks.',
+      'input_file is only supported when routing this model directly through /responses. Use a model that supports /responses directly, or provide content that can be represented as translated text/image blocks.',
+    )
+    expect(policy.steps).toEqual([
+      { api: 'anthropic-messages' },
+      { api: 'chat-completions' },
+    ])
+  })
+
+  test('rejects hosted Responses tools when translation would be required', () => {
+    const policy = planResponsesBackends('claude-opus-4.6', {
+      model: 'claude-opus-4.6',
+      input: 'Search the web.',
+      tools: [
+        {
+          type: 'web_search',
+        },
+      ],
+    })
+
+    expect(policy.localError).toBe(
+      'Hosted Responses tools are only supported when routing this model directly through /responses. Use a Responses-backed model or replace hosted tools with function tools.',
     )
     expect(policy.steps).toEqual([
       { api: 'anthropic-messages' },
