@@ -18,6 +18,8 @@
   `bun run start` (runs `start` subcommand in production mode)
 - **Daemon commands:**
   `bun run ./src/main.ts start -d` (background), `stop`, `restart`, `status`, `logs`, `enable`, `disable`
+- **Live Copilot capability probes:**
+  See [docs/copilot-capability-validation.md](docs/copilot-capability-validation.md#how-to-run-the-live-probes).
 
 ## Code Style Guidelines
 
@@ -43,6 +45,15 @@
   Uses `@antfu/eslint-config` (see npm for details). Includes stylistic, unused imports, regex, and package.json rules.
 - **Paths:**
   Use path aliases (`~/*`) for imports from `src/`.
+
+## Proxy Capability Policy
+
+- Treat GitHub Copilot upstream behavior as the source of truth for proxy pass-through decisions. Do not assume official OpenAI Responses or Anthropic API support implies Copilot support.
+- For upstream-gated features, validate with the live capability probes documented in [docs/copilot-capability-validation.md](docs/copilot-capability-validation.md) before enabling new forwarding behavior.
+- Supported upstream capabilities should be transparently forwarded. Known unsupported capabilities should fail locally or surface a clean upstream-aligned unsupported error instead of being silently dropped or rerouted into a false success.
+- Do not route Anthropic `output_config.format=json_schema` to Claude `/chat/completions` as `response_format=json_schema`; native `/v1/messages` currently rejects it and the fallback can produce schema-invalid 200 responses. See [the Anthropic json_schema note](docs/copilot-capability-validation.md#important-nuance-for-anthropic-output_configformatjson_schema).
+- When changing Responses routing, tool handling, MCP behavior, web search, image inputs, or structured output, run a real `codex` CLI smoke against the local `/v1/responses` proxy. Keep Codex config temporary, for example with `CODEX_HOME=/tmp/...`, and do not modify the user's `~/.codex`.
+- When changing Anthropic `/v1/messages` routing, native passthrough sanitization, thinking/output_config handling, or Claude Code tool behavior, run a real `claude` CLI smoke against the local proxy. Use temporary local state and follow [the Claude Code smoke guidance](docs/copilot-capability-validation.md#claude-code-cli-smoke-tests).
 
 ---
 

@@ -57,8 +57,11 @@ export function mapAnthropicReasoningToChatCompletions(
     return effort
   }
 
-  if (effort === 'max' && supported.has('high')) {
-    return 'high'
+  if (effort === 'max') {
+    // Preserve explicit max-effort requests so Copilot can return its
+    // upstream-aligned invalid_reasoning_effort error instead of silently
+    // downgrading the request to high.
+    return 'max'
   }
 
   return undefined

@@ -113,6 +113,103 @@ Use the probe outcome to decide how aggressive the proxy should be:
 - If a probe is `unsupported`, keep the local parsing improvement but omit or downgrade the upstream field.
 - If a probe fails for environmental reasons, rerun the suite before making routing or translation decisions.
 
+## Claude Code CLI smoke tests
+
+Use a real `claude` CLI smoke when changing Anthropic `/v1/messages` routing, native passthrough sanitization, thinking/output_config handling, tool translation, or Claude Code-specific beta behavior.
+
+Start the proxy on a disposable port first:
+
+```sh
+bun run ./src/main.ts start -p 4899
+```
+
+Then run Claude Code with temporary local state:
+
+```sh
+env HOME=/tmp/claude-code-proxy-smoke \
+ANTHROPIC_BASE_URL=http://127.0.0.1:4899 \
+ANTHROPIC_AUTH_TOKEN=dummy \
+ANTHROPIC_MODEL=claude-opus-4-6 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+DISABLE_NON_ESSENTIAL_MODEL_CALLS=1 \
+claude --bare -p \
+  --model claude-opus-4-6 \
+  --output-format json \
+  --no-session-persistence \
+  "Reply with exactly: proxy-ok"
+```
+
+Expected behavior:
+
+- Claude Code respects `ANTHROPIC_BASE_URL` and calls `POST /v1/messages?beta=true`.
+- `ANTHROPIC_AUTH_TOKEN` is sent as `Authorization: Bearer ...`; `ANTHROPIC_API_KEY` is sent as `x-api-key`.
+- The request normally uses SSE streaming and includes Claude Code beta headers, adaptive thinking, `context_management`, `output_config.effort`, cache-control hints, metadata, and built-in tool schemas.
+- The proxy should return a normal Claude Code `result` with `is_error=false`.
+
+Additional high-value smokes:
+
+```sh
+env HOME=/tmp/claude-code-proxy-smoke \
+ANTHROPIC_BASE_URL=http://127.0.0.1:4899 \
+ANTHROPIC_AUTH_TOKEN=dummy \
+ANTHROPIC_MODEL=claude-opus-4-6 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+DISABLE_NON_ESSENTIAL_MODEL_CALLS=1 \
+claude --bare -p \
+  --model claude-opus-4-6 \
+  --output-format json \
+  --no-session-persistence \
+  --permission-mode bypassPermissions \
+  --allowedTools=Read \
+  --disallowedTools=Bash,Edit \
+  "Read package.json and answer with only the package name."
+```
+
+This verifies a real tool_use/tool_result loop through `/v1/messages`.
+
+```sh
+env HOME=/tmp/claude-code-proxy-smoke \
+ANTHROPIC_BASE_URL=http://127.0.0.1:4899 \
+ANTHROPIC_AUTH_TOKEN=dummy \
+ANTHROPIC_MODEL=claude-opus-4-6 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+DISABLE_NON_ESSENTIAL_MODEL_CALLS=1 \
+claude --bare -p \
+  --model claude-opus-4-6 \
+  --output-format json \
+  --no-session-persistence \
+  --json-schema '{"type":"object","properties":{"status":{"type":"string"}},"required":["status"],"additionalProperties":false}' \
+  "Return status proxy-ok."
+```
+
+Claude Code implements `--json-schema` by adding a `StructuredOutput` tool. It does not send Anthropic `output_config.format=json_schema`, so this smoke should succeed when normal tool calls work.
+
+```sh
+env HOME=/tmp/claude-code-proxy-smoke \
+ANTHROPIC_BASE_URL=http://127.0.0.1:4899 \
+ANTHROPIC_AUTH_TOKEN=dummy \
+ANTHROPIC_MODEL=claude-opus-4-6 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+DISABLE_NON_ESSENTIAL_MODEL_CALLS=1 \
+claude --bare -p \
+  --model claude-opus-4-6 \
+  --effort max \
+  --output-format json \
+  --no-session-persistence \
+  "Reply with exactly: effort-ok"
+```
+
+This is a negative smoke. Current Copilot native `/v1/messages` rejects `output_config.effort="max"` for `claude-opus-4.6`, so Claude Code should return an API error with `invalid_reasoning_effort`.
+
+```sh
+curl -sS http://127.0.0.1:4899/v1/messages/count_tokens \
+  -H 'content-type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"claude-opus-4-6","max_tokens":32,"messages":[{"role":"user","content":"Count this short prompt."}]}'
+```
+
+This checks the Claude-compatible token counting route.
+
 ## Important nuance for Anthropic `output_config.format=json_schema`
 
 Parameter acceptance is not the same as equivalent structured-output support.
@@ -126,7 +223,14 @@ For that reason, Anthropic `output_config.format.type="json_schema"` must stay o
 
 ## Important nuance for Anthropic `output_config.effort=max`
 
-Anthropic `max` is Claude-side reasoning semantics, not a value we should blindly forward to Copilot `/responses`.
+Anthropic `max` is Claude-side reasoning semantics, not a value we should blindly forward to Copilot `/responses` or assume Copilot native Claude accepts.
+
+Current Copilot behavior is:
+
+- Native `/v1/messages` accepts `output_config.effort` values `low`, `medium`, and `high`.
+- Native `/v1/messages` rejects `output_config.effort="max"` for `claude-opus-4.6` with `invalid_reasoning_effort`.
+- Claude `/chat/completions` also rejects `reasoning_effort="max"` for `claude-opus-4.6` with `invalid_reasoning_effort`.
+- Claude Code `--effort max` therefore should surface a clean unsupported error until Copilot native support changes.
 
 The live validation layer therefore treats `/responses` differently:
 
