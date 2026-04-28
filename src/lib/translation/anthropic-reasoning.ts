@@ -95,12 +95,6 @@ export function mapAnthropicReasoningToResponses(
 function normalizeAnthropicReasoningEffort(
   effort: ModelConfig['defaultReasoningEffort'],
 ): AnthropicReasoningEffort | undefined {
-  // Anthropic has no native xhigh effort. Treat an xhigh model default as the
-  // strongest Anthropic-compatible hint so downstream mappers can preserve it.
-  if (effort === 'xhigh') {
-    return 'max'
-  }
-
   if (effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max') {
     return effort
   }

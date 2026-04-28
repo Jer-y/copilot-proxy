@@ -737,6 +737,17 @@ describe('translateResponsesRequestToAnthropic', () => {
     expect(result.output_config).toEqual({ effort: 'low' })
   })
 
+  test('reasoning.effort xhigh is preserved on native Anthropic requests', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.7-1m-internal',
+      input: 'Hi',
+      reasoning: { effort: 'xhigh' },
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.output_config).toEqual({ effort: 'xhigh' })
+  })
+
   test('tool strict is forwarded to native Anthropic tools', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',

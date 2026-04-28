@@ -454,7 +454,7 @@ function translateResponsesToAnthropicToolChoice(
 function buildOutputConfig(
   payload: ResponsesPayload,
 ): AnthropicMessagesPayload['output_config'] | undefined {
-  let effort: 'low' | 'medium' | 'high' | 'max' | undefined
+  let effort: AnthropicOutputConfig['effort'] | undefined
   let format: AnthropicOutputConfigFormat | undefined
 
   if (payload.reasoning?.effort) {
@@ -483,17 +483,13 @@ function buildOutputConfig(
 
 function mapResponsesReasoningEffortToAnthropic(
   effort: NonNullable<NonNullable<ResponsesPayload['reasoning']>['effort']>,
-): 'low' | 'medium' | 'high' | 'max' | undefined {
+): AnthropicOutputConfig['effort'] | undefined {
   if (effort === 'none') {
     return undefined
   }
 
   if (effort === 'minimal') {
     return 'low'
-  }
-
-  if (effort === 'xhigh') {
-    return 'max'
   }
 
   return effort

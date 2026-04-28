@@ -9,7 +9,7 @@ import {
 } from '../src/lib/translation/anthropic-reasoning'
 
 describe('Anthropic reasoning helpers', () => {
-  test('adaptive thinking treats xhigh model defaults as max-compatible effort', () => {
+  test('adaptive thinking preserves xhigh model defaults for Anthropic-compatible effort', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'future-model',
       max_tokens: 128,
@@ -24,7 +24,7 @@ describe('Anthropic reasoning helpers', () => {
     }
 
     const effort = resolveAnthropicReasoningEffort(payload, modelConfig)
-    expect(effort).toBe('max')
+    expect(effort).toBe('xhigh')
     expect(mapAnthropicReasoningToResponses(effort, modelConfig)).toEqual({ effort: 'xhigh' })
   })
 })
