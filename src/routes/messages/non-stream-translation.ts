@@ -14,9 +14,20 @@ export interface TranslateOptions {
   anthropicBeta?: string
 }
 
-/** Models that support Claude routing variants such as -fast and -1m. */
-const MODEL_VARIANTS: Record<string, Set<string>> = {
-  'claude-opus-4.6': new Set(['fast', '1m']),
+/** Models that support Claude routing variants such as fast mode and 1M context. */
+interface ModelVariants {
+  fast?: string
+  context1m?: string
+}
+
+const MODEL_VARIANTS: Record<string, ModelVariants> = {
+  'claude-opus-4.6': {
+    fast: 'claude-opus-4.6-fast',
+    context1m: 'claude-opus-4.6-1m',
+  },
+  'claude-opus-4.7': {
+    context1m: 'claude-opus-4.7-1m-internal',
+  },
 }
 
 /** Parse comma-separated anthropic-beta header into a Set of feature names */
@@ -52,8 +63,8 @@ export function sanitizeAnthropicBetaHeader(anthropicBeta: string | undefined): 
 
 /**
  * Resolve the Anthropic request model to the effective Copilot model ID.
- * Claude fast/1m requests stay as distinct variant IDs, but inherit the same
- * backend and capability support as the base Opus 4.6 model.
+ * Claude fast/1m requests stay as distinct Copilot model IDs. Some variants
+ * use non-mechanical IDs, such as claude-opus-4.7-1m-internal.
  */
 export function applyModelVariant(
   model: string,
@@ -69,15 +80,15 @@ export function applyModelVariant(
   const betaFeatures = parseBetaFeatures(anthropicBeta)
 
   // Fast mode takes priority when both signals are present.
-  if (variants.has('fast')) {
+  if (variants.fast) {
     if (payload.speed === 'fast' || betaFeatures.has('fast-mode-2026-02-01')) {
-      return `${normalizedModel}-fast`
+      return variants.fast
     }
   }
 
-  if (variants.has('1m')) {
+  if (variants.context1m) {
     if (betaFeatures.has('context-1m-2025-08-07')) {
-      return `${normalizedModel}-1m`
+      return variants.context1m
     }
   }
 

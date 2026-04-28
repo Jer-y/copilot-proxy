@@ -318,6 +318,11 @@ describe('Model name normalization via translateToOpenAI', () => {
     expect(result.model).toBe('claude-opus-4.6')
   })
 
+  test('should normalize claude-opus-4-7 to claude-opus-4.7 (no date suffix)', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-7'))
+    expect(result.model).toBe('claude-opus-4.7')
+  })
+
   test('should normalize claude-haiku-4-6 to claude-haiku-4.6 (no date suffix)', () => {
     const result = translateToOpenAI(makePayload('claude-haiku-4-6'))
     expect(result.model).toBe('claude-haiku-4.6')
@@ -955,6 +960,16 @@ describe('Model variant routing', () => {
     expect(result.model).toBe('claude-opus-4.6-1m')
   })
 
+  test('1m context via anthropic-beta header routes claude-opus-4.7 to internal 1m model', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.7'), { anthropicBeta: 'context-1m-2025-08-07' })
+    expect(result.model).toBe('claude-opus-4.7-1m-internal')
+  })
+
+  test('1m context via anthropic-beta header routes normalized claude-opus-4-7 to internal 1m model', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4-7'), { anthropicBeta: 'context-1m-2025-08-07' })
+    expect(result.model).toBe('claude-opus-4.7-1m-internal')
+  })
+
   test('comma-separated beta header parsing', () => {
     const features = parseBetaFeatures('claude-code-2025-01-01, context-1m-2025-08-07')
     expect(features.has('context-1m-2025-08-07')).toBe(true)
@@ -1030,6 +1045,24 @@ describe('Model variant routing', () => {
   test('model with hyphen version is normalized before applying variant', () => {
     const result = translateToOpenAI(makePayload('claude-opus-4-6', { speed: 'fast' }))
     expect(result.model).toBe('claude-opus-4.6-fast')
+  })
+
+  test('claude-opus-4.7 1m variant uses high adaptive reasoning support', () => {
+    const result = translateToOpenAI(
+      makePayload('claude-opus-4-7', {
+        thinking: { type: 'adaptive' },
+        tool_choice: {
+          type: 'any',
+          disable_parallel_tool_use: true,
+        },
+      }),
+      { anthropicBeta: 'context-1m-2025-08-07' },
+    )
+
+    expect(result.model).toBe('claude-opus-4.7-1m-internal')
+    expect(result.reasoning_effort).toBe('high')
+    expect(result.tool_choice).toBeUndefined()
+    expect(result.parallel_tool_calls).toBe(false)
   })
 
   test('applyModelVariant directly - no variant for unknown model', () => {

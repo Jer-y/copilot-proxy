@@ -53,6 +53,22 @@ describe('Variant routing integration', () => {
     expect(result.model).toBe('claude-opus-4.6-1m')
   })
 
+  test('1m context via header routes claude-opus-4.7 to claude-opus-4.7-1m-internal', () => {
+    const result = translateToOpenAI(
+      makePayload('claude-opus-4.7'),
+      { anthropicBeta: 'context-1m-2025-08-07' },
+    )
+    expect(result.model).toBe('claude-opus-4.7-1m-internal')
+  })
+
+  test('1m context via header routes normalized claude-opus-4-7 to claude-opus-4.7-1m-internal', () => {
+    const result = translateToOpenAI(
+      makePayload('claude-opus-4-7'),
+      { anthropicBeta: 'context-1m-2025-08-07' },
+    )
+    expect(result.model).toBe('claude-opus-4.7-1m-internal')
+  })
+
   test('no special signal routes to claude-opus-4.6', () => {
     const result = translateToOpenAI(makePayload('claude-opus-4-6'))
     expect(result.model).toBe('claude-opus-4.6')
@@ -115,6 +131,18 @@ describe('Variant routing integration', () => {
     expect(result.parallel_tool_calls).toBe(false)
     expect(result.reasoning_effort).toBe('max')
   })
+
+  test('claude-opus-4.7 uses medium adaptive reasoning and omits forced tool_choice on chat fallback', () => {
+    const result = translateToOpenAI(makePayload('claude-opus-4.7', {
+      thinking: { type: 'adaptive' },
+      tool_choice: { type: 'any', disable_parallel_tool_use: true },
+    }))
+
+    expect(result.model).toBe('claude-opus-4.7')
+    expect(result.reasoning_effort).toBe('medium')
+    expect(result.tool_choice).toBeUndefined()
+    expect(result.parallel_tool_calls).toBe(false)
+  })
 })
 
 describe('findModelWithFallback', () => {
@@ -142,6 +170,12 @@ describe('findModelWithFallback', () => {
   test('variant -1m falls back to base model', () => {
     const result = findModelWithFallback('claude-opus-4.6-1m', [baseModel])
     expect(result?.id).toBe('claude-opus-4.6')
+  })
+
+  test('variant -1m-internal falls back to base model', () => {
+    const opus47Model: Model = { ...baseModel, id: 'claude-opus-4.7', name: 'Claude Opus 4.7' }
+    const result = findModelWithFallback('claude-opus-4.7-1m-internal', [opus47Model])
+    expect(result?.id).toBe('claude-opus-4.7')
   })
 
   test('returns undefined when neither variant nor base exists', () => {

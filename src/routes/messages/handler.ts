@@ -3,13 +3,13 @@ import type { Context } from 'hono'
 import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData, AnthropicStreamState } from './anthropic-types'
 import type { ChatCompletionChunk, ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesResponse } from '~/services/copilot/create-responses'
-import type { Model } from '~/services/copilot/get-models'
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { awaitApproval } from '~/lib/approval'
 import { runBackendPlan } from '~/lib/backend-plan'
 import { HTTPError, JSONResponseError } from '~/lib/error'
+import { findModelWithFallback } from '~/lib/model-utils'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { planMessagesBackends } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
@@ -148,24 +148,6 @@ export async function handleCompletion(c: Context) {
       return c.body(null)
     throw error
   }
-}
-
-function findModelWithFallback(modelId: string, models: Array<Model> | undefined): Model | undefined {
-  if (!models) {
-    return undefined
-  }
-
-  const exact = models.find(model => model.id === modelId)
-  if (exact) {
-    return exact
-  }
-
-  const baseModel = modelId.replace(/-(fast|1m)$/, '')
-  if (baseModel !== modelId) {
-    return models.find(model => model.id === baseModel)
-  }
-
-  return undefined
 }
 
 /** Existing path: Anthropic → CC → Anthropic */

@@ -356,6 +356,33 @@ describe('messages route upstream adaptation', () => {
     expect(body.model).toBe('claude-opus-4-6-20250514')
   })
 
+  test('Claude Opus 4.7 1m beta routes normalized model to internal 1m upstream model', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'context-1m-2025-08-07',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-7',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as { model?: string }
+    expect(forwardedPayload.model).toBe('claude-opus-4.7-1m-internal')
+
+    const body = await res.json() as { model?: string }
+    expect(body.model).toBe('claude-opus-4-7')
+  })
+
   test('Claude streaming responses are piped through natively', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',

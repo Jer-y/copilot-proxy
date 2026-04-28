@@ -40,6 +40,28 @@ describe('getModelConfig', () => {
     expect(config.preferredApi).toBe('anthropic-messages')
   })
 
+  test('should configure claude-opus-4.7 with medium-only reasoning', () => {
+    const config = getModelConfig('claude-opus-4.7')
+    expect(config.enableCacheControl).toBe(true)
+    expect(config.defaultReasoningEffort).toBe('medium')
+    expect(config.supportsToolChoice).toBe(false)
+    expect(config.supportsParallelToolCalls).toBe(true)
+    expect(config.supportedReasoningEfforts).toEqual(['medium'])
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('anthropic-messages')
+  })
+
+  test('should configure claude-opus-4.7-1m-internal with xhigh reasoning support', () => {
+    const config = getModelConfig('claude-opus-4.7-1m-internal')
+    expect(config.enableCacheControl).toBe(true)
+    expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportsToolChoice).toBe(false)
+    expect(config.supportsParallelToolCalls).toBe(true)
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('anthropic-messages')
+  })
+
   test('should return config with reasoningMode for gpt-5.2-codex', () => {
     const config = getModelConfig('gpt-5.2-codex')
     expect(config.reasoningMode).toBe('thinking')
@@ -200,6 +222,18 @@ describe('resolveBackend', () => {
     expect(resolveBackend('claude-opus-4.6-1m', 'anthropic-messages')).toBe('anthropic-messages')
     expect(resolveBackend('claude-opus-4.6-1m', 'chat-completions')).toBe('chat-completions')
     expect(resolveBackend('claude-opus-4.6-1m', 'responses')).toBe('anthropic-messages')
+  })
+
+  test('should route claude-opus-4.7 through Anthropic messages with chat fallback', () => {
+    expect(resolveBackend('claude-opus-4.7', 'anthropic-messages')).toBe('anthropic-messages')
+    expect(resolveBackend('claude-opus-4.7', 'chat-completions')).toBe('chat-completions')
+    expect(resolveBackend('claude-opus-4.7', 'responses')).toBe('anthropic-messages')
+  })
+
+  test('should route claude-opus-4.7-1m-internal through Anthropic messages with chat fallback', () => {
+    expect(resolveBackend('claude-opus-4.7-1m-internal', 'anthropic-messages')).toBe('anthropic-messages')
+    expect(resolveBackend('claude-opus-4.7-1m-internal', 'chat-completions')).toBe('chat-completions')
+    expect(resolveBackend('claude-opus-4.7-1m-internal', 'responses')).toBe('anthropic-messages')
   })
 
   test('should prefer anthropic-messages for claude-sonnet-4.6 when responses are requested', () => {

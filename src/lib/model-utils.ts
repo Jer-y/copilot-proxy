@@ -12,7 +12,7 @@ export function findModelWithFallback(modelId: string, models: Array<Model> | un
   if (exact)
     return exact
 
-  const baseModel = modelId.replace(/-(fast|1m)$/, '')
+  const baseModel = modelId.replace(/-(fast|1m(?:-internal)?)$/, '')
   if (baseModel !== modelId)
     return models.find(model => model.id === baseModel)
 

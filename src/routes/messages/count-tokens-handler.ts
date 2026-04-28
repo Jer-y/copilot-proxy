@@ -2,9 +2,9 @@ import type { Context } from 'hono'
 
 import type { AnthropicMessagesPayload } from './anthropic-types'
 
-import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 import { HTTPError, JSONResponseError } from '~/lib/error'
+import { findModelWithFallback } from '~/lib/model-utils'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
@@ -14,28 +14,7 @@ import { validateBody } from '~/lib/validate'
 
 import { applyModelVariant, parseBetaFeatures, translateToOpenAI } from './non-stream-translation'
 
-/**
- * Find a model in the models list, falling back to the base model
- * when a Claude variant suffix (-fast, -1m) doesn't have its own entry.
- */
-export function findModelWithFallback(
-  modelId: string,
-  models: Array<Model> | undefined,
-): Model | undefined {
-  if (!models) {
-    return undefined
-  }
-  const exact = models.find(m => m.id === modelId)
-  if (exact) {
-    return exact
-  }
-  // Strip the variant suffix and retry.
-  const baseModel = modelId.replace(/-(fast|1m)$/, '')
-  if (baseModel !== modelId) {
-    return models.find(m => m.id === baseModel)
-  }
-  return undefined
-}
+export { findModelWithFallback } from '~/lib/model-utils'
 
 /**
  * Determine if the request is from Claude Code based on anthropic-beta tokens.
