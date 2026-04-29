@@ -11,6 +11,7 @@ import {
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
+import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { resolveRoute } from '~/lib/routing-policy'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
@@ -113,9 +114,10 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
       }
     }
     catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return
-      throw error
+      await writeOpenAIStreamError(stream, error, {
+        fallbackMessage: 'An unexpected error occurred while streaming the Copilot chat completion.',
+        label: 'Chat completions stream passthrough',
+      })
     }
   })
 }

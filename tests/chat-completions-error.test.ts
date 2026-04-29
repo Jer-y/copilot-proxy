@@ -4,6 +4,7 @@ import { state } from '~/lib/state'
 import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
+const encoder = new TextEncoder()
 
 const fetchMock = mock(async (url: string, _init?: RequestInit): Promise<Response> => {
   throw new Error(`Unexpected upstream URL: ${url}`)
@@ -18,6 +19,7 @@ beforeEach(() => {
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
+  state.models = undefined
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock
 })
@@ -25,6 +27,21 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch
 })
+
+function createErroringSSE(chunks: string[], message: string): ReadableStream<Uint8Array> {
+  let index = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[index]))
+        index++
+        return
+      }
+
+      controller.error(new Error(message))
+    },
+  })
+}
 
 describe('chat-completions error paths', () => {
   test('invalid JSON body returns 400 with invalid_request_error', async () => {
@@ -133,6 +150,45 @@ describe('chat-completions error paths', () => {
       state.rateLimitWait = origRateLimitWait
       state.lastRequestTimestamp = origLastRequestTimestamp
     }
+  })
+
+  test('streaming surfaces upstream stream errors as SSE error events', async () => {
+    fetchMock.mockImplementation(async (url: string): Promise<Response> => {
+      if (!url.endsWith('/chat/completions')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response(createErroringSSE([
+        [
+          'data: {"id":"chatcmpl_stream_error","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null,"logprobs":null}]}',
+          '',
+          '',
+        ].join('\n'),
+      ], 'chat stream failed'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5',
+        stream: true,
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+
+    const body = await res.text()
+    expect(body).toContain('"object":"chat.completion.chunk"')
+    expect(body).toContain('event: error')
+    expect(body).toContain('"type":"error"')
+    expect(body).toContain('"message":"chat stream failed"')
+    expect(body).toContain('"code":"stream_error"')
   })
 
   test('Claude chat-completions requests keep using /chat/completions despite native Anthropic support', async () => {

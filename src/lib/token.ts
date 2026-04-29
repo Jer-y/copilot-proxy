@@ -14,8 +14,13 @@ import { sleep } from './utils'
 
 const readGithubToken = () => fs.readFile(PATHS.GITHUB_TOKEN_PATH, 'utf8')
 
+export async function writeGithubTokenFile(filePath: string, token: string) {
+  await fs.writeFile(filePath, token, { mode: 0o600 })
+  await fs.chmod(filePath, 0o600)
+}
+
 function writeGithubToken(token: string) {
-  return fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
+  return writeGithubTokenFile(PATHS.GITHUB_TOKEN_PATH, token)
 }
 
 interface RefreshTokenFailureState {

@@ -21,6 +21,7 @@ async function defaultFetchImplementation(_url: string, _opts?: RequestInit) {
 }
 
 const fetchMock = mock(defaultFetchImplementation)
+const encoder = new TextEncoder()
 
 // @ts-expect-error - Mock fetch doesn't implement all fetch properties
 ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
@@ -28,7 +29,27 @@ const fetchMock = mock(defaultFetchImplementation)
 beforeEach(() => {
   fetchMock.mockClear()
   fetchMock.mockImplementation(defaultFetchImplementation)
+  state.lastRequestTimestamp = undefined
+  state.copilotToken = 'test-token'
+  state.vsCodeVersion = '1.0.0'
+  state.accountType = 'individual'
+  state.models = undefined
 })
+
+function createErroringSSE(chunks: string[], message: string): ReadableStream<Uint8Array> {
+  let index = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[index]))
+        index++
+        return
+      }
+
+      controller.error(new Error(message))
+    },
+  })
+}
 
 test('/v1/responses official subroutes are forwarded to the Copilot backend', async () => {
   fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
@@ -136,6 +157,76 @@ test('/v1/responses surfaces upstream 413 with request-size diagnostics', async 
   expect(json.error.message).toContain('inline_image_chars=28')
 })
 
+test('/v1/responses streaming surfaces upstream stream errors as SSE error events', async () => {
+  fetchMock.mockImplementation(async (url: string) => {
+    if (!url.endsWith('/responses')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+
+    return new Response(createErroringSSE([
+      [
+        'event: response.created',
+        'data: {"type":"response.created","response":{"id":"resp_stream_error","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
+        '',
+        '',
+      ].join('\n'),
+    ], 'stream failed'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  expect(response.status).toBe(200)
+
+  const body = await response.text()
+  expect(body).toContain('event: response.created')
+  expect(body).toContain('event: error')
+  expect(body).toContain('"type":"error"')
+  expect(body).toContain('"message":"stream failed"')
+  expect(body).toContain('"code":"stream_error"')
+})
+
+test('/v1/responses translated Anthropic streaming surfaces upstream stream errors as Responses SSE error events', async () => {
+  fetchMock.mockImplementation(async (url: string) => {
+    if (!url.endsWith('/v1/messages')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+
+    return new Response(createErroringSSE([], 'anthropic stream failed'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.6',
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  expect(response.status).toBe(200)
+
+  const body = await response.text()
+  expect(body).toContain('event: error')
+  expect(body).toContain('"type":"error"')
+  expect(body).toContain('"message":"anthropic stream failed"')
+  expect(body).toContain('"code":"stream_error"')
+})
+
 test('/v1/responses rejects external image URLs locally before forwarding upstream', async () => {
   const response = await server.request('/v1/responses', {
     method: 'POST',
@@ -167,7 +258,6 @@ test('/v1/responses rejects external image URLs locally before forwarding upstre
   expect(json.error.type).toBe('invalid_request_error')
   expect(json.error.message).toContain('external image URLs')
 })
-
 test('/v1/responses rejects top-level typed external image URLs locally before forwarding upstream', async () => {
   const response = await server.request('/v1/responses', {
     method: 'POST',
@@ -196,3 +286,39 @@ test('/v1/responses rejects top-level typed external image URLs locally before f
   expect(json.error.type).toBe('invalid_request_error')
   expect(json.error.message).toContain('external image URLs')
 })
+
+test('/v1/responses strips service_tier before forwarding upstream', async () => {
+  fetchMock.mockImplementation(async () => {
+    return new Response(JSON.stringify({
+      id: 'resp_123',
+      object: 'response',
+      model: 'gpt-test',
+      output: [],
+      status: 'completed',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'Reply with the single word OK.',
+      service_tier: 'auto',
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  const upstreamBody = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as Record<string, unknown>
+  expect(upstreamBody).toEqual({
+    model: 'gpt-5.4',
+    input: 'Reply with the single word OK.',
+  })
+})
+
+// EOF

@@ -15,6 +15,7 @@ import {
   responsesHasExternalImageUrls,
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
+import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
 import { checkRateLimit } from '~/lib/rate-limit'
 import { assertResponsesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
 import { ResponsesPayloadSchema } from '~/lib/schemas'
@@ -137,9 +138,10 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
       }
     }
     catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return
-      throw error
+      await writeOpenAIStreamError(stream, error, {
+        fallbackMessage: 'An unexpected error occurred while streaming the Copilot Responses response.',
+        label: 'Responses stream passthrough',
+      })
     }
   })
 }
@@ -221,9 +223,10 @@ async function handleViaAnthropic(c: Context, payload: ResponsesPayload) {
       }
     }
     catch (error) {
-      if (error instanceof Error && error.name === 'AbortError')
-        return
-      throw error
+      await writeOpenAIStreamError(stream, error, {
+        fallbackMessage: 'An unexpected error occurred while translating the Copilot Anthropic stream.',
+        label: 'Anthropic to Responses stream translation',
+      })
     }
   })
 }
