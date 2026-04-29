@@ -9,8 +9,9 @@ import consola from 'consola'
 import { serve } from 'srvx'
 import invariant from 'tiny-invariant'
 
-import { validateAccountType, validatePort, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
+import { validateAccountType, validateHost, validatePort, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
+import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { generateEnvScript } from './lib/shell'
 import { state } from './lib/state'
@@ -18,6 +19,7 @@ import { server } from './server'
 
 export interface RunServerOptions {
   port: number
+  host: string
   verbose: boolean
   accountType: string
   manual: boolean
@@ -33,10 +35,21 @@ export interface RunServerOptions {
   exitOnPortInUse?: boolean
 }
 
+function formatHostForUrl(host: string): string {
+  const normalized = host.toLowerCase()
+  if (normalized === DEFAULT_HOST || normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]')
+    return 'localhost'
+
+  if (host.includes(':') && !host.startsWith('['))
+    return `[${host}]`
+
+  return host
+}
+
 export async function runServer(options: RunServerOptions): Promise<void> {
   await initializeServer(options)
 
-  const serverUrl = `http://localhost:${options.port}`
+  const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
 
   if (options.claudeCode) {
     invariant(state.models, 'Models should be loaded by now')
@@ -88,9 +101,16 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   )
 
   try {
+    if (!isLoopbackHostname(options.host)) {
+      consola.warn(
+        `Listening on non-loopback host ${options.host}. Do not expose this proxy to LAN or Internet unless you fully trust every client that can reach it.`,
+      )
+    }
+
     serve({
       fetch: server.fetch as ServerHandler,
       port: options.port,
+      hostname: options.host,
     })
   }
   catch (error) {
@@ -117,6 +137,12 @@ export const start = defineCommand({
       type: 'string',
       default: '4399',
       description: 'Port to listen on',
+    },
+    'host': {
+      alias: 'H',
+      type: 'string',
+      default: DEFAULT_HOST,
+      description: 'Host/IP to bind to. Use 0.0.0.0 only when intentionally exposing the port',
     },
     'verbose': {
       alias: 'v',
@@ -201,6 +227,12 @@ export const start = defineCommand({
       process.exit(1)
     }
 
+    const host = validateHost(args.host)
+    if (host === null) {
+      consola.error(`Invalid host: ${args.host}`)
+      process.exit(1)
+    }
+
     const rateLimitResult = validateRateLimit(args['rate-limit'])
     if (!rateLimitResult.valid) {
       consola.error(`Invalid rate-limit: ${args['rate-limit']} (must be 1-86400)`)
@@ -238,6 +270,7 @@ export const start = defineCommand({
       const { loadDaemonConfigWithRecovery, mergeDaemonConfigWithExplicitFlags } = await import('~/daemon/config')
       const fallbackConfig: DaemonConfig = {
         port,
+        host,
         verbose: args.verbose,
         accountType: args['account-type'],
         manual: args.manual,
@@ -289,6 +322,7 @@ export const start = defineCommand({
 
       await daemonStart({
         port,
+        host,
         verbose: args.verbose,
         accountType: args['account-type'],
         manual: args.manual,
@@ -306,6 +340,7 @@ export const start = defineCommand({
 
     return runServer({
       port,
+      host,
       verbose: args.verbose,
       accountType: args['account-type'],
       manual: args.manual,

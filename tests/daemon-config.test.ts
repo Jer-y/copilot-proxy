@@ -25,6 +25,7 @@ afterEach(() => {
 
 const sampleConfig: DaemonConfig = {
   port: 4399,
+  host: '127.0.0.1',
   verbose: false,
   accountType: 'individual',
   manual: false,
@@ -83,6 +84,21 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     expect(loadDaemonConfig()).toBeNull()
   })
 
+  test('defaults old config files without host to loopback', () => {
+    const oldConfig: Record<string, unknown> = { ...sampleConfig }
+    delete oldConfig.host
+    fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify(oldConfig))
+
+    expect(loadDaemonConfig()).toEqual(sampleConfig)
+  })
+
+  test('returns null for config with invalid host', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, host: 'bad/host' }))
+    expect(loadDaemonConfig()).toBeNull()
+  })
+
   test('returns null for config with non-boolean verbose', () => {
     saveDaemonConfig(sampleConfig)
     fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, verbose: 'oops' }))
@@ -117,6 +133,7 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     const existingConfig: DaemonConfig = {
       ...sampleConfig,
       port: 4500,
+      host: '0.0.0.0',
       accountType: 'business',
       rateLimit: 8,
       rateLimitWait: true,

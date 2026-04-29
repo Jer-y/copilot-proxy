@@ -127,7 +127,7 @@ docker build -t copilot-proxy .
 mkdir -p ./copilot-data
 
 # 使用挂载目录来保持认证信息，确保容器重启后依旧有效
-docker run -p 4399:4399 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy copilot-proxy
+docker run -p 127.0.0.1:4399:4399 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy copilot-proxy start --host 0.0.0.0
 ```
 
 > **提示：**
@@ -142,10 +142,10 @@ docker run -p 4399:4399 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy 
 docker build --build-arg GH_TOKEN=your_github_token_here -t copilot-proxy .
 
 # 运行时传入 GitHub token
-docker run -p 4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy
+docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy start --host 0.0.0.0
 
 # 运行时追加参数
-docker run -p 4399:4399 -e GH_TOKEN=your_token copilot-proxy start --verbose --port 4399
+docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_token copilot-proxy start --host 0.0.0.0 --verbose --port 4399
 ```
 
 ### Docker Compose 示例
@@ -155,8 +155,9 @@ version: '3.8'
 services:
   copilot-proxy:
     build: .
+    command: start --host 0.0.0.0
     ports:
-      - '4399:4399'
+      - '127.0.0.1:4399:4399'
     environment:
       - GH_TOKEN=your_github_token_here
     restart: unless-stopped
@@ -213,6 +214,7 @@ Copilot API 使用子命令结构，主要命令如下：
 | 参数           | 说明                                                                    | 默认值      | 简写 |
 | -------------- | ----------------------------------------------------------------------- | ----------- | ---- |
 | --port         | 监听端口                                                                | 4399        | -p   |
+| --host         | 绑定的 Host/IP。仅在确实要暴露端口时使用 `0.0.0.0`                      | 127.0.0.1   | -H   |
 | --verbose      | 开启详细日志                                                            | false       | -v   |
 | --account-type | 账户类型（individual, business, enterprise）                            | individual  | -a   |
 | --manual       | 手动审批每个请求                                                        | false       | 无   |
@@ -228,6 +230,14 @@ Copilot API 使用子命令结构，主要命令如下：
 | --daemon       | 作为后台守护进程运行，支持崩溃自动恢复                                  | false       | -d   |
 
 `自动*` 表示在 Node.js 运行时，如果没有显式覆盖，发往 `githubcopilot.com` 的请求会默认使用 `900000ms` 响应头 timeout、`900000ms` 响应体 timeout 和 `30000ms` 建连 timeout。其他域名仍沿用 Node/undici 默认值，除非你显式传参覆盖。
+
+### 本地安全默认值
+
+代理默认监听 `127.0.0.1`，定位是个人本地使用。除非你完全信任所有能访问该端口的客户端，否则不要把它绑定到 LAN 或公网接口。如果需要 Docker 端口映射，请在容器内使用 `--host 0.0.0.0`，并把宿主机端口绑定到 loopback，例如 `-p 127.0.0.1:4399:4399`。
+
+CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http://127.0.0.1:*` 和 `http://[::1]:*`。托管的用量面板来源只允许访问 `/usage`。如需添加其他精确浏览器来源，可设置逗号分隔的 `COPILOT_PROXY_CORS_ORIGINS`，例如 `COPILOT_PROXY_CORS_ORIGINS=https://internal.example.com`。
+
+`GET /token` 额外限制为 loopback 请求和同源浏览器读取，不应作为通用浏览器 API 使用。
 
 ### auth 参数
 
@@ -283,7 +293,7 @@ Copilot API 使用子命令结构，主要命令如下：
 | 端点     | 方法 | 说明                                           |
 | -------- | ---- | ---------------------------------------------- |
 | `GET /usage` | GET  | 获取 Copilot 使用量与配额信息                 |
-| `GET /token` | GET  | 获取当前正在使用的 Copilot token              |
+| `GET /token` | GET  | 获取当前正在使用的 Copilot token；限制为 loopback 和同源读取 |
 
 ## 使用示例
 

@@ -12,6 +12,8 @@ export function buildSupervisorStartArgs(scriptPath: string, config: DaemonConfi
     '--_supervisor',
     '--port',
     String(config.port),
+    '--host',
+    config.host,
     '--account-type',
     config.accountType,
   ]

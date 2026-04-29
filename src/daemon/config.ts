@@ -3,9 +3,11 @@ import path from 'node:path'
 
 import consola from 'consola'
 import { PATHS } from '~/lib/paths'
+import { DEFAULT_HOST } from '~/lib/security'
 
 export interface DaemonConfig {
   port: number
+  host: string
   verbose: boolean
   accountType: string
   manual: boolean
@@ -41,6 +43,8 @@ export function mergeDaemonConfigWithExplicitFlags(
 
   if (wasCliOptionPassed(rawArgs, 'port', 'p'))
     merged.port = cliConfig.port
+  if (wasCliOptionPassed(rawArgs, 'host', 'H'))
+    merged.host = cliConfig.host
   if (wasCliOptionPassed(rawArgs, 'verbose', 'v', true))
     merged.verbose = cliConfig.verbose
   if (wasCliOptionPassed(rawArgs, 'account-type', 'a'))
@@ -182,6 +186,10 @@ function wasCliOptionPassed(
 function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | null {
   // Runtime validation of critical fields
   if (typeof data.port !== 'number' || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535)
+    return null
+  if (data.host === undefined)
+    data.host = DEFAULT_HOST
+  if (typeof data.host !== 'string' || !data.host.trim() || /[\s/]/.test(data.host))
     return null
   if (typeof data.verbose !== 'boolean')
     return null

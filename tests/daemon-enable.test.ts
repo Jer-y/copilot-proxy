@@ -5,6 +5,7 @@ import { buildSupervisorStartArgs } from '../src/daemon/enable'
 
 const baseConfig: DaemonConfig = {
   port: 4399,
+  host: '127.0.0.1',
   verbose: false,
   accountType: 'individual',
   manual: false,
@@ -21,6 +22,8 @@ describe('buildSupervisorStartArgs', () => {
       '--_supervisor',
       '--port',
       '4399',
+      '--host',
+      '127.0.0.1',
       '--account-type',
       'individual',
     ])
@@ -30,6 +33,7 @@ describe('buildSupervisorStartArgs', () => {
     const config: DaemonConfig = {
       ...baseConfig,
       port: 4411,
+      host: '0.0.0.0',
       accountType: 'enterprise',
       verbose: true,
       manual: true,
@@ -50,6 +54,8 @@ describe('buildSupervisorStartArgs', () => {
       '--_supervisor',
       '--port',
       '4411',
+      '--host',
+      '0.0.0.0',
       '--account-type',
       'enterprise',
       '--verbose',

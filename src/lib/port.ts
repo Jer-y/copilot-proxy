@@ -12,13 +12,13 @@ export function isPortInUseError(error: unknown): boolean {
   return false
 }
 
-export function checkPortAvailable(port: number): Promise<void> {
+export function checkPortAvailable(port: number, host?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const server = createServer()
     server.once('error', (err) => {
       reject(err)
     })
-    server.listen(port, () => {
+    server.listen(port, host, () => {
       server.close(() => resolve())
     })
   })

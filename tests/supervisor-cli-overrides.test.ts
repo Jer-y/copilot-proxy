@@ -5,6 +5,7 @@ import { mergeDaemonConfigWithExplicitFlags } from '../src/daemon/config'
 
 const savedConfig: DaemonConfig = {
   port: 4399,
+  host: '127.0.0.1',
   verbose: false,
   accountType: 'business',
   manual: true,
@@ -39,6 +40,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
   test('only applies values for flags that were explicitly passed', () => {
     const cliConfig: DaemonConfig = {
       port: 4411,
+      host: '0.0.0.0',
       verbose: true,
       accountType: 'enterprise',
       manual: false,
@@ -68,6 +70,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
   test('recognizes short aliases and long-form equals syntax', () => {
     const cliConfig: DaemonConfig = {
       port: 4411,
+      host: '0.0.0.0',
       verbose: true,
       accountType: 'enterprise',
       manual: false,
@@ -89,6 +92,8 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
         '--_supervisor',
         '-p',
         '4411',
+        '-H',
+        '0.0.0.0',
         '-v',
         '-a',
         'enterprise',
@@ -110,6 +115,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
     expect(merged).toEqual({
       ...savedConfig,
       port: 4411,
+      host: '0.0.0.0',
       verbose: true,
       accountType: 'enterprise',
       rateLimit: 9,

@@ -10,6 +10,14 @@ export function validatePort(raw: string): number | null {
   return port
 }
 
+export function validateHost(raw: string): string | null {
+  const host = raw.trim()
+  if (!host || /[\s/]/.test(host))
+    return null
+
+  return host
+}
+
 export function validateRateLimit(raw: string | undefined): { valid: boolean, value: number | undefined } {
   if (raw === undefined) {
     return { valid: true, value: undefined }

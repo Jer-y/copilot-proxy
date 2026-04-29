@@ -46,6 +46,8 @@ const DAEMON_ENV_ALLOWLIST = [
   // GitHub token (if user passes via env)
   'GH_TOKEN',
   'GITHUB_TOKEN',
+  // Proxy local security configuration
+  'COPILOT_PROXY_CORS_ORIGINS',
   // Platform-specific (Windows)
   'APPDATA',
   'LOCALAPPDATA',
@@ -146,7 +148,7 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
 
   // Pre-check port availability so the user gets immediate feedback
   try {
-    await checkPortAvailable(config.port)
+    await checkPortAvailable(config.port, config.host)
   }
   catch (error) {
     if (isPortInUseError(error)) {

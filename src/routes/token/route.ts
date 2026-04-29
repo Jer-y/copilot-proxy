@@ -1,12 +1,19 @@
 import consola from 'consola'
 import { Hono } from 'hono'
 
+import { isTokenRequestAllowed } from '~/lib/security'
 import { state } from '~/lib/state'
 
 export const tokenRoute = new Hono()
 
 tokenRoute.get('/', (c) => {
   try {
+    c.header('Cache-Control', 'no-store')
+
+    if (!isTokenRequestAllowed(c.req.raw)) {
+      return c.json({ error: 'Forbidden', token: null }, 403)
+    }
+
     return c.json({
       token: state.copilotToken,
     })

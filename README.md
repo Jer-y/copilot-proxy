@@ -129,7 +129,7 @@ mkdir -p ./copilot-data
 # Run the container with a bind mount to persist the token
 # This ensures your authentication survives container restarts
 
-docker run -p 4399:4399 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy copilot-proxy
+docker run -p 127.0.0.1:4399:4399 -v $(pwd)/copilot-data:/root/.local/share/copilot-proxy copilot-proxy start --host 0.0.0.0
 ```
 
 > **Note:**
@@ -144,10 +144,10 @@ You can pass the GitHub token directly to the container using environment variab
 docker build --build-arg GH_TOKEN=your_github_token_here -t copilot-proxy .
 
 # Run with GitHub token
-docker run -p 4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy
+docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy start --host 0.0.0.0
 
 # Run with additional options
-docker run -p 4399:4399 -e GH_TOKEN=your_token copilot-proxy start --verbose --port 4399
+docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_token copilot-proxy start --host 0.0.0.0 --verbose --port 4399
 ```
 
 ### Docker Compose Example
@@ -157,8 +157,9 @@ version: '3.8'
 services:
   copilot-proxy:
     build: .
+    command: start --host 0.0.0.0
     ports:
-      - '4399:4399'
+      - '127.0.0.1:4399:4399'
     environment:
       - GH_TOKEN=your_github_token_here
     restart: unless-stopped
@@ -217,6 +218,7 @@ The following command line options are available for the `start` command:
 | Option         | Description                                                                   | Default    | Alias |
 | -------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
 | --port         | Port to listen on                                                             | 4399       | -p    |
+| --host         | Host/IP to bind to. Use `0.0.0.0` only when intentionally exposing the port    | 127.0.0.1  | -H    |
 | --verbose      | Enable verbose logging                                                        | false      | -v    |
 | --account-type | Account type to use (individual, business, enterprise)                        | individual | -a    |
 | --manual       | Enable manual request approval                                                | false      | none  |
@@ -232,6 +234,14 @@ The following command line options are available for the `start` command:
 | --daemon       | Run as a background daemon with crash recovery                                | false      | -d    |
 
 `auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.
+
+### Local Security Defaults
+
+The proxy listens on `127.0.0.1` by default and is intended for personal local use. Do not bind it to a LAN or Internet-facing interface unless every client that can reach the port is trusted. If you need container port mapping, bind inside the container with `--host 0.0.0.0` and map the host port to loopback, for example `-p 127.0.0.1:4399:4399`.
+
+CORS is restricted by default to local browser origins such as `http://localhost:*`, `http://127.0.0.1:*`, and `http://[::1]:*`. The hosted usage dashboard origin is allowed only for `/usage`. To add other exact browser origins, set `COPILOT_PROXY_CORS_ORIGINS` to a comma-separated list, for example `COPILOT_PROXY_CORS_ORIGINS=https://internal.example.com`.
+
+`GET /token` is additionally restricted to loopback requests and same-origin browser reads. It should not be used as a general browser API.
 
 ### Auth Command Options
 
@@ -291,7 +301,7 @@ Endpoints for monitoring your Copilot usage and quotas.
 | Endpoint     | Method | Description                                                  |
 | ------------ | ------ | ------------------------------------------------------------ |
 | `GET /usage` | `GET`  | Get detailed Copilot usage statistics and quota information. |
-| `GET /token` | `GET`  | Get the current Copilot token being used by the API.         |
+| `GET /token` | `GET`  | Get the current Copilot token being used by the API. Restricted to loopback and same-origin reads. |
 
 ## Example Usage
 
