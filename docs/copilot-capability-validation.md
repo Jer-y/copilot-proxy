@@ -113,6 +113,45 @@ Use the probe outcome to decide how aggressive the proxy should be:
 - If a probe is `unsupported`, keep the local parsing improvement but omit or downgrade the upstream field.
 - If a probe fails for environmental reasons, rerun the suite before making routing or translation decisions.
 
+## Codex CLI smoke tests
+
+Use a real `codex` CLI smoke when changing Responses routing, Responses request adaptation, tool handling, hosted tools, structured output, image inputs, or Responses stream handling.
+
+Start the proxy on a disposable port first:
+
+```sh
+bun run ./src/main.ts start -p 4899
+```
+
+Then run Codex with temporary local state and an explicit Responses provider:
+
+```sh
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
+CODEX_SMOKE_HOME="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/codex-proxy-smoke.XXXXXX")"
+CODEX_SMOKE_WORK="$(mktemp -d /tmp/codex-proxy-smoke-work.XXXXXX)"
+
+env CODEX_HOME="$CODEX_SMOKE_HOME" \
+OPENAI_API_KEY=dummy \
+codex --ask-for-approval never exec \
+  --ephemeral \
+  --ignore-rules \
+  --skip-git-repo-check \
+  --sandbox read-only \
+  --cd "$CODEX_SMOKE_WORK" \
+  --model gpt-5.5 \
+  -c 'model_provider="copilot-proxy"' \
+  -c 'model_providers.copilot-proxy={name="Copilot Proxy", base_url="http://127.0.0.1:4899/v1", env_key="OPENAI_API_KEY", wire_api="responses"}' \
+  "Reply with exactly: proxy-ok"
+```
+
+Expected behavior:
+
+- Codex uses the temporary `CODEX_HOME`; it does not read or modify the user's `~/.codex`.
+- `OPENAI_API_KEY=dummy` only satisfies Codex provider validation. The local proxy does not require this key.
+- The configured provider uses `wire_api="responses"` and calls `POST /v1/responses`.
+- The request normally uses SSE streaming and includes Codex's tool schemas and agent instructions.
+- The CLI should print exactly `proxy-ok`; proxy logs should show upstream `/responses` status `200` and stream completion.
+
 ## Claude Code CLI smoke tests
 
 Use a real `claude` CLI smoke when changing Anthropic `/v1/messages` routing, native passthrough sanitization, thinking/output_config handling, tool translation, or Claude Code-specific beta behavior.
