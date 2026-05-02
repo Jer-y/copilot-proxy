@@ -110,11 +110,20 @@ function extractAnthropicContent(
             parsedInput = {}
           }
 
+          // Sanitize empty strings injected by the Responses API for optional schema
+          // properties. The Responses API fills every declared property (including
+          // optional ones) with "" when the model omits them, whereas Chat Completions
+          // simply omits those keys. Passing "" to tools like Read(pages="") causes
+          // downstream validation errors and infinite retry loops.
+          const sanitizedInput = Object.fromEntries(
+            Object.entries(parsedInput).filter(([, v]) => !(typeof v === 'string' && v === '')),
+          )
+
           content.push({
             type: 'tool_use',
             id: item.call_id,
             name: item.name,
-            input: parsedInput,
+            input: sanitizedInput,
           } as AnthropicToolUseBlock)
         }
         break
@@ -216,11 +225,16 @@ function translateResponsesInputToAnthropicMessages(
       catch {
         parsedInput = {}
       }
+      // Same sanitization as extractAnthropicContent: strip empty strings that the
+      // Responses API fills in for undeclared optional schema properties.
+      const sanitizedInput = Object.fromEntries(
+        Object.entries(parsedInput).filter(([, v]) => !(typeof v === 'string' && v === '')),
+      )
       pendingAssistantBlocks.push({
         type: 'tool_use',
         id: item.call_id,
         name: item.name,
-        input: parsedInput,
+        input: sanitizedInput,
       })
       continue
     }
