@@ -94,7 +94,6 @@ export async function handleResponsesPassthrough(
     method,
     body,
     headers: requestHeaders,
-    signal: c.req.raw.signal,
   })
 
   forwardUpstreamHeaders(c, response.headers)
@@ -113,7 +112,7 @@ export async function handleResponsesPassthrough(
 
 /** Direct path: model supports responses API */
 async function handleViaResponses(c: Context, payload: ResponsesPayload) {
-  const result = await createResponses(payload, { signal: c.req.raw.signal })
+  const result = await createResponses(payload)
 
   if (isResponsesNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -178,7 +177,7 @@ async function handleViaAnthropic(c: Context, payload: ResponsesPayload) {
     consola.debug('Translated Responses→Anthropic payload:', JSON.stringify(anthropicPayload).slice(-400))
   }
 
-  const result = await createAnthropicMessages(anthropicPayload, { signal: c.req.raw.signal })
+  const result = await createAnthropicMessages(anthropicPayload)
 
   // Non-streaming
   if (!result.streaming) {
