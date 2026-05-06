@@ -15,7 +15,8 @@ const MODEL_VARIANTS: Record<string, ModelVariants> = {
   },
 }
 
-const PROXY_CONSUMED_BETA_FEATURES = new Set([
+const COPILOT_STRIPPED_BETA_FEATURES = new Set([
+  'advisor-tool-2026-03-01',
   'context-1m-2025-08-07',
   'fast-mode-2026-02-01',
 ])
@@ -33,7 +34,7 @@ export function sanitizeAnthropicBetaHeader(anthropicBeta: string | undefined): 
   }
 
   const features = anthropicBeta.split(',').map(s => s.trim()).filter(Boolean)
-  const remaining = features.filter(feature => !PROXY_CONSUMED_BETA_FEATURES.has(feature))
+  const remaining = features.filter(feature => !COPILOT_STRIPPED_BETA_FEATURES.has(feature))
   return remaining.length > 0 ? remaining.join(',') : undefined
 }
 

@@ -4,12 +4,12 @@ import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
-import { normalizeLegacyDocumentTextSources } from '~/lib/translation/anthropic-documents'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { validateBody } from '~/lib/validate'
 import { createAnthropicCountTokens } from '~/services/copilot/create-anthropic-messages'
 
 import { applyModelVariant, sanitizeAnthropicBetaHeader } from './model-variants'
+import { sanitizeForCopilotBackend } from './request-adaptation'
 
 /**
  * Handles token counting for Anthropic messages
@@ -28,7 +28,7 @@ export async function handleCountTokens(c: Context) {
       }
     }
 
-    normalizeLegacyDocumentTextSources(anthropicPayload)
+    sanitizeForCopilotBackend(anthropicPayload)
     assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
 
     const result = await createAnthropicCountTokens(anthropicPayload, {

@@ -8,6 +8,7 @@
 
 import type {
   AnthropicAssistantMessage,
+  AnthropicCustomTool,
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicResponse,
@@ -240,7 +241,22 @@ function translateAnthropicToolsToResponses(
   if (!tools || tools.length === 0)
     return undefined
 
-  return tools.map((tool, index) => {
+  const compatibleTools = tools.filter((tool, index): tool is AnthropicCustomTool => {
+    if ('type' in tool && tool.type === 'advisor_20260301') {
+      logIgnoredAnthropicParameter(
+        `tools[${index}]`,
+        'The Anthropic advisor tool is not supported by Copilot and is omitted.',
+      )
+      return false
+    }
+
+    return true
+  })
+
+  if (compatibleTools.length === 0)
+    return undefined
+
+  return compatibleTools.map((tool, index) => {
     if ('cache_control' in tool && tool.cache_control && !enableCacheControl) {
       logIgnoredAnthropicParameter(
         `tools[${index}].cache_control`,

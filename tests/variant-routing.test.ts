@@ -98,15 +98,16 @@ describe('anthropic beta helpers', () => {
     expect(parseBetaFeatures('').size).toBe(0)
   })
 
-  test('sanitizeAnthropicBetaHeader strips proxy-consumed features', () => {
+  test('sanitizeAnthropicBetaHeader strips features not forwarded to Copilot', () => {
+    expect(sanitizeAnthropicBetaHeader('advisor-tool-2026-03-01')).toBeUndefined()
     expect(sanitizeAnthropicBetaHeader('context-1m-2025-08-07')).toBeUndefined()
     expect(sanitizeAnthropicBetaHeader('fast-mode-2026-02-01')).toBeUndefined()
     expect(sanitizeAnthropicBetaHeader('context-1m-2025-08-07,fast-mode-2026-02-01')).toBeUndefined()
   })
 
-  test('sanitizeAnthropicBetaHeader preserves non-consumed features', () => {
+  test('sanitizeAnthropicBetaHeader preserves forwarded features', () => {
     expect(sanitizeAnthropicBetaHeader('claude-code-2025-01-01')).toBe('claude-code-2025-01-01')
-    expect(sanitizeAnthropicBetaHeader('claude-code-2025-01-01, context-1m-2025-08-07')).toBe('claude-code-2025-01-01')
+    expect(sanitizeAnthropicBetaHeader('claude-code-2025-01-01, context-1m-2025-08-07, advisor-tool-2026-03-01')).toBe('claude-code-2025-01-01')
   })
 
   test('sanitizeAnthropicBetaHeader returns undefined for undefined input', () => {

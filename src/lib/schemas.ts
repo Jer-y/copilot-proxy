@@ -130,12 +130,24 @@ const AnthropicAssistantMessageSchema = z.object({
   ]),
 }).passthrough()
 
-const AnthropicToolSchema = z.object({
+const AnthropicCustomToolSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   input_schema: z.record(z.string(), z.unknown()),
   cache_control: AnthropicCacheControlSchema.optional(),
 }).passthrough()
+
+const AnthropicAdvisorToolSchema = z.object({
+  type: z.literal('advisor_20260301'),
+  name: z.string(),
+  model: z.string(),
+  cache_control: AnthropicCacheControlSchema.optional(),
+}).passthrough()
+
+const AnthropicToolSchema = z.union([
+  AnthropicCustomToolSchema,
+  AnthropicAdvisorToolSchema,
+])
 
 const AnthropicToolChoiceSchema = z.discriminatedUnion('type', [
   z.object({

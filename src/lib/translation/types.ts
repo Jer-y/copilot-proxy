@@ -169,11 +169,20 @@ export interface AnthropicAssistantMessage {
 
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage
 
-export interface AnthropicTool {
+export type AnthropicTool = AnthropicCustomTool | AnthropicAdvisorTool
+
+export interface AnthropicCustomTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
   strict?: boolean
+  cache_control?: AnthropicCacheControl
+}
+
+export interface AnthropicAdvisorTool {
+  type: 'advisor_20260301'
+  name: string
+  model: string
   cache_control?: AnthropicCacheControl
 }
 

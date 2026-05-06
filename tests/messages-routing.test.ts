@@ -392,6 +392,53 @@ describe('messages route upstream adaptation', () => {
     expect(body.model).toBe('claude-opus-4-7')
   })
 
+  test('Claude Opus 4.7 1m advisor beta is not forwarded upstream', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'context-1m-2025-08-07, advisor-tool-2026-03-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-7',
+        max_tokens: 64,
+        tools: [
+          {
+            type: 'advisor_20260301',
+            name: 'advisor',
+            model: 'claude-opus-4-7',
+          },
+          {
+            name: 'noop',
+            input_schema: { type: 'object', properties: {} },
+          },
+        ],
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      model?: string
+      tools?: Array<{ name?: string, type?: string, input_schema?: unknown }>
+    }
+    expect(forwardedPayload.model).toBe('claude-opus-4.7-1m-internal')
+    expect(forwardedPayload.tools).toEqual([
+      {
+        name: 'noop',
+        input_schema: { type: 'object', properties: {} },
+      },
+    ])
+
+    const headers = init.headers as Record<string, string>
+    expect(headers['anthropic-beta']).toBeUndefined()
+  })
+
   test('Claude Opus 4.7 1m beta forwards xhigh effort to internal 1m upstream model', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -1199,10 +1246,17 @@ describe('messages route upstream adaptation', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'anthropic-beta': 'claude-code-2025-01-01, fast-mode-2026-02-01',
+        'anthropic-beta': 'claude-code-2025-01-01, fast-mode-2026-02-01, advisor-tool-2026-03-01',
       },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        tools: [
+          {
+            type: 'advisor_20260301',
+            name: 'advisor',
+            model: 'claude-opus-4-7',
+          },
+        ],
         messages: [{ role: 'user', content: 'Count this.' }],
       }),
     })
@@ -1211,8 +1265,9 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
-    const forwardedPayload = JSON.parse(String(init.body)) as { model?: string }
+    const forwardedPayload = JSON.parse(String(init.body)) as { model?: string, tools?: unknown }
     expect(forwardedPayload.model).toBe('claude-opus-4.6-fast')
+    expect(forwardedPayload.tools).toBeUndefined()
     const headers = init.headers as Record<string, string>
     expect(headers['anthropic-beta']).toBe('claude-code-2025-01-01')
   })
