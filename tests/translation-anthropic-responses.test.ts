@@ -3,7 +3,12 @@ import type { ResponsesPayload, ResponsesResponse } from '../src/services/copilo
 
 import { describe, expect, test } from 'bun:test'
 
-import { translateAnthropicRequestToResponses } from '../src/lib/translation/anthropic-to-responses'
+import {
+  createAnthropicToResponsesStreamState,
+  translateAnthropicRequestToResponses,
+  translateAnthropicResponseToResponses,
+  translateAnthropicStreamEventToResponses,
+} from '../src/lib/translation/anthropic-to-responses'
 import { translateResponsesRequestToAnthropic, translateResponsesResponseToAnthropic } from '../src/lib/translation/responses-to-anthropic'
 
 // ─── T7: Anthropic Request → Responses Request ──────────────────
@@ -68,6 +73,18 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(result.max_output_tokens).toBe(16)
   })
 
+  test('metadata is preserved on translated Responses requests', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      metadata: { user_id: 'user-123' },
+      messages: [{ role: 'user', content: 'Hi' }],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.metadata).toEqual({ user_id: 'user-123' })
+  })
+
   test('tool_use → function_call items', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -113,6 +130,55 @@ describe('translateAnthropicRequestToResponses', () => {
         type: 'function_call_output',
         call_id: 'toolu_123',
         output: '{"temp": 72}',
+      },
+    ])
+  })
+
+  test('tool_use and tool_result cache_control are accepted but not emitted on Responses input items', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_cache',
+              name: 'lookup',
+              input: { id: 1 },
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_cache',
+              content: 'cached result',
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      {
+        type: 'function_call',
+        id: 'fc_toolu_cache',
+        call_id: 'toolu_cache',
+        name: 'lookup',
+        arguments: '{"id":1}',
+        status: 'completed',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_cache',
+        output: 'cached result',
       },
     ])
   })
@@ -492,6 +558,37 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
+  test('tool_result is_error is preserved in function_call_output metadata and output', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_error',
+              content: 'file not found',
+              is_error: true,
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_error',
+        output: JSON.stringify({ is_error: true, content: 'file not found' }),
+        status: 'incomplete',
+        is_error: true,
+      },
+    ])
+  })
+
   test('output_config.format json_object is mapped to Responses text.format', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -746,6 +843,60 @@ describe('translateResponsesRequestToAnthropic', () => {
 
     const result = translateResponsesRequestToAnthropic(payload)
     expect(result.output_config).toEqual({ effort: 'xhigh' })
+  })
+
+  test('unknown user content parts are preserved as JSON text blocks', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_audio', audio: 'opaque' },
+          ],
+        },
+      ],
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: JSON.stringify({ type: 'input_audio', audio: 'opaque' }) },
+        ],
+      },
+    ])
+  })
+
+  test('function_call_output error metadata becomes Anthropic is_error', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'toolu_error',
+          output: JSON.stringify({ is_error: true, content: 'file not found' }),
+          status: 'incomplete',
+          is_error: true,
+        },
+      ],
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_error',
+            content: 'file not found',
+            is_error: true,
+          },
+        ],
+      },
+    ])
   })
 
   test('tool strict is forwarded to native Anthropic tools', () => {
@@ -1007,5 +1158,79 @@ describe('additional Anthropic ↔ Responses coverage', () => {
       status: 'failed',
       error: { message: 'backend exploded', type: 'server_error' },
     })).toThrow('backend exploded')
+  })
+
+  test('Anthropic text citations are preserved on Responses output_text parts', () => {
+    const result = translateAnthropicResponseToResponses({
+      id: 'msg_citations',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4.6',
+      content: [
+        {
+          type: 'text',
+          text: 'Paris',
+          citations: [{ type: 'char_location', start_char_index: 0, end_char_index: 5 }],
+        },
+      ],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 2 },
+    })
+
+    expect(result.output[0]?.content?.[0]).toEqual({
+      type: 'output_text',
+      text: 'Paris',
+      citations: [{ type: 'char_location', start_char_index: 0, end_char_index: 5 }],
+    })
+  })
+
+  test('Anthropic citations_delta stream events are accepted without Responses delta mapping', () => {
+    const state = createAnthropicToResponsesStreamState()
+
+    translateAnthropicStreamEventToResponses({
+      type: 'message_start',
+      message: {
+        id: 'msg_stream_citations',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: 'claude-opus-4.7',
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 0,
+        },
+      },
+    }, state)
+    translateAnthropicStreamEventToResponses({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    }, state)
+
+    const citationEvents = translateAnthropicStreamEventToResponses({
+      type: 'content_block_delta',
+      index: 0,
+      delta: {
+        type: 'citations_delta',
+        citation: { type: 'char_location', start_char_index: 0, end_char_index: 5 },
+      },
+    }, state)
+    expect(citationEvents).toEqual([])
+
+    const textEvents = translateAnthropicStreamEventToResponses({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: 'Paris' },
+    }, state)
+    expect(textEvents).toContainEqual({
+      type: 'response.output_text.delta',
+      item_id: 'msg_msg_stream_citations_0',
+      output_index: 0,
+      content_index: 0,
+      delta: 'Paris',
+    })
   })
 })

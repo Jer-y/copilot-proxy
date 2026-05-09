@@ -70,6 +70,27 @@ export function translateAnthropicRequestToResponses(
     )
   }
 
+  if (payload.stop_sequences !== undefined) {
+    logIgnoredAnthropicParameter(
+      'stop_sequences',
+      'Responses translation has no compatible stop_sequences field; request is forwarded without local rejection.',
+    )
+  }
+
+  if (payload.service_tier !== undefined) {
+    logIgnoredAnthropicParameter(
+      'service_tier',
+      'Copilot /responses currently rejects service_tier, so Anthropic service_tier is not forwarded on translated requests.',
+    )
+  }
+
+  if (payload.speed !== undefined) {
+    logIgnoredAnthropicParameter(
+      'speed',
+      'Anthropic speed is consumed by model variant routing when supported and otherwise has no Responses field.',
+    )
+  }
+
   logIgnoredMessageBlockCacheControl(payload, modelConfig.enableCacheControl === true)
 
   const instructions = translateSystemToInstructions(payload.system)
@@ -104,6 +125,7 @@ export function translateAnthropicRequestToResponses(
     ...(reasoning && { reasoning }),
     ...(text && { text }),
     ...(parallelToolCalls !== undefined && { parallel_tool_calls: parallelToolCalls }),
+    ...(payload.metadata && { metadata: payload.metadata }),
   }
 }
 
@@ -168,7 +190,8 @@ function handleUserMessage(
     input.push({
       type: 'function_call_output',
       call_id: tr.tool_use_id,
-      output: serializeToolResultContent(tr.content),
+      output: serializeToolResultContent(tr.content, tr.is_error === true),
+      ...(tr.is_error === true && { status: 'incomplete', is_error: true }),
     } as ResponsesFunctionCallOutputItem)
   }
 
@@ -312,18 +335,31 @@ function clampMaxOutputTokens(maxTokens: number | null | undefined): number | un
 
 function serializeToolResultContent(
   content: AnthropicToolResultBlock['content'],
+  isError: boolean,
 ): string {
-  if (typeof content === 'string') {
-    return content
+  const serialize = (value: AnthropicToolResultBlock['content']): string => {
+    if (typeof value === 'string') {
+      return value
+    }
+
+    if (value.every(block => block.type === 'text')) {
+      return value.map(block => block.text).join('\n\n')
+    }
+
+    // Responses function_call_output currently accepts a string payload, not rich
+    // content parts, so preserve mixed/image tool results losslessly as JSON.
+    return JSON.stringify(value)
   }
 
-  if (content.every(block => block.type === 'text')) {
-    return content.map(block => block.text).join('\n\n')
+  const output = serialize(content)
+  if (isError) {
+    return JSON.stringify({
+      is_error: true,
+      content: output,
+    })
   }
 
-  // Responses function_call_output currently accepts a string payload, not rich
-  // content parts, so preserve mixed/image tool results losslessly as JSON.
-  return JSON.stringify(content)
+  return output
 }
 
 function translateUserBlockToResponsesContent(
@@ -388,7 +424,7 @@ export function translateAnthropicResponseToResponses(
 ): ResponsesResponse {
   const createdAt = nowUnixSeconds()
   const output: Array<ResponsesOutputItem> = []
-  let currentMessageParts: Array<{ type: 'output_text', text: string }> = []
+  let currentMessageParts: Array<{ type: 'output_text', text: string, [key: string]: unknown }> = []
 
   function flushMessageParts(): void {
     if (currentMessageParts.length === 0)
@@ -406,7 +442,11 @@ export function translateAnthropicResponseToResponses(
   for (const block of response.content) {
     switch (block.type) {
       case 'text': {
-        currentMessageParts.push({ type: 'output_text', text: block.text })
+        currentMessageParts.push({
+          type: 'output_text',
+          text: block.text,
+          ...(block.citations && { citations: block.citations }),
+        })
         break
       }
 
@@ -658,6 +698,10 @@ export function translateAnthropicStreamEventToResponses(
       }
       else if (state.currentBlockType === 'thinking' && event.delta.type === 'thinking_delta') {
         state.currentThinkingText += event.delta.thinking
+      }
+      else if (state.currentBlockType === 'text' && event.delta.type === 'citations_delta') {
+        // Native /v1/messages passthrough forwards citations_delta byte-for-byte.
+        // Responses streaming has no citation delta event mapped here today.
       }
       // signature_delta — skip
       break

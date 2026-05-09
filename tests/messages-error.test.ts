@@ -154,6 +154,45 @@ describe('messages error paths', () => {
     expect(result.success).toBe(true)
   })
 
+  test('tool_use and tool_result cache_control are accepted and preserved by schema', () => {
+    const result = AnthropicMessagesPayloadSchema.parse({
+      model: 'claude-opus-4.7',
+      max_tokens: 100,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_cache',
+              name: 'lookup',
+              input: { query: 'docs' },
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_cache',
+              content: 'result',
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+      ],
+    }) as {
+      messages: Array<{
+        content: Array<{ cache_control?: { type: string } }>
+      }>
+    }
+
+    expect(result.messages[0].content[0].cache_control).toEqual({ type: 'ephemeral' })
+    expect(result.messages[1].content[0].cache_control).toEqual({ type: 'ephemeral' })
+  })
+
   test('invalid thinking.budget_tokens type returns 400', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',

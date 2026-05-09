@@ -420,6 +420,8 @@ export interface ResponsesFunctionCallOutputItem {
   type: 'function_call_output'
   call_id: string
   output: string
+  status?: 'completed' | 'incomplete'
+  is_error?: boolean
 }
 
 export type ResponsesInputItem
@@ -480,7 +482,7 @@ export interface ResponsesOutputItem {
   status?: 'completed' | 'in_progress'
   // For message type
   role?: 'assistant'
-  content?: Array<{ type: 'output_text', text: string }>
+  content?: Array<{ type: 'output_text', text: string, [key: string]: unknown }>
   // For function_call type
   name?: string
   arguments?: string

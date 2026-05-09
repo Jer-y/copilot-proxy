@@ -31,7 +31,6 @@ import type {
   ResponsesTool,
 } from '~/services/copilot/create-responses'
 
-import consola from 'consola'
 import { JSONResponseError } from '~/lib/error'
 import { isRecord } from '~/lib/type-guards'
 import { logLossyAnthropicCompatibility } from './anthropic-compat'
@@ -101,14 +100,7 @@ function extractAnthropicContent(
 
       case 'function_call': {
         if (item.call_id && item.name) {
-          let parsedInput: Record<string, unknown>
-          try {
-            parsedInput = JSON.parse(item.arguments ?? '{}') as Record<string, unknown>
-          }
-          catch {
-            consola.warn('Failed to parse function_call arguments:', item.arguments)
-            parsedInput = {}
-          }
+          const parsedInput = parseToolArguments(item.arguments, 'response.output[].function_call.arguments')
 
           content.push({
             type: 'tool_use',
@@ -209,13 +201,7 @@ function translateResponsesInputToAnthropicMessages(
     if (isFunctionCallItem(item)) {
       // tool_use → assistant side
       flushUser()
-      let parsedInput: Record<string, unknown>
-      try {
-        parsedInput = JSON.parse(item.arguments ?? '{}') as Record<string, unknown>
-      }
-      catch {
-        parsedInput = {}
-      }
+      const parsedInput = parseToolArguments(item.arguments, 'input[].function_call.arguments')
       pendingAssistantBlocks.push({
         type: 'tool_use',
         id: item.call_id,
@@ -232,6 +218,7 @@ function translateResponsesInputToAnthropicMessages(
         type: 'tool_result',
         tool_use_id: item.call_id,
         content: rehydrateToolResultContent(item.output),
+        ...(isFunctionCallOutputError(item) && { is_error: true }),
       })
       continue
     }
@@ -290,6 +277,43 @@ function flattenToString(content: ResponsesMessageInputItem['content']): string 
   return parts.join('\n\n')
 }
 
+function parseToolArguments(
+  value: string | undefined,
+  context: string,
+): Record<string, unknown> {
+  if (!value) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (isRecord(parsed)) {
+      return parsed
+    }
+    logLossyAnthropicCompatibility(
+      context,
+      'Tool arguments JSON did not parse to an object; forwarding an empty object for Anthropic compatibility.',
+    )
+  }
+  catch {
+    logLossyAnthropicCompatibility(
+      context,
+      'Tool arguments were not valid JSON; forwarding an empty object for Anthropic compatibility.',
+    )
+  }
+
+  return {}
+}
+
+function stringifyUnknownContentPart(part: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(part)
+  }
+  catch {
+    return String(part.type ?? '[unknown content part]')
+  }
+}
+
 function buildSystemString(
   instructions: string | undefined,
   systemParts: string[],
@@ -324,7 +348,13 @@ function pushUserContentBlocks(
       case 'image_url':
         blocks.push(translateImagePartToAnthropicBlock(part))
         break
-      // Skip unknown content part types
+      default:
+        logLossyAnthropicCompatibility(
+          `Responses user content part ${part.type}`,
+          'No native Anthropic content block exists for this Responses content type; preserving it as a text JSON block.',
+        )
+        blocks.push({ type: 'text', text: stringifyUnknownContentPart(part) })
+        break
     }
   }
 }
@@ -348,6 +378,13 @@ function pushAssistantContentBlocks(
       && typeof part.text === 'string'
     ) {
       blocks.push({ type: 'text', text: part.text })
+    }
+    else {
+      logLossyAnthropicCompatibility(
+        `Responses assistant content part ${part.type}`,
+        'No native Anthropic assistant block exists for this Responses content type; preserving it as a text JSON block.',
+      )
+      blocks.push({ type: 'text', text: stringifyUnknownContentPart(part) })
     }
   }
 }
@@ -593,11 +630,16 @@ function isMessageInputItem(item: ResponsesInputItem): item is ResponsesMessageI
  * arbitrary JSON as Anthropic blocks.
  */
 function rehydrateToolResultContent(output: string): string | Array<AnthropicTextBlock | AnthropicImageBlock> {
-  if (!output.startsWith('['))
-    return output
-
   try {
     const parsed = JSON.parse(output)
+    if (
+      isRecord(parsed)
+      && parsed.is_error === true
+      && typeof parsed.content === 'string'
+    ) {
+      return rehydrateToolResultContent(parsed.content)
+    }
+
     if (!Array.isArray(parsed) || parsed.length === 0)
       return output
 
@@ -619,6 +661,20 @@ function rehydrateToolResultContent(output: string): string | Array<AnthropicTex
     // Not valid JSON — return as plain string
   }
   return output
+}
+
+function isFunctionCallOutputError(item: ResponsesFunctionCallOutputItem): boolean {
+  if (item.is_error === true || item.status === 'incomplete') {
+    return true
+  }
+
+  try {
+    const parsed = JSON.parse(item.output) as unknown
+    return isRecord(parsed) && parsed.is_error === true
+  }
+  catch {
+    return false
+  }
 }
 
 function throwInvalidRequestError(message: string): never {

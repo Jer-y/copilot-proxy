@@ -125,6 +125,7 @@ export interface AnthropicToolResultBlock {
   tool_use_id: string
   content: string | Array<AnthropicTextBlock | AnthropicImageBlock | AnthropicDocumentBlock>
   is_error?: boolean
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicToolUseBlock {
@@ -132,6 +133,7 @@ export interface AnthropicToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicThinkingBlock {
@@ -242,6 +244,7 @@ export interface AnthropicContentBlockDeltaEvent {
     | { type: 'input_json_delta', partial_json: string }
     | { type: 'thinking_delta', thinking: string }
     | { type: 'signature_delta', signature: string }
+    | { type: 'citations_delta', citation: Record<string, unknown> }
 }
 
 export interface AnthropicContentBlockStopEvent {
@@ -323,7 +326,7 @@ export interface AnthropicToResponsesStreamState {
   /** Output index of the current open message item */
   messageOutputIndex: number | undefined
   messageItemOpen: boolean
-  messageParts: Array<{ type: 'output_text', text: string }>
+  messageParts: Array<{ type: 'output_text', text: string, [key: string]: unknown }>
   /** Text accumulated for the current streaming text part */
   currentPartText: string
   contentPartIndex: number

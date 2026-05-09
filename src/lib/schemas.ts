@@ -84,6 +84,7 @@ const AnthropicToolResultBlockSchema = z.object({
     ])),
   ]),
   is_error: z.boolean().optional(),
+  cache_control: AnthropicCacheControlSchema.optional(),
 }).passthrough()
 
 const AnthropicToolUseBlockSchema = z.object({
@@ -91,6 +92,7 @@ const AnthropicToolUseBlockSchema = z.object({
   id: z.string(),
   name: z.string(),
   input: z.record(z.string(), z.unknown()),
+  cache_control: AnthropicCacheControlSchema.optional(),
 }).passthrough()
 
 const AnthropicThinkingBlockSchema = z.object({
@@ -260,6 +262,8 @@ const ResponsesFunctionCallOutputInputSchema = z.object({
   type: z.literal('function_call_output'),
   call_id: z.string(),
   output: z.string(),
+  status: z.enum(['completed', 'incomplete']).optional(),
+  is_error: z.boolean().optional(),
 }).passthrough()
 
 const ResponsesTypedInputSchema = z.object({
