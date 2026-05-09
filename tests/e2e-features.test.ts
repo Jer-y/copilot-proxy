@@ -5,10 +5,11 @@
  * /v1/messages path. They verify which Claude features are supported
  * by the Copilot API when passed through without translation.
  *
- * Run: bun test tests/e2e-features.test.ts --timeout 30000
+ * Run:
+ *   COPILOT_LIVE_TEST=1 \
+ *   COPILOT_LIVE_CLAUDE_MODEL=<claude-model-under-test> \
+ *   bun test tests/e2e-features.test.ts --timeout 30000
  * Requires: valid GitHub Copilot token (~/.local/share/copilot-proxy/github_token)
- *
- * Last validated: 2026-04-09
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -22,6 +23,13 @@ import { server } from '~/server'
 const TIMEOUT = 30_000
 const E2E_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
 const describeE2E = E2E_TEST_ENABLED ? describe : describe.skip
+const CONFIGURED_CLAUDE_MODELS = parseModelList(
+  process.env.COPILOT_LIVE_CLAUDE_MODELS ?? process.env.COPILOT_LIVE_CLAUDE_MODEL,
+)
+const CLAUDE_MODELS = CONFIGURED_CLAUDE_MODELS.length > 0
+  ? CONFIGURED_CLAUDE_MODELS
+  : ['<claude-model-under-test>']
+const PRIMARY_CLAUDE_MODEL = CLAUDE_MODELS[0]
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +92,17 @@ const WEATHER_TOOL = {
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='
 
+function parseModelList(raw: string | undefined): string[] {
+  if (!raw) {
+    return []
+  }
+
+  return raw
+    .split(',')
+    .map(model => model.trim())
+    .filter(Boolean)
+}
+
 // ---------------------------------------------------------------------------
 // Setup: initialize real Copilot auth
 // ---------------------------------------------------------------------------
@@ -93,7 +112,11 @@ beforeAll(async () => {
     return
   }
 
-  state.accountType = 'enterprise'
+  if (CONFIGURED_CLAUDE_MODELS.length === 0) {
+    throw new Error('COPILOT_LIVE_CLAUDE_MODEL or COPILOT_LIVE_CLAUDE_MODELS is required when COPILOT_LIVE_TEST=1')
+  }
+
+  state.accountType = process.env.COPILOT_ACCOUNT_TYPE ?? 'individual'
   await cacheVSCodeVersion()
   await setupGitHubToken()
   await setupCopilotToken()
@@ -283,12 +306,12 @@ function defineModelTests(model: string) {
   }, TIMEOUT)
 }
 
-describeE2E('Claude Sonnet 4.6', () => {
-  defineModelTests('claude-sonnet-4.6')
-})
-
-describeE2E('Claude Opus 4.6', () => {
-  defineModelTests('claude-opus-4.6')
+describeE2E('Configured Claude models', () => {
+  for (const model of CLAUDE_MODELS) {
+    describe(model, () => {
+      defineModelTests(model)
+    })
+  }
 })
 
 // ======================================================================
@@ -296,7 +319,7 @@ describeE2E('Claude Opus 4.6', () => {
 // ======================================================================
 
 describeE2E('Feature probes', () => {
-  const model = 'claude-sonnet-4.6'
+  const model = PRIMARY_CLAUDE_MODEL
 
   describe('Official Anthropic contract validation', () => {
     // Tests here MUST have expect() assertions proving official API correctness

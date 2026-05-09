@@ -10,7 +10,10 @@
  * - /token
  *
  * Run:
- *   COPILOT_LIVE_TEST=1 bun test tests/proxy-live-smoke.test.ts --timeout 600000
+ *   COPILOT_LIVE_TEST=1 \
+ *   COPILOT_LIVE_RESPONSES_MODEL=<responses-model-under-test> \
+ *   COPILOT_LIVE_EMBEDDING_MODEL=<embedding-model-under-test> \
+ *   bun test tests/proxy-live-smoke.test.ts --timeout 600000
  *
  * Requires:
  *   valid GitHub auth in ~/.local/share/copilot-proxy/github_token
@@ -27,8 +30,8 @@ const TIMEOUT = 90_000
 const LIVE_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
 const describeLive = LIVE_TEST_ENABLED ? describe : describe.skip
 
-const RESPONSES_MODEL = process.env.COPILOT_LIVE_RESPONSES_MODEL ?? 'gpt-5.5'
-const EMBEDDING_MODEL = process.env.COPILOT_LIVE_EMBEDDING_MODEL ?? 'text-embedding-3-small'
+const RESPONSES_MODEL = process.env.COPILOT_LIVE_RESPONSES_MODEL ?? '<responses-model-under-test>'
+const EMBEDDING_MODEL = process.env.COPILOT_LIVE_EMBEDDING_MODEL ?? '<embedding-model-under-test>'
 const IMAGE_URL
   = process.env.COPILOT_LIVE_IMAGE_URL
     ?? 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png'
@@ -118,7 +121,15 @@ beforeAll(async () => {
     return
   }
 
-  state.accountType = 'enterprise'
+  if (!process.env.COPILOT_LIVE_RESPONSES_MODEL) {
+    throw new Error('COPILOT_LIVE_RESPONSES_MODEL is required when COPILOT_LIVE_TEST=1')
+  }
+
+  if (!process.env.COPILOT_LIVE_EMBEDDING_MODEL) {
+    throw new Error('COPILOT_LIVE_EMBEDDING_MODEL is required when COPILOT_LIVE_TEST=1')
+  }
+
+  state.accountType = process.env.COPILOT_ACCOUNT_TYPE ?? 'individual'
   await cacheVSCodeVersion()
   await setupGitHubToken()
   await setupCopilotToken()
