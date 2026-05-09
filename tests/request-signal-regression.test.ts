@@ -21,7 +21,7 @@ const fetchMock = mock(async (url: string, init?: RequestInit): Promise<Response
     url,
   })
 
-  if (init?.signal) {
+  if (init?.signal?.aborted) {
     throw createAbortError()
   }
 
@@ -123,10 +123,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-function expectSingleUpstreamRequestWithoutSignalFor(pathSuffix: string): void {
+function expectSingleUpstreamRequestWithoutAbortedSignalFor(pathSuffix: string): void {
   expect(upstreamRequests).toHaveLength(1)
   expect(upstreamRequests[0]?.url.endsWith(pathSuffix)).toBe(true)
-  expect(upstreamRequests[0]?.signal).toBeUndefined()
+  expect(upstreamRequests[0]?.signal?.aborted ?? false).toBe(false)
 }
 
 describe('route request-signal regression', () => {
@@ -149,7 +149,7 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.choices[0]?.message.content).toBe('ok')
-    expectSingleUpstreamRequestWithoutSignalFor('/chat/completions')
+    expectSingleUpstreamRequestWithoutAbortedSignalFor('/chat/completions')
   })
 
   test('direct responses do not forward the inbound request signal upstream', async () => {
@@ -171,7 +171,7 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.output[0]?.content[0]?.text).toBe('ok')
-    expectSingleUpstreamRequestWithoutSignalFor('/responses')
+    expectSingleUpstreamRequestWithoutAbortedSignalFor('/responses')
   })
 
   test('responses translated through messages do not forward the inbound request signal upstream', async () => {
@@ -185,7 +185,7 @@ describe('route request-signal regression', () => {
     })
 
     expect(response.status).toBe(200)
-    expectSingleUpstreamRequestWithoutSignalFor('/v1/messages')
+    expectSingleUpstreamRequestWithoutAbortedSignalFor('/v1/messages')
   })
 
   test('native messages do not forward the inbound request signal upstream', async () => {
@@ -206,7 +206,7 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.content[0]?.text).toBe('ok')
-    expectSingleUpstreamRequestWithoutSignalFor('/v1/messages')
+    expectSingleUpstreamRequestWithoutAbortedSignalFor('/v1/messages')
   })
 
   test('messages translated through responses do not forward the inbound request signal upstream', async () => {
@@ -221,7 +221,7 @@ describe('route request-signal regression', () => {
     })
 
     expect(response.status).toBe(200)
-    expectSingleUpstreamRequestWithoutSignalFor('/responses')
+    expectSingleUpstreamRequestWithoutAbortedSignalFor('/responses')
   })
 
   test('embeddings do not forward the inbound request signal upstream', async () => {
@@ -241,6 +241,6 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.data[0]?.embedding).toEqual([0.1, 0.2])
-    expectSingleUpstreamRequestWithoutSignalFor('/embeddings')
+    expectSingleUpstreamRequestWithoutAbortedSignalFor('/embeddings')
   })
 })

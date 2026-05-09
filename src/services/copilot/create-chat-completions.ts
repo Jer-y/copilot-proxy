@@ -4,6 +4,7 @@ import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
 export async function createChatCompletions(
@@ -33,7 +34,7 @@ export async function createChatCompletions(
 
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
-  const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}/chat/completions`, {
     method: 'POST',
     headers,
     body,

@@ -5,9 +5,10 @@ import {
   standardHeaders,
 } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
+import { fetchGitHub } from '~/lib/upstream-fetch'
 
 export async function getDeviceCode(): Promise<DeviceCodeResponse> {
-  const response = await fetch(`${GITHUB_BASE_URL}/login/device/code`, {
+  const response = await fetchGitHub(`${GITHUB_BASE_URL}/login/device/code`, {
     method: 'POST',
     headers: standardHeaders(),
     body: JSON.stringify({

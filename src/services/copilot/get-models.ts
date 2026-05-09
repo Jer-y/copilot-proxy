@@ -3,11 +3,12 @@ import consola from 'consola'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { fetchCopilot } from '~/lib/upstream-fetch'
 
 export async function getModels() {
   // Primary: standard vscode-chat auth (consistent with all other API calls)
   const headers = copilotHeaders(state)
-  const response = await fetch(`${copilotBaseUrl(state)}/models`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}/models`, {
     headers,
   })
 
@@ -22,16 +23,20 @@ export async function getModels() {
       const cliHeaders = copilotHeaders(state)
       cliHeaders.Authorization = `Bearer ${state.githubToken}`
       cliHeaders['copilot-integration-id'] = 'copilot-developer-cli'
-      const cliResponse = await fetch(`${copilotBaseUrl(state)}/models`, {
+      const cliResponse = await fetchCopilot(`${copilotBaseUrl(state)}/models`, {
         headers: cliHeaders,
       })
       if (cliResponse.ok) {
         return (await cliResponse.json()) as ModelsResponse
       }
       consola.warn(`copilot-developer-cli fallback also failed (${cliResponse.status} ${cliResponse.statusText})`)
+      throw new HTTPError('Failed to get models using copilot-developer-cli fallback', cliResponse)
     }
     catch (e) {
       consola.warn('copilot-developer-cli fallback error:', e)
+      if (e instanceof HTTPError) {
+        throw e
+      }
     }
   }
 

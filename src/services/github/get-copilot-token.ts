@@ -1,9 +1,10 @@
 import { GITHUB_API_BASE_URL, githubHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { fetchGitHub } from '~/lib/upstream-fetch'
 
-export async function getCopilotToken() {
-  const response = await fetch(
+export async function getCopilotToken(): Promise<GetCopilotTokenResponse> {
+  const response = await fetchGitHub(
     `${GITHUB_API_BASE_URL}/copilot_internal/v2/token`,
     {
       headers: githubHeaders(state),
@@ -17,7 +18,7 @@ export async function getCopilotToken() {
 }
 
 // Trimmed for the sake of simplicity
-interface GetCopilotTokenResponse {
+export interface GetCopilotTokenResponse {
   expires_at: number
   refresh_in: number
   token: string

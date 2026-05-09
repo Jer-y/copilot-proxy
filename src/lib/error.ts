@@ -5,10 +5,34 @@ import consola from 'consola'
 
 export class HTTPError extends Error {
   response: Response
+  private readonly responseTextPromise: Promise<string>
 
   constructor(message: string, response: Response) {
     super(message)
     this.response = response
+    this.responseTextPromise = response.clone().text().catch(() => response.statusText)
+  }
+
+  async text(): Promise<string> {
+    return this.responseTextPromise
+  }
+
+  async json(): Promise<unknown> {
+    const text = await this.text()
+    return JSON.parse(text)
+  }
+}
+
+export class UpstreamTimeoutError extends Error {
+  status = 504 as const
+  timeoutMs: number
+  target: string
+
+  constructor(message: string, timeoutMs: number, target: string) {
+    super(message)
+    this.name = 'UpstreamTimeoutError'
+    this.timeoutMs = timeoutMs
+    this.target = target
   }
 }
 
@@ -45,7 +69,7 @@ export async function forwardError(c: Context, error: unknown) {
     if (requestId)
       c.header('x-request-id', requestId)
 
-    const errorText = await error.response.text()
+    const errorText = await error.text()
     let errorJson: unknown
     try {
       errorJson = JSON.parse(errorText)
@@ -56,6 +80,19 @@ export async function forwardError(c: Context, error: unknown) {
       consola.error('HTTP error:', errorText)
       return c.body(errorText, status)
     }
+  }
+
+  if (error instanceof UpstreamTimeoutError) {
+    return c.json(
+      {
+        error: {
+          message: error.message,
+          type: 'timeout_error',
+          code: 'upstream_timeout',
+        },
+      },
+      error.status,
+    )
   }
 
   return c.json(
@@ -93,7 +130,7 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
     if (requestId)
       c.header('x-request-id', requestId)
 
-    const errorText = await error.response.text()
+    const errorText = await error.text()
 
     // Try to parse upstream error and re-wrap in Anthropic format
     try {
@@ -134,6 +171,19 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
         status,
       )
     }
+  }
+
+  if (error instanceof UpstreamTimeoutError) {
+    return c.json(
+      {
+        type: 'error',
+        error: {
+          type: 'api_error',
+          message: error.message,
+        },
+      },
+      error.status,
+    )
   }
 
   return c.json(

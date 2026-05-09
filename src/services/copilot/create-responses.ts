@@ -4,6 +4,7 @@ import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
 /** Type guard: is a message input item (has role, not a function_call/output) */
@@ -50,7 +51,7 @@ export async function createResponses(
   })
 
   const requestStartedAt = Date.now()
-  const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}/responses`, {
     method: 'POST',
     headers,
     body,
@@ -122,7 +123,7 @@ export async function forwardResponsesEndpoint(
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
-  const response = await fetch(`${copilotBaseUrl(state)}${path}`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}${path}`, {
     method: options.method,
     headers: {
       ...copilotHeaders(state),

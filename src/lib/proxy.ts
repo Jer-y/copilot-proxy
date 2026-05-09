@@ -2,10 +2,17 @@ import type { Dispatcher } from 'undici'
 import consola from 'consola'
 import { getProxyForUrl } from 'proxy-from-env'
 import { Agent, ProxyAgent, setGlobalDispatcher } from 'undici'
+import {
+  DEFAULT_COPILOT_BODY_TIMEOUT_MS,
+  DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
+  DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
+} from './http-timeouts'
 
-export const DEFAULT_COPILOT_HEADERS_TIMEOUT_MS = 15 * 60 * 1000
-export const DEFAULT_COPILOT_BODY_TIMEOUT_MS = 15 * 60 * 1000
-export const DEFAULT_COPILOT_CONNECT_TIMEOUT_MS = 30 * 1000
+export {
+  DEFAULT_COPILOT_BODY_TIMEOUT_MS,
+  DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
+  DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
+} from './http-timeouts'
 
 export interface HttpClientConfig {
   proxyEnv: boolean

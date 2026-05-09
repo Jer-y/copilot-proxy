@@ -1,6 +1,7 @@
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { fetchCopilot } from '~/lib/upstream-fetch'
 
 export async function createEmbeddings(
   payload: EmbeddingRequest,
@@ -15,7 +16,7 @@ export async function createEmbeddings(
     input: Array.isArray(payload.input) ? payload.input : [payload.input],
   }
 
-  const response = await fetch(`${copilotBaseUrl(state)}/embeddings`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}/embeddings`, {
     method: 'POST',
     headers: copilotHeaders(state),
     body: JSON.stringify(normalizedPayload),

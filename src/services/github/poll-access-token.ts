@@ -7,6 +7,7 @@ import {
   standardHeaders,
 } from '~/lib/api-config'
 
+import { fetchGitHub } from '~/lib/upstream-fetch'
 import { sleep } from '~/lib/utils'
 
 export function redactAccessTokenPollResponse(value: unknown): unknown {
@@ -37,7 +38,7 @@ export async function pollAccessToken(
       throw new Error('Device code expired. Please run auth again.')
     }
 
-    const response = await fetch(
+    const response = await fetchGitHub(
       `${GITHUB_BASE_URL}/login/oauth/access_token`,
       {
         method: 'POST',
@@ -51,8 +52,9 @@ export async function pollAccessToken(
     )
 
     if (!response.ok) {
+      const errorText = await response.text()
+      consola.error('Failed to poll access token:', errorText)
       await sleep(sleepDuration)
-      consola.error('Failed to poll access token:', await response.text())
 
       continue
     }

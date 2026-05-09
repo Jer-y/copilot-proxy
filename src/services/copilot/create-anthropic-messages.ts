@@ -19,6 +19,7 @@ import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
+import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 
 export interface AnthropicCountTokensResponse {
@@ -39,7 +40,7 @@ export async function createAnthropicMessages(
 
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
-  const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}/v1/messages`, {
     method: 'POST',
     headers: buildAnthropicRequestHeaders(payload, options),
     body,
@@ -81,7 +82,7 @@ export async function createAnthropicCountTokens(
     throw new Error('Copilot token not found')
 
   const requestStartedAt = Date.now()
-  const response = await fetch(`${copilotBaseUrl(state)}/v1/messages/count_tokens`, {
+  const response = await fetchCopilot(`${copilotBaseUrl(state)}/v1/messages/count_tokens`, {
     method: 'POST',
     headers: buildAnthropicRequestHeaders(payload, options),
     body: JSON.stringify(payload),
