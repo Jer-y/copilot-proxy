@@ -230,6 +230,25 @@
           }
         }
 
+        function escapeHtml(value) {
+          return String(value).replace(/[&<>"']/g, (char) => {
+            switch (char) {
+              case "&":
+                return "&amp;";
+              case "<":
+                return "&lt;";
+              case ">":
+                return "&gt;";
+              case '"':
+                return "&quot;";
+              case "'":
+                return "&#39;";
+              default:
+                return char;
+            }
+          });
+        }
+
         /**
          * Renders the entire UI based on the current state.
          */
@@ -287,6 +306,7 @@
         function renderQuotaCard(title, details) {
           const { entitlement, remaining, percent_remaining, unlimited } =
             details;
+          const displayTitle = escapeHtml(title.replace(/_/g, " "));
 
           const percentUsed = unlimited ? 0 : 100 - percent_remaining;
           const used = unlimited
@@ -301,7 +321,7 @@
           return `
                     <div class="p-4 border" style="background-color: var(--color-bg); border-color: var(--color-bg-light-2);">
                         <div class="flex justify-between items-center mb-2">
-                            <h3 class="text-md font-semibold capitalize" style="color: var(--color-fg-lightest);">${title.replace(/_/g, " ")}</h3>
+                            <h3 class="text-md font-semibold capitalize" style="color: var(--color-fg-lightest);">${displayTitle}</h3>
                             ${
                               unlimited
                                 ? `<span class="px-2 py-0.5 text-xs font-medium" style="color: var(--color-blue-accent); background-color: var(--color-bg-light-1);">Unlimited</span>`
@@ -328,14 +348,14 @@
          */
         function formatObject(obj) {
           if (obj === null || typeof obj !== "object") {
-            return `<span style="color: var(--color-green-accent);">${JSON.stringify(obj)}</span>`;
+            return `<span style="color: var(--color-green-accent);">${escapeHtml(JSON.stringify(obj))}</span>`;
           }
 
           return (
             '<div class="pl-4">' +
             Object.entries(obj)
               .map(([key, value]) => {
-                const formattedKey = key.replace(/_/g, " ");
+                const formattedKey = escapeHtml(key.replace(/_/g, " "));
                 let displayValue;
 
                 if (Array.isArray(value)) {
@@ -348,7 +368,7 @@
                 } else if (typeof value === "boolean") {
                   displayValue = `<span class="font-semibold" style="color: ${value ? "var(--color-green-accent)" : "var(--color-red-accent)"}">${value}</span>`;
                 } else {
-                  displayValue = `<span style="color: var(--color-blue-accent);">${JSON.stringify(value)}</span>`;
+                  displayValue = `<span style="color: var(--color-blue-accent);">${escapeHtml(JSON.stringify(value))}</span>`;
                 }
 
                 return `<div class="mt-1">
@@ -409,7 +429,7 @@
                     <i data-lucide="alert-triangle" class="h-5 w-5 mr-3"></i>
                     <div>
                         <p class="font-bold text-sm">An Error Occurred</p>
-                        <p class="text-xs">${message}</p>
+                        <p class="text-xs">${escapeHtml(message)}</p>
                     </div>
                 </div>
             `;
