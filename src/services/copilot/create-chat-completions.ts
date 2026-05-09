@@ -67,54 +67,6 @@ export async function createChatCompletions(
   return { body: json, headers: response.headers }
 }
 
-// Streaming types
-
-export interface ChatCompletionChunk {
-  id: string
-  object: 'chat.completion.chunk'
-  created: number
-  model: string
-  choices: Array<Choice>
-  system_fingerprint?: string
-  usage?: {
-    prompt_tokens: number
-    completion_tokens: number
-    total_tokens: number
-    prompt_tokens_details?: {
-      cached_tokens: number
-    }
-    completion_tokens_details?: {
-      accepted_prediction_tokens: number
-      rejected_prediction_tokens: number
-    }
-  }
-}
-
-interface Delta {
-  content?: string | null
-  reasoning_text?: string | null
-  reasoning_opaque?: string | null
-  encrypted_content?: string | null
-  phase?: string | null
-  role?: 'user' | 'assistant' | 'system' | 'tool'
-  tool_calls?: Array<{
-    index: number
-    id?: string
-    type?: 'function'
-    function?: {
-      name?: string
-      arguments?: string
-    }
-  }>
-}
-
-interface Choice {
-  index: number
-  delta: Delta
-  finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null
-  logprobs: object | null
-}
-
 // Non-streaming types
 
 export interface ChatCompletionResponse {

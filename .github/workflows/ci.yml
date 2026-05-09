@@ -25,6 +25,9 @@ jobs:
       - name: Run linter
         run: bun run lint:all
 
+      - name: Run unused code check
+        run: bun run knip
+
       - name: Run dependency audit
         run: bun run audit
 
