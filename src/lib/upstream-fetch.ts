@@ -1,6 +1,6 @@
 import { UpstreamTimeoutError } from './error'
 import {
-  DEFAULT_COPILOT_FETCH_TIMEOUT_MS,
+  DEFAULT_COPILOT_BODY_TIMEOUT_MS,
   DEFAULT_GITHUB_FETCH_TIMEOUT_MS,
 } from './http-timeouts'
 
@@ -17,7 +17,7 @@ export function fetchCopilot(
   options?: FetchWithTimeoutOptions,
 ): Promise<Response> {
   return fetchWithTimeout(input, init, {
-    timeoutMs: options?.timeoutMs ?? DEFAULT_COPILOT_FETCH_TIMEOUT_MS,
+    timeoutMs: options?.timeoutMs ?? DEFAULT_COPILOT_BODY_TIMEOUT_MS,
     timeoutLabel: options?.timeoutLabel ?? describeRequest(input),
   })
 }
