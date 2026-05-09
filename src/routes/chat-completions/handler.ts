@@ -96,7 +96,7 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
       consola.debug('Non-streaming response:', JSON.stringify(result.body))
     }
     forwardUpstreamHeaders(c, result.headers)
-    return c.json(result.body)
+    return c.json(normalizeChatCompletionResponse(result.body))
   }
 
   consola.debug('Streaming response')
@@ -110,7 +110,7 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
         if (consola.level >= 4) {
           consola.debug('Streaming chunk:', JSON.stringify(chunk))
         }
-        await stream.writeSSE(chunk as SSEMessage)
+        await stream.writeSSE(normalizeChatCompletionStreamChunk(chunk as SSEMessage))
       }
     }
     catch (error) {
@@ -124,4 +124,35 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
 
 function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>>['body']): body is ChatCompletionResponse {
   return Object.hasOwn(body, 'choices')
+}
+
+function normalizeChatCompletionResponse(response: ChatCompletionResponse): ChatCompletionResponse {
+  return {
+    object: 'chat.completion',
+    ...response,
+  }
+}
+
+function normalizeChatCompletionStreamChunk(chunk: SSEMessage): SSEMessage {
+  if (typeof chunk.data !== 'string' || chunk.data === '[DONE]') {
+    return chunk
+  }
+
+  try {
+    const payload = JSON.parse(chunk.data) as Record<string, unknown>
+    if (!Object.hasOwn(payload, 'choices') || Object.hasOwn(payload, 'object')) {
+      return chunk
+    }
+
+    return {
+      ...chunk,
+      data: JSON.stringify({
+        object: 'chat.completion.chunk',
+        ...payload,
+      }),
+    }
+  }
+  catch {
+    return chunk
+  }
 }

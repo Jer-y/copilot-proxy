@@ -152,6 +152,79 @@ describe('chat-completions error paths', () => {
     }
   })
 
+  test('non-streaming responses include OpenAI chat completion object type when upstream omits it', async () => {
+    fetchMock.mockImplementation(async (url: string): Promise<Response> => {
+      if (!url.endsWith('/chat/completions')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_missing_object',
+        created: 0,
+        model: 'gpt-5.2',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: 'ok',
+          },
+          logprobs: null,
+          finish_reason: 'stop',
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { object?: string }
+    expect(body.object).toBe('chat.completion')
+  })
+
+  test('streaming chunks include OpenAI chat completion chunk object type when upstream omits it', async () => {
+    fetchMock.mockImplementation(async (url: string): Promise<Response> => {
+      if (!url.endsWith('/chat/completions')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response([
+        'data: {"id":"chatcmpl_missing_chunk_object","created":0,"model":"gpt-5.2","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null,"logprobs":null}]}',
+        '',
+        'data: [DONE]',
+        '',
+        '',
+      ].join('\n'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('"object":"chat.completion.chunk"')
+    expect(body).toContain('data: [DONE]')
+  })
+
   test('streaming surfaces upstream stream errors as SSE error events', async () => {
     fetchMock.mockImplementation(async (url: string): Promise<Response> => {
       if (!url.endsWith('/chat/completions')) {
