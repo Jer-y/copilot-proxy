@@ -2,7 +2,9 @@ import type { Context } from 'hono'
 
 import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 
+import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
+import { state } from '~/lib/state'
 import { assertCopilotCompatibleAnthropicRequest } from '~/lib/translation/anthropic-compat'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { validateBody } from '~/lib/validate'
@@ -16,6 +18,8 @@ import { sanitizeForCopilotBackend } from './request-adaptation'
  */
 export async function handleCountTokens(c: Context) {
   try {
+    await enforceRateLimit(state)
+
     const anthropicBeta = c.req.header('anthropic-beta')
 
     let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
@@ -30,6 +34,8 @@ export async function handleCountTokens(c: Context) {
 
     sanitizeForCopilotBackend(anthropicPayload)
     assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
+
+    await enforceManualApproval(state)
 
     const result = await createAnthropicCountTokens(anthropicPayload, {
       anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),

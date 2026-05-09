@@ -4,9 +4,8 @@ import type { AnthropicMessagesPayload, AnthropicStreamEventData } from '~/lib/t
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
-import { awaitApproval } from '~/lib/approval'
 import { findModelWithFallback } from '~/lib/model-utils'
-import { checkRateLimit } from '~/lib/rate-limit'
+import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { assertMessagesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
@@ -44,7 +43,7 @@ import {
 } from './stream-finalizer'
 
 export async function handleCompletion(c: Context) {
-  await checkRateLimit(state)
+  await enforceRateLimit(state)
 
   const anthropicBeta = c.req.header('anthropic-beta')
   let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
@@ -52,9 +51,7 @@ export async function handleCompletion(c: Context) {
     consola.debug('Anthropic request payload:', JSON.stringify(anthropicPayload))
   }
 
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
+  await enforceManualApproval(state)
 
   const requestedModel = anthropicPayload.model
   // Determine the effective routed model, including Claude variant suffixes.

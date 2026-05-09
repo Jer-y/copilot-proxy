@@ -7,7 +7,6 @@ import type { ResponsesPayload, ResponsesResponse } from '~/services/copilot/cre
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
-import { awaitApproval } from '~/lib/approval'
 import { JSONResponseError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import {
@@ -16,7 +15,7 @@ import {
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
 import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
-import { checkRateLimit } from '~/lib/rate-limit'
+import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { assertResponsesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
 import { ResponsesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
@@ -32,7 +31,7 @@ import { createAnthropicMessages } from '~/services/copilot/create-anthropic-mes
 import { createResponses, forwardResponsesEndpoint, summarizeResponsesPayload } from '~/services/copilot/create-responses'
 
 export async function handleResponses(c: Context) {
-  await checkRateLimit(state)
+  await enforceRateLimit(state)
 
   const payload = await validateBody<ResponsesPayload>(c, ResponsesPayloadSchema)
   consola.debug('Responses API request summary:', {
@@ -44,9 +43,7 @@ export async function handleResponses(c: Context) {
     throwOpenAIInvalidRequestError(OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE)
   }
 
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
+  await enforceManualApproval(state)
 
   const route = resolveRoute('responses', payload.model, throwInvalidResponsesRequest)
 
@@ -76,11 +73,9 @@ export async function handleResponsesPassthrough(
   path: string,
   method: 'GET' | 'POST' | 'DELETE',
 ) {
-  await checkRateLimit(state)
+  await enforceRateLimit(state)
 
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
+  await enforceManualApproval(state)
 
   const url = new URL(c.req.url)
   const body = method === 'GET' ? undefined : await c.req.text()

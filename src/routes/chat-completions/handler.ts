@@ -5,14 +5,13 @@ import type { ChatCompletionResponse, ChatCompletionsPayload } from '~/services/
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
-import { awaitApproval } from '~/lib/approval'
 import {
   chatCompletionsHasExternalImageUrls,
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
 import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
-import { checkRateLimit } from '~/lib/rate-limit'
+import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { resolveRoute } from '~/lib/routing-policy'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
@@ -25,7 +24,7 @@ import {
 } from '~/services/copilot/create-chat-completions'
 
 export async function handleCompletion(c: Context) {
-  await checkRateLimit(state)
+  await enforceRateLimit(state)
 
   let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
   if (consola.level >= 4) {
@@ -55,8 +54,7 @@ export async function handleCompletion(c: Context) {
     consola.warn('Failed to calculate token count:', error)
   }
 
-  if (state.manualApprove)
-    await awaitApproval()
+  await enforceManualApproval(state)
 
   if (isNullish(payload.max_tokens)) {
     payload = {
