@@ -9,3 +9,5 @@ export const SUPERVISOR_MAX_BACKOFF_MS = 60_000
 export const SUPERVISOR_STABLE_THRESHOLD_MS = 60_000
 /** Initial backoff delay (ms) */
 export const SUPERVISOR_INITIAL_BACKOFF_MS = 1_000
+/** Maximum consecutive crash restarts before the supervisor exits */
+export const SUPERVISOR_MAX_CONSECUTIVE_FAILURES = 10

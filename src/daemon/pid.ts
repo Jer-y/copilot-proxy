@@ -52,6 +52,10 @@ export function removePidFile(): void {
 }
 
 export function isProcessRunning(pid: number): boolean {
+  if (process.platform === 'win32') {
+    return isProcessRunningWin32(pid)
+  }
+
   try {
     process.kill(pid, 0)
     return true
@@ -61,6 +65,25 @@ export function isProcessRunning(pid: number): boolean {
       return true
     }
     return false
+  }
+}
+
+function isProcessRunningWin32(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  }
+  catch {
+    try {
+      const output = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+        stdio: 'pipe',
+        encoding: 'utf8',
+      }).trim()
+      return output.length > 0 && !output.includes('INFO:')
+    }
+    catch {
+      return false
+    }
   }
 }
 

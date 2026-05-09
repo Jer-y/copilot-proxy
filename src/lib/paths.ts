@@ -29,6 +29,7 @@ const GITHUB_TOKEN_PATH = path.join(APP_DIR, 'github_token')
 const DAEMON_PID = path.join(APP_DIR, 'daemon.pid')
 const DAEMON_LOG = path.join(APP_DIR, 'daemon.log')
 const DAEMON_JSON = path.join(APP_DIR, 'daemon.json')
+const DAEMON_STOP = path.join(APP_DIR, 'daemon.stop')
 
 export const PATHS = {
   APP_DIR,
@@ -36,6 +37,7 @@ export const PATHS = {
   DAEMON_PID,
   DAEMON_LOG,
   DAEMON_JSON,
+  DAEMON_STOP,
 }
 
 export async function ensurePaths(): Promise<void> {

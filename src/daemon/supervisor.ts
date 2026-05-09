@@ -1,18 +1,21 @@
+import fs from 'node:fs'
 import process from 'node:process'
 import consola from 'consola'
-
 import { readPid, removePidFile, writePid } from '~/daemon/pid'
 import {
   SUPERVISOR_MAX_BACKOFF_MS as MAX_BACKOFF_MS,
+  SUPERVISOR_MAX_CONSECUTIVE_FAILURES as MAX_CONSECUTIVE_FAILURES,
   SUPERVISOR_STABLE_THRESHOLD_MS as STABLE_THRESHOLD_MS,
   SUPERVISOR_INITIAL_BACKOFF_MS,
 } from '~/lib/constants'
+import { PATHS } from '~/lib/paths'
 
 import { isPortInUseError } from '~/lib/port'
 
 export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void> {
   let backoffMs = SUPERVISOR_INITIAL_BACKOFF_MS
   let lastStartTime = Date.now()
+  let consecutiveFailures = 0
 
   // Capture a fixed start time once. All subsequent writePid calls
   // reuse this value so it stays close to the OS process start time,
@@ -25,13 +28,24 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
   // and the enable path (where _supervisor is launched directly by the OS).
   writePid(process.pid, supervisorStartTime)
 
+  removeStopRequest()
+
   const cleanup = () => {
+    removeStopRequest()
     removePidFile()
     process.exit(0)
   }
 
   process.on('SIGTERM', cleanup)
   process.on('SIGINT', cleanup)
+
+  const stopPoll = setInterval(() => {
+    if (fs.existsSync(PATHS.DAEMON_STOP)) {
+      consola.info('Stop request file detected, shutting down daemon supervisor')
+      cleanup()
+    }
+  }, 500)
+  stopPoll.unref?.()
 
   // On Windows, SIGTERM doesn't fire - use 'exit' as fallback to clean up PID file
   if (process.platform === 'win32') {
@@ -67,6 +81,13 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
 
       if (uptime > STABLE_THRESHOLD_MS) {
         backoffMs = SUPERVISOR_INITIAL_BACKOFF_MS
+        consecutiveFailures = 0
+      }
+      consecutiveFailures++
+      if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
+        consola.error(`Server crashed ${consecutiveFailures} consecutive time(s), giving up`)
+        removePidFile()
+        process.exit(1)
       }
 
       consola.info(`Restarting in ${backoffMs / 1000}s...`)
@@ -74,4 +95,11 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
       backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS)
     }
   }
+}
+
+function removeStopRequest(): void {
+  try {
+    fs.unlinkSync(PATHS.DAEMON_STOP)
+  }
+  catch {}
 }

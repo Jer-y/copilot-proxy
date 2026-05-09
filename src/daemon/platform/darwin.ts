@@ -32,7 +32,10 @@ ${programArgs}
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
     <key>StandardOutPath</key>
     <string>${xmlEscape(PATHS.DAEMON_LOG)}</string>
     <key>StandardErrorPath</key>

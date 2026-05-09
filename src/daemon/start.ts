@@ -5,6 +5,7 @@ import process from 'node:process'
 
 import consola from 'consola'
 import { saveDaemonConfig } from '~/daemon/config'
+import { rotateDaemonLogIfNeeded } from '~/daemon/log-file'
 import { isDaemonRunning, removePidFile, writePid } from '~/daemon/pid'
 import { PATHS } from '~/lib/paths'
 import { checkPortAvailable, isPortInUseError } from '~/lib/port'
@@ -178,6 +179,7 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
   const execPath = process.argv[0]
   const scriptPath = process.argv[1]
 
+  rotateDaemonLogIfNeeded()
   const logStream = fs.openSync(PATHS.DAEMON_LOG, 'a', 0o600)
   // Ensure permissions are correct even if file already existed with wider perms
   try {
@@ -197,10 +199,25 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
     return exitWithLock(1)
   }
 
-  writePid(child.pid)
+  await waitForSupervisorPid(child.pid, 2_000)
   child.unref()
 
   consola.success(`Daemon started (PID: ${child.pid})`)
   consola.info(`Logs: ${PATHS.DAEMON_LOG}`)
   exitWithLock(0)
+}
+
+async function waitForSupervisorPid(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const daemon = isDaemonRunning()
+    if (daemon.running && daemon.pid === pid) {
+      return
+    }
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+
+  // Fallback for very slow starts; the supervisor will rewrite this with its
+  // own stable timestamp as soon as it enters runAsSupervisor().
+  writePid(pid)
 }

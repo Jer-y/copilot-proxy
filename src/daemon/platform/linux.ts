@@ -10,9 +10,9 @@ const SERVICE_NAME = 'copilot-proxy'
 const SERVICE_DIR = path.join(os.homedir(), '.config', 'systemd', 'user')
 const SERVICE_PATH = path.join(SERVICE_DIR, `${SERVICE_NAME}.service`)
 
-function shellQuote(s: string): string {
-  // Escape % for systemd (% is a specifier prefix in unit files)
-  const escaped = s.replace(/%/g, '%%')
+export function shellQuote(s: string): string {
+  // Escape systemd specifiers and environment expansion.
+  const escaped = s.replace(/%/g, '%%').replace(/\$/g, '$$$$')
   if (/^[\w/.:-]+$/.test(escaped))
     return escaped
   return `"${escaped.replace(/"/g, '\\"')}"`

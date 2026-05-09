@@ -1,8 +1,10 @@
+import fs from 'node:fs'
 import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { isDaemonRunning, isProcessRunning, removePidFile } from '~/daemon/pid'
+import { PATHS } from '~/lib/paths'
 
 /**
  * Attempt to stop the daemon. Returns true if daemon was stopped or
@@ -19,12 +21,17 @@ export function stopDaemon(): boolean {
   const { pid } = daemon
   consola.info(`Stopping daemon (PID: ${pid})...`)
 
-  try {
-    process.kill(pid, 'SIGTERM')
+  if (process.platform === 'win32') {
+    requestStopViaFile(pid)
   }
-  catch {
-    consola.error('Failed to send SIGTERM')
-    return false
+  else {
+    try {
+      process.kill(pid, 'SIGTERM')
+    }
+    catch {
+      consola.error('Failed to send SIGTERM')
+      return false
+    }
   }
 
   // Wait for process to exit (poll up to 10s)
@@ -55,6 +62,16 @@ export function stopDaemon(): boolean {
   removePidFile()
   consola.success('Daemon stopped')
   return true
+}
+
+function requestStopViaFile(pid: number): void {
+  try {
+    fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
+    fs.writeFileSync(PATHS.DAEMON_STOP, `${pid}\n${Date.now()}`, { mode: 0o600 })
+  }
+  catch (error) {
+    consola.warn('Failed to write daemon stop request file, falling back to process termination if needed:', error)
+  }
 }
 
 export const stop = defineCommand({

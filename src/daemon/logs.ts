@@ -4,6 +4,7 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
 
+import { readLastLogLines } from '~/daemon/log-file'
 import { PATHS } from '~/lib/paths'
 
 export const logs = defineCommand({
@@ -32,24 +33,23 @@ export const logs = defineCommand({
     }
 
     if (args.follow) {
-      followLogsWatch()
+      followLogsWatch(Number.parseInt(args.lines, 10))
     }
     else {
-      const content = fs.readFileSync(PATHS.DAEMON_LOG, 'utf8')
-      const lines = content.split('\n')
       const count = Number.parseInt(args.lines, 10)
-      const output = lines.slice(-count).join('\n')
+      const output = readLastLogLines(PATHS.DAEMON_LOG, Number.isFinite(count) ? count : 50)
       // eslint-disable-next-line no-console
       console.log(output)
     }
   },
 })
 
-function followLogsWatch(): void {
-  const content = fs.readFileSync(PATHS.DAEMON_LOG, 'utf8')
+function followLogsWatch(lineCount: number): void {
+  const count = Number.isFinite(lineCount) ? lineCount : 50
+  const content = readLastLogLines(PATHS.DAEMON_LOG, count)
   process.stdout.write(content)
 
-  let position = Buffer.byteLength(content)
+  let position = fs.statSync(PATHS.DAEMON_LOG).size
   let currentIno: number | bigint = 0
   try {
     currentIno = fs.statSync(PATHS.DAEMON_LOG).ino
