@@ -106,6 +106,14 @@ function buildUnsupportedMatcher(fieldTerms: Array<string>) {
       return true
     }
 
+    if (
+      haystack.includes('allowedpartnermodelfeatures')
+      || haystack.includes('disallowed feature')
+      || haystack.includes('organization policy constraint')
+    ) {
+      return true
+    }
+
     const mentionsField = fieldTerms.some(term => haystack.includes(term.toLowerCase()))
     if (!mentionsField) {
       return false
