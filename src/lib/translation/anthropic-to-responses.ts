@@ -13,6 +13,7 @@ import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
   AnthropicStreamEventData,
+  AnthropicSystemMessage,
   AnthropicTextBlock,
   AnthropicTool,
   AnthropicToolResultBlock,
@@ -161,12 +162,48 @@ function translateAnthropicMessagesToResponsesInput(
     if (msg.role === 'user') {
       handleUserMessage(msg, input)
     }
-    else {
+    else if (msg.role === 'assistant') {
       handleAssistantMessage(msg, input)
+    }
+    else {
+      handleSystemMessage(msg, input)
     }
   }
 
   return input
+}
+
+function handleSystemMessage(
+  msg: AnthropicSystemMessage,
+  input: Array<ResponsesInputItem>,
+): void {
+  if (typeof msg.content === 'string') {
+    input.push({
+      role: 'developer',
+      content: msg.content,
+    } as ResponsesMessageInputItem)
+    return
+  }
+
+  const cacheControlBlocks = msg.content
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => block.cache_control)
+  if (cacheControlBlocks.length > 0) {
+    logLossyAnthropicCompatibility(
+      'mid-conversation system cache_control',
+      'Anthropic mid-conversation system block cache hints are collapsed into a Responses developer message and cannot be forwarded precisely.',
+    )
+  }
+
+  const text = msg.content.map(block => block.text).join('\n\n')
+  if (!text) {
+    return
+  }
+
+  input.push({
+    role: 'developer',
+    content: text,
+  } as ResponsesMessageInputItem)
 }
 
 function handleUserMessage(

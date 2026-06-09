@@ -154,6 +154,19 @@ describe('messages error paths', () => {
     expect(result.success).toBe(true)
   })
 
+  test('mid-conversation system messages are accepted by schema', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4-8',
+      max_tokens: 100,
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'system', content: 'Use the Skill tool when needed.' },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+  })
+
   test('tool_use and tool_result cache_control are accepted and preserved by schema', () => {
     const result = AnthropicMessagesPayloadSchema.parse({
       model: 'claude-opus-4.7',

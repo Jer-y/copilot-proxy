@@ -132,6 +132,14 @@ const AnthropicAssistantMessageSchema = z.object({
   ]),
 }).passthrough()
 
+const AnthropicSystemMessageSchema = z.object({
+  role: z.literal('system'),
+  content: z.union([
+    z.string(),
+    z.array(AnthropicTextBlockSchema),
+  ]),
+}).passthrough()
+
 const AnthropicCustomToolSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -215,6 +223,7 @@ export const AnthropicMessagesPayloadSchema = z.object({
   messages: z.array(z.union([
     AnthropicUserMessageSchema,
     AnthropicAssistantMessageSchema,
+    AnthropicSystemMessageSchema,
   ])),
   max_tokens: z.number().int().nonnegative().optional(),
   stream: z.boolean().optional(),

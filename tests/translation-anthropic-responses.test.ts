@@ -62,6 +62,23 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(result.instructions).toBe('First instruction.\n\nSecond instruction.')
   })
 
+  test('mid-conversation system message → developer input message', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [
+        { role: 'user', content: 'Hi' },
+        { role: 'system', content: 'Use the Skill tool when needed.' },
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      { role: 'user', content: 'Hi' },
+      { role: 'developer', content: 'Use the Skill tool when needed.' },
+    ])
+  })
+
   test('max_tokens clamped to minimum 16', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
