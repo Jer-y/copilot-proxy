@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import process from 'node:process'
 import consola from 'consola'
 
 import { rotateDaemonLogIfNeeded } from '~/daemon/log-file'
@@ -86,14 +87,22 @@ export function restartAutoStartService(): boolean {
   if (!isAutoStartInstalled())
     return false
 
+  rotateDaemonLogIfNeeded()
+
+  try {
+    execFileSync('launchctl', buildLaunchctlKickstartArgs(process.getuid?.()), { stdio: 'inherit' })
+    return true
+  }
+  catch (error) {
+    consola.warn('launchctl kickstart failed, falling back to stop/start:', error instanceof Error ? error.message : error)
+  }
+
   try {
     execFileSync('launchctl', ['stop', LABEL], { stdio: 'pipe' })
   }
   catch {
     // It may already be stopped. Starting below is the important part.
   }
-
-  rotateDaemonLogIfNeeded()
 
   try {
     execFileSync('launchctl', ['start', LABEL], { stdio: 'inherit' })
@@ -121,6 +130,11 @@ export function showAutoStartStatus(): boolean {
 
 export function showAutoStartLogs(): boolean {
   return false
+}
+
+export function buildLaunchctlKickstartArgs(uid?: number): string[] {
+  const target = typeof uid === 'number' ? `gui/${uid}/${LABEL}` : LABEL
+  return ['kickstart', '-k', target]
 }
 
 export async function uninstallAutoStart(): Promise<boolean> {
