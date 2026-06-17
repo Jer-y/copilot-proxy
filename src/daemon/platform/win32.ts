@@ -150,7 +150,11 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   const xmlPath = path.join(tmpDir, 'copilot-proxy-task.xml')
 
   try {
-    fs.writeFileSync(xmlPath, taskXml, { encoding: 'utf16le' })
+    // schtasks /create /xml requires a UTF-16 file *with* a BOM. Node's
+    // 'utf16le' encoding does not emit one, so schtasks misreads the leading
+    // '<' (0x3C 0x00) as '<' followed by NUL and fails with
+    // "(1,2)::ERROR: one root element". Prepend a BOM so the file is valid.
+    fs.writeFileSync(xmlPath, '\ufeff' + taskXml, { encoding: 'utf16le' })
 
     execFileSync('schtasks', [
       '/create',
