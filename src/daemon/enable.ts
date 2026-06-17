@@ -32,8 +32,6 @@ export function buildSupervisorStartArgs(scriptPath: string, config: DaemonConfi
     args.push('--body-timeout-ms', String(config.bodyTimeoutMs))
   if (config.connectTimeoutMs !== undefined)
     args.push('--connect-timeout-ms', String(config.connectTimeoutMs))
-  if (config.showToken)
-    args.push('--show-token')
   if (config.proxyEnv)
     args.push('--proxy-env')
 
@@ -49,6 +47,10 @@ export const enable = defineCommand({
     const config = loadDaemonConfig()
     if (!config) {
       consola.error('No daemon config found. Start the daemon first with `start -d`')
+      process.exit(1)
+    }
+    if (config.showToken) {
+      consola.error('Cannot enable auto-start while --show-token is persisted in daemon config. Restart the daemon without --show-token first.')
       process.exit(1)
     }
 

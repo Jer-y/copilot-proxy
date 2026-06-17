@@ -101,6 +101,8 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
   forwardUpstreamHeaders(c, result.headers)
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
+    let completed = false
+    stream.onAbort(() => result.cancel?.('chat completions client disconnected before upstream stream completed'))
     try {
       for await (const chunk of streamBody) {
         if (stream.aborted)
@@ -110,12 +112,18 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
         }
         await stream.writeSSE(normalizeChatCompletionStreamChunk(chunk as SSEMessage))
       }
+      completed = !stream.aborted
     }
     catch (error) {
       await writeOpenAIStreamError(stream, error, {
         fallbackMessage: 'An unexpected error occurred while streaming the Copilot chat completion.',
         label: 'Chat completions stream passthrough',
       })
+    }
+    finally {
+      if (!completed) {
+        await result.cancel?.('chat completions client disconnected before upstream stream completed')
+      }
     }
   })
 }

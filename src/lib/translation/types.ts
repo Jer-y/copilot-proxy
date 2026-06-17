@@ -329,7 +329,9 @@ export interface AnthropicStreamState {
 export interface AnthropicToResponsesStreamState {
   responseId: string
   model: string
+  requestedModel?: string
   createdSent: boolean
+  messageStopSent: boolean
   nextOutputIndex: number
   /** Current Anthropic content block type (needed because content_block_stop has no type info) */
   currentBlockType: 'text' | 'thinking' | 'tool_use' | 'redacted_thinking' | null

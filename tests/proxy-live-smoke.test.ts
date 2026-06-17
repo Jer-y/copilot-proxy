@@ -11,6 +11,7 @@
  *
  * Run:
  *   COPILOT_LIVE_TEST=1 \
+ *   COPILOT_LIVE_CHAT_MODEL=<chat-completions-model-under-test> \
  *   COPILOT_LIVE_RESPONSES_MODEL=<responses-model-under-test> \
  *   COPILOT_LIVE_EMBEDDING_MODEL=<embedding-model-under-test> \
  *   bun test tests/proxy-live-smoke.test.ts --timeout 600000
@@ -30,6 +31,7 @@ const TIMEOUT = 90_000
 const LIVE_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
 const describeLive = LIVE_TEST_ENABLED ? describe : describe.skip
 
+const CHAT_MODEL = process.env.COPILOT_LIVE_CHAT_MODEL ?? '<chat-completions-model-under-test>'
 const RESPONSES_MODEL = process.env.COPILOT_LIVE_RESPONSES_MODEL ?? '<responses-model-under-test>'
 const EMBEDDING_MODEL = process.env.COPILOT_LIVE_EMBEDDING_MODEL ?? '<embedding-model-under-test>'
 const IMAGE_URL
@@ -67,6 +69,14 @@ async function sendJsonRequest(
       : options?.headers,
     ...(body ? { body: JSON.stringify(body) } : {}),
   })
+}
+
+function requestWithIp(url: string, ip: string, init?: RequestInit): Request {
+  const request = new Request(url, init)
+  Object.defineProperty(request, 'ip', {
+    value: ip,
+  })
+  return request
 }
 
 async function parseJson<T>(res: Response): Promise<T> {
@@ -121,6 +131,10 @@ beforeAll(async () => {
     return
   }
 
+  if (!process.env.COPILOT_LIVE_CHAT_MODEL) {
+    throw new Error('COPILOT_LIVE_CHAT_MODEL is required when COPILOT_LIVE_TEST=1')
+  }
+
   if (!process.env.COPILOT_LIVE_RESPONSES_MODEL) {
     throw new Error('COPILOT_LIVE_RESPONSES_MODEL is required when COPILOT_LIVE_TEST=1')
   }
@@ -152,7 +166,7 @@ describeLive('Proxy live smoke', () => {
   describe('/v1/chat/completions', () => {
     test('baseline text → 200 chat completion', async () => {
       const res = await sendJsonRequest('/v1/chat/completions', {
-        model: RESPONSES_MODEL,
+        model: CHAT_MODEL,
         max_tokens: 32,
         messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
       })
@@ -165,7 +179,7 @@ describeLive('Proxy live smoke', () => {
 
     test('streaming → emits chat.completion.chunk and [DONE]', async () => {
       const res = await sendJsonRequest('/v1/chat/completions', {
-        model: RESPONSES_MODEL,
+        model: CHAT_MODEL,
         stream: true,
         max_tokens: 64,
         messages: [{ role: 'user', content: 'Say hello.' }],
@@ -179,7 +193,7 @@ describeLive('Proxy live smoke', () => {
 
     test('image_url input → rejected locally', async () => {
       const res = await sendJsonRequest('/v1/chat/completions', {
-        model: RESPONSES_MODEL,
+        model: CHAT_MODEL,
         max_tokens: 64,
         messages: [
           {
@@ -206,7 +220,7 @@ describeLive('Proxy live smoke', () => {
 
     test('tools + tool_choice required → returns tool call', async () => {
       const res = await sendJsonRequest('/v1/chat/completions', {
-        model: RESPONSES_MODEL,
+        model: CHAT_MODEL,
         max_tokens: 64,
         messages: [{ role: 'user', content: 'Call the noop tool exactly once.' }],
         tools: [NOOP_TOOL],
@@ -223,7 +237,7 @@ describeLive('Proxy live smoke', () => {
 
     test('response_format json_object → returns valid JSON string', async () => {
       const res = await sendJsonRequest('/v1/chat/completions', {
-        model: RESPONSES_MODEL,
+        model: CHAT_MODEL,
         max_tokens: 128,
         messages: [{ role: 'user', content: 'Return a JSON object with ok=true.' }],
         response_format: { type: 'json_object' },
@@ -238,7 +252,7 @@ describeLive('Proxy live smoke', () => {
 
     test('response_format json_schema → returns schema-valid JSON string', async () => {
       const res = await sendJsonRequest('/v1/chat/completions', {
-        model: RESPONSES_MODEL,
+        model: CHAT_MODEL,
         max_tokens: 128,
         messages: [{ role: 'user', content: 'What is 2+2? Return JSON with answer as a string.' }],
         response_format: {
@@ -578,7 +592,7 @@ describeLive('Proxy live smoke', () => {
     }, TIMEOUT)
 
     test('/token → returns current Copilot token', async () => {
-      const res = await sendJsonRequest('/token', undefined, { method: 'GET' })
+      const res = await server.fetch(requestWithIp('http://127.0.0.1/token', '127.0.0.1'))
 
       expect(res.status).toBe(200)
       const body = await parseJson<Record<string, unknown>>(res)

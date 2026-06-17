@@ -6,6 +6,7 @@ import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
+import { createUpstreamRequestController } from './upstream-cancel'
 
 /** Type guard: is a message input item (has role, not a function_call/output) */
 function isMessageInput(item: ResponsesInputItem): item is ResponsesMessageInputItem {
@@ -51,11 +52,12 @@ export async function createResponses(
   })
 
   const requestStartedAt = Date.now()
+  const upstreamController = createUpstreamRequestController(options?.signal)
   const response = await fetchCopilot(`${copilotBaseUrl(state)}/responses`, {
     method: 'POST',
     headers,
     body,
-    signal: options?.signal,
+    signal: upstreamController.signal,
   })
   logUpstreamHeadersReceived({
     endpoint: '/responses',
@@ -89,7 +91,11 @@ export async function createResponses(
       endpoint: '/responses',
       requestStartedAt,
     })
-    return { body: instrumentedStream, headers: response.headers }
+    return {
+      body: instrumentedStream,
+      headers: response.headers,
+      cancel: (reason?: unknown) => upstreamController.cancel(response, reason),
+    }
   }
 
   const json = (await response.json()) as ResponsesResponse

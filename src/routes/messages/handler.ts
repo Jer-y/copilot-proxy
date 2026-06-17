@@ -145,6 +145,8 @@ async function handleViaResponses(
   return streamSSE(c, async (stream) => {
     const anthropicWriter = createAnthropicSSEWriter(stream)
     const streamState = createAnthropicFromResponsesStreamState({ requestedModel })
+    let completed = false
+    stream.onAbort(() => result.cancel?.('anthropic client disconnected before translated Responses stream completed'))
 
     try {
       for await (const rawEvent of streamBody) {
@@ -177,8 +179,11 @@ async function handleViaResponses(
         }
       }
 
-      const finalEvents = finalizeAnthropicStreamFromState(streamState)
-      await writeAnthropicEvents(anthropicWriter, finalEvents)
+      if (!stream.aborted) {
+        const finalEvents = finalizeAnthropicStreamFromState(streamState)
+        await writeAnthropicEvents(anthropicWriter, finalEvents)
+        completed = true
+      }
     }
     catch (error) {
       await handleAnthropicStreamFailure({
@@ -196,6 +201,9 @@ async function handleViaResponses(
     }
     finally {
       await anthropicWriter.close()
+      if (!completed) {
+        await result.cancel?.('anthropic client disconnected before translated Responses stream completed')
+      }
     }
   })
 }
@@ -256,6 +264,8 @@ async function handleViaNativeAnthropic(
   return streamSSE(c, async (stream) => {
     const anthropicWriter = createAnthropicSSEWriter(stream)
     const passthroughState = createNativeAnthropicPassthroughState()
+    let completed = false
+    stream.onAbort(() => result.cancel?.('anthropic client disconnected before native Anthropic stream completed'))
 
     try {
       for await (const rawEvent of streamBody) {
@@ -292,6 +302,7 @@ async function handleViaNativeAnthropic(
       if (finalEvents.length > 0) {
         consola.warn('Native Anthropic stream terminated without a completion event; synthesizing Anthropic message_stop.')
         await writeAnthropicEvents(anthropicWriter, finalEvents)
+        completed = true
         return
       }
 
@@ -303,6 +314,7 @@ async function handleViaNativeAnthropic(
           ),
         )
       }
+      completed = !stream.aborted
     }
     catch (error) {
       await handleAnthropicStreamFailure({
@@ -320,6 +332,9 @@ async function handleViaNativeAnthropic(
     }
     finally {
       await anthropicWriter.close()
+      if (!completed) {
+        await result.cancel?.('anthropic client disconnected before native Anthropic stream completed')
+      }
     }
   })
 }

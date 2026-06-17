@@ -2,6 +2,7 @@ import type { BackendApiType } from './model-config'
 
 import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
+import { isAnthropicServerTool } from './anthropic-tools'
 import { formatBackendApi } from './backend-api'
 import { getModelConfig } from './model-config'
 
@@ -147,5 +148,5 @@ function payloadHasInputFileParts(payload: ResponsesPayload): boolean {
 }
 
 function payloadHasAnthropicServerTools(payload: AnthropicMessagesPayload): boolean {
-  return Boolean(payload.tools?.some(tool => 'type' in tool))
+  return Boolean(payload.tools?.some(isAnthropicServerTool))
 }

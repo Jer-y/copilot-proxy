@@ -353,6 +353,30 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
+  test('custom tools with type=custom are translated to Responses function tools', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Call tool' }],
+      tools: [
+        {
+          type: 'custom',
+          name: 'typed_custom',
+          input_schema: { type: 'object', properties: {} },
+        } as never,
+      ],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.tools).toEqual([
+      {
+        type: 'function',
+        name: 'typed_custom',
+        parameters: { type: 'object', properties: {} },
+      },
+    ])
+  })
+
   test('should ignore top-level cache_control on Responses path', () => {
     const result = translateAnthropicRequestToResponses({
       model: 'claude-sonnet-4',
@@ -860,6 +884,28 @@ describe('translateResponsesRequestToAnthropic', () => {
 
     const result = translateResponsesRequestToAnthropic(payload)
     expect(result.output_config).toEqual({ effort: 'xhigh' })
+  })
+
+  test('replayed Responses reasoning input items are ignored on native Anthropic requests', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      input: [
+        {
+          type: 'reasoning',
+          id: 'rs_1',
+          summary: [{ type: 'summary_text', text: 'prior reasoning' }],
+        } as never,
+        { role: 'user', content: 'Continue.' },
+      ],
+    }
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result.messages).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Continue.' }],
+      },
+    ])
   })
 
   test('unknown user content parts are preserved as JSON text blocks', () => {

@@ -1,6 +1,7 @@
 // Anthropic ↔ Responses translations
 export {
   createAnthropicToResponsesStreamState,
+  finalizeAnthropicToResponsesStreamState,
   translateAnthropicRequestToResponses,
   translateAnthropicResponseToResponses,
   translateAnthropicStreamEventToResponses,

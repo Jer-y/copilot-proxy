@@ -198,6 +198,10 @@ function translateResponsesInputToAnthropicMessages(
   }
 
   for (const item of input) {
+    if ('type' in item && item.type === 'reasoning') {
+      continue
+    }
+
     if (isFunctionCallItem(item)) {
       // tool_use → assistant side
       flushUser()

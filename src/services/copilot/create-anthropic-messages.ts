@@ -21,6 +21,7 @@ import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
+import { createUpstreamRequestController } from './upstream-cancel'
 
 export interface AnthropicCountTokensResponse {
   input_tokens: number
@@ -40,11 +41,12 @@ export async function createAnthropicMessages(
 
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
+  const upstreamController = createUpstreamRequestController(options?.signal)
   const response = await fetchCopilot(`${copilotBaseUrl(state)}/v1/messages`, {
     method: 'POST',
     headers: buildAnthropicRequestHeaders(payload, options),
     body,
-    signal: options?.signal,
+    signal: upstreamController.signal,
   })
   logUpstreamHeadersReceived({
     endpoint: '/v1/messages',
@@ -63,7 +65,12 @@ export async function createAnthropicMessages(
       endpoint: '/v1/messages',
       requestStartedAt,
     })
-    return { body: instrumentedStream, headers: response.headers, streaming: true as const }
+    return {
+      body: instrumentedStream,
+      headers: response.headers,
+      streaming: true as const,
+      cancel: (reason?: unknown) => upstreamController.cancel(response, reason),
+    }
   }
 
   const json = (await response.json()) as AnthropicResponse

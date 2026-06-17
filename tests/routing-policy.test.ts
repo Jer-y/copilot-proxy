@@ -162,4 +162,16 @@ describe('assertMessagesPayloadTranslatable', () => {
       (msg) => { throw new Error(msg) },
     )).not.toThrow()
   })
+
+  test('passes custom tools that retain Anthropic type=custom metadata', () => {
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Call noop.' }],
+        tools: [{ type: 'custom', name: 'noop', input_schema: { type: 'object', properties: {} } }],
+      },
+      (msg) => { throw new Error(msg) },
+    )).not.toThrow()
+  })
 })

@@ -304,6 +304,10 @@ export const start = defineCommand({
         fallbackConfig,
         process.argv.slice(2),
       )
+      if (mergedConfig.showToken) {
+        consola.error('Cannot use --show-token in supervisor mode because tokens would be written to daemon logs.')
+        process.exit(1)
+      }
 
       const { runAsSupervisor } = await import('~/daemon/supervisor')
       const options: RunServerOptions = {
@@ -318,6 +322,10 @@ export const start = defineCommand({
     if (args.daemon) {
       if (args['claude-code']) {
         consola.error('Cannot use --claude-code with --daemon (interactive mode)')
+        process.exit(1)
+      }
+      if (args['show-token']) {
+        consola.error('Cannot use --show-token with --daemon because tokens would be written to daemon logs.')
         process.exit(1)
       }
 

@@ -142,6 +142,11 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
     throw new Error('unreachable')
   }
 
+  if (config.showToken) {
+    consola.error('Cannot use --show-token with daemon mode because tokens would be written to daemon logs.')
+    exitWithLock(1)
+  }
+
   // Check if already running
   const daemon = isDaemonRunning()
   if (daemon.running) {

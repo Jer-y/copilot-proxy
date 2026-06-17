@@ -29,7 +29,7 @@ describe('buildSupervisorStartArgs', () => {
     ])
   })
 
-  test('includes optional switches and never includes github token', () => {
+  test('includes optional switches and never includes github token or show-token', () => {
     const config: DaemonConfig = {
       ...baseConfig,
       port: 4411,
@@ -69,10 +69,10 @@ describe('buildSupervisorStartArgs', () => {
       '900000',
       '--connect-timeout-ms',
       '15000',
-      '--show-token',
       '--proxy-env',
     ])
     expect(args).not.toContain('--github-token')
     expect(args).not.toContain(config.githubToken!)
+    expect(args).not.toContain('--show-token')
   })
 })

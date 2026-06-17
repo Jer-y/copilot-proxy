@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "audit": "bun audit --ignore GHSA-3v7f-55p6-f55p --ignore GHSA-c2c7-rcm5-vvqj",
+    "audit": "bun audit",
     "build": "tsdown",
     "dev": "bun run --watch ./src/main.ts start",
     "knip": "knip-bun",

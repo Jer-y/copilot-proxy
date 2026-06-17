@@ -4,6 +4,11 @@ import type { NativeAnthropicPassthroughState } from '~/routes/messages/stream-f
 import { describe, expect, test } from 'bun:test'
 
 import {
+  createAnthropicToResponsesStreamState,
+  finalizeAnthropicToResponsesStreamState,
+  translateAnthropicStreamEventToResponses,
+} from '~/lib/translation'
+import {
   canRecoverUpstreamTerminationAsMessage,
   createNativeAnthropicPassthroughState,
   finalizeAnthropicStreamFromState,
@@ -233,5 +238,95 @@ describe('finalizeAnthropicStreamFromState', () => {
 
     const alreadyStopped = makeState({ messageStopSent: true, hasNonThinkingContent: true })
     expect(finalizeAnthropicStreamFromState(alreadyStopped)).toEqual([])
+  })
+})
+
+describe('finalizeAnthropicToResponsesStreamState', () => {
+  test('synthesizes response.completed when Anthropic stream ends after visible text', () => {
+    const state = createAnthropicToResponsesStreamState()
+    translateAnthropicStreamEventToResponses({
+      type: 'message_start',
+      message: {
+        id: 'msg_partial',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: 'claude-opus-4.6',
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    }, state)
+    translateAnthropicStreamEventToResponses({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    }, state)
+    translateAnthropicStreamEventToResponses({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: 'partial' },
+    }, state)
+
+    const events = finalizeAnthropicToResponsesStreamState(state)
+
+    expect(events.map(event => event.type)).toEqual([
+      'response.output_text.done',
+      'response.content_part.done',
+      'response.output_item.done',
+      'response.completed',
+    ])
+    expect(events[3]).toMatchObject({
+      type: 'response.completed',
+      response: {
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            content: [{ type: 'output_text', text: 'partial' }],
+          },
+        ],
+      },
+    })
+  })
+
+  test('emits response.failed instead of fabricating a partial tool_use completion', () => {
+    const state = createAnthropicToResponsesStreamState()
+    translateAnthropicStreamEventToResponses({
+      type: 'message_start',
+      message: {
+        id: 'msg_partial_tool',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: 'claude-opus-4.6',
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    }, state)
+    translateAnthropicStreamEventToResponses({
+      type: 'content_block_start',
+      index: 0,
+      content_block: {
+        type: 'tool_use',
+        id: 'toolu_1',
+        name: 'lookup',
+        input: {},
+      },
+    }, state)
+
+    const events = finalizeAnthropicToResponsesStreamState(state)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'response.failed',
+      response: {
+        status: 'failed',
+        error: {
+          code: 'upstream_stream_terminated',
+        },
+      },
+    })
   })
 })

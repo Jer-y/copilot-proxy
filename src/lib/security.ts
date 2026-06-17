@@ -136,7 +136,7 @@ export function isTokenRequestAllowed(request: Request): boolean {
   // srvx attaches the socket address as request.ip for Node/Bun adapters. Revisit
   // this check if the proxy is ever placed behind another HTTP reverse proxy.
   const remoteIp = (request as RequestWithIp).ip
-  if (remoteIp && !isLoopbackAddress(remoteIp))
+  if (!remoteIp || !isLoopbackAddress(remoteIp))
     return false
 
   let requestUrl: URL

@@ -35,6 +35,7 @@ import type {
   ResponsesToolChoice,
 } from '~/services/copilot/create-responses'
 import { randomUUID } from 'node:crypto'
+import { isTranslatableAnthropicCustomTool } from '~/lib/anthropic-tools'
 import { getModelConfig } from '~/lib/model-config'
 import { logIgnoredAnthropicParameter, logLossyAnthropicCompatibility, mapAnthropicCacheControl, throwAnthropicInvalidRequestError } from './anthropic-compat'
 import { mapAnthropicOutputFormatToResponses } from './anthropic-output-format'
@@ -301,8 +302,8 @@ function translateAnthropicToolsToResponses(
   if (!tools || tools.length === 0)
     return undefined
 
-  const compatibleTools = tools.filter((tool, index): tool is AnthropicCustomTool => {
-    if ('type' in tool) {
+  const compatibleTools = tools.filter((tool, index): tool is AnthropicCustomTool & { type?: 'custom' } => {
+    if (!isTranslatableAnthropicCustomTool(tool)) {
       logIgnoredAnthropicParameter(
         `tools[${index}]`,
         'Anthropic server-side tools cannot be represented on the Copilot Responses wire format and are omitted.',
@@ -602,11 +603,13 @@ function buildResponsesEnvelopeDefaults(
 
 // ─── T12: Anthropic Stream → Responses Stream ──────────────────
 
-export function createAnthropicToResponsesStreamState(): AnthropicToResponsesStreamState {
+export function createAnthropicToResponsesStreamState(options?: { requestedModel?: string }): AnthropicToResponsesStreamState {
   const state: AnthropicToResponsesStreamState = {
     responseId: `resp_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
     model: '',
+    requestedModel: options?.requestedModel,
     createdSent: false,
+    messageStopSent: false,
     nextOutputIndex: 0,
     currentBlockType: null,
     currentBlockIndex: -1,
@@ -638,7 +641,7 @@ export function translateAnthropicStreamEventToResponses(
   switch (event.type) {
     case 'message_start': {
       state.responseId = event.message.id || state.responseId
-      state.model = event.message.model || state.model
+      state.model = state.requestedModel ?? event.message.model ?? state.model
       state.inputTokens = event.message.usage?.input_tokens ?? 0
       streamCreatedAtByState.set(state, streamCreatedAtByState.get(state) ?? nowUnixSeconds())
 
@@ -746,24 +749,7 @@ export function translateAnthropicStreamEventToResponses(
 
     case 'content_block_stop': {
       if (state.currentBlockType === 'text') {
-        const messageItemId = getCurrentMessageItemId(state)
-        state.messageParts.push({ type: 'output_text', text: state.currentPartText })
-        events.push({
-          type: 'response.output_text.done',
-          item_id: messageItemId,
-          output_index: state.messageOutputIndex!,
-          content_index: state.contentPartIndex,
-          text: state.currentPartText,
-        })
-        events.push({
-          type: 'response.content_part.done',
-          item_id: messageItemId,
-          output_index: state.messageOutputIndex!,
-          content_index: state.contentPartIndex,
-          part: { type: 'output_text', text: state.currentPartText },
-        })
-        state.contentPartIndex++
-        // Don't close message — more text blocks may follow
+        closeCurrentTextBlock(events, state)
       }
       else if (state.currentBlockType === 'tool_use') {
         const tc = state.toolCalls.get(state.currentBlockIndex)
@@ -849,6 +835,7 @@ export function translateAnthropicStreamEventToResponses(
           },
         },
       })
+      state.messageStopSent = true
       break
     }
 
@@ -887,6 +874,66 @@ export function translateAnthropicStreamEventToResponses(
   return events
 }
 
+export function finalizeAnthropicToResponsesStreamState(
+  state: AnthropicToResponsesStreamState,
+): Array<ResponsesStreamEvent> {
+  const events: Array<ResponsesStreamEvent> = []
+  if (!state.createdSent || state.messageStopSent) {
+    return events
+  }
+
+  if (state.currentBlockType === 'text') {
+    closeCurrentTextBlock(events, state)
+  }
+
+  if (state.currentBlockType === 'tool_use') {
+    events.push(buildAnthropicStreamFailureEvent(
+      state,
+      'Copilot Anthropic upstream stream terminated before completing a tool_use block.',
+    ))
+    state.messageStopSent = true
+    return events
+  }
+
+  if (state.currentBlockType === 'thinking' && state.currentThinkingText) {
+    events.push(buildAnthropicStreamFailureEvent(
+      state,
+      'Copilot Anthropic upstream stream terminated before completing assistant output.',
+    ))
+    state.messageStopSent = true
+    return events
+  }
+
+  closeMessageIfOpen(events, state)
+
+  if (state.completedOutputItems.length === 0) {
+    events.push(buildAnthropicStreamFailureEvent(
+      state,
+      'Copilot Anthropic upstream stream terminated before emitting assistant output.',
+    ))
+    state.messageStopSent = true
+    return events
+  }
+
+  const { status, incomplete_details } = mapAnthropicStopReasonToResponsesStatus(
+    (state.stopReason as AnthropicResponse['stop_reason']) ?? null,
+  )
+  const terminalEventType = status === 'completed'
+    ? 'response.completed'
+    : 'response.incomplete'
+  events.push({
+    type: terminalEventType,
+    response: {
+      ...buildAnthropicPartialResponse(state, status),
+      completed_at: status === 'completed' ? nowUnixSeconds() : null,
+      incomplete_details: incomplete_details ?? null,
+      usage: buildResponsesStreamUsage(state),
+    },
+  })
+  state.messageStopSent = true
+  return events
+}
+
 function openMessageIfNeeded(
   events: Array<ResponsesStreamEvent>,
   state: AnthropicToResponsesStreamState,
@@ -910,6 +957,36 @@ function openMessageIfNeeded(
       content: [],
     },
   })
+}
+
+function closeCurrentTextBlock(
+  events: Array<ResponsesStreamEvent>,
+  state: AnthropicToResponsesStreamState,
+): void {
+  if (state.currentBlockType !== 'text') {
+    return
+  }
+
+  const messageItemId = getCurrentMessageItemId(state)
+  const text = state.currentPartText
+  state.messageParts.push({ type: 'output_text', text })
+  events.push({
+    type: 'response.output_text.done',
+    item_id: messageItemId,
+    output_index: state.messageOutputIndex!,
+    content_index: state.contentPartIndex,
+    text,
+  })
+  events.push({
+    type: 'response.content_part.done',
+    item_id: messageItemId,
+    output_index: state.messageOutputIndex!,
+    content_index: state.contentPartIndex,
+    part: { type: 'output_text', text },
+  })
+  state.contentPartIndex++
+  state.currentPartText = ''
+  state.currentBlockType = null
 }
 
 function closeMessageIfOpen(
@@ -993,6 +1070,33 @@ function buildAnthropicPartialResponse(
     error: null,
     incomplete_details: null,
     ...buildResponsesEnvelopeDefaults(output),
+  }
+}
+
+function buildAnthropicStreamFailureEvent(
+  state: AnthropicToResponsesStreamState,
+  message: string,
+): ResponsesStreamEvent {
+  return {
+    type: 'response.failed',
+    response: {
+      ...buildAnthropicPartialResponse(state, 'failed'),
+      completed_at: null,
+      error: {
+        message,
+        type: 'server_error',
+        code: 'upstream_stream_terminated',
+      },
+      usage: buildResponsesStreamUsage(state),
+    },
+  }
+}
+
+function buildResponsesStreamUsage(state: AnthropicToResponsesStreamState): NonNullable<ResponsesResponse['usage']> {
+  return {
+    input_tokens: state.inputTokens,
+    output_tokens: state.outputTokens,
+    total_tokens: state.inputTokens + state.outputTokens,
   }
 }
 
