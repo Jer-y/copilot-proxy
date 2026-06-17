@@ -24,6 +24,17 @@ export interface DaemonConfig {
 const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise']
 export const MAX_DAEMON_CONFIG_BACKUPS = 5
 
+export const DEFAULT_SERVICE_CONFIG: DaemonConfig = {
+  port: 4399,
+  host: DEFAULT_HOST,
+  verbose: false,
+  accountType: 'individual',
+  manual: false,
+  rateLimitWait: false,
+  showToken: false,
+  proxyEnv: false,
+}
+
 export type DaemonConfigRecoveryReason = 'missing' | 'invalid' | 'unreadable'
 
 export interface DaemonConfigRecoveryResult {

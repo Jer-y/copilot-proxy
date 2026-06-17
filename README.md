@@ -51,8 +51,10 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot 
 - **Token Visibility**: Option to display GitHub and Copilot tokens during authentication and refresh for debugging (`--show-token`).
 - **Flexible Authentication**: Authenticate interactively or provide a GitHub token directly, suitable for CI/CD environments.
 - **Support for Different Account Types**: Works with individual, business, and enterprise GitHub Copilot plans.
-- **Background Daemon Mode**: Run the proxy as a background service with `start -d`, with automatic crash recovery and exponential backoff restart. Manage with `stop`, `restart`, `status`, and `logs` commands.
-- **Cross-Platform Auto-Start**: Register the proxy as an auto-start service on Linux (systemd), macOS (launchd), and Windows (Task Scheduler) with `enable`/`disable` commands.
+- **Native Background Services**: Register the proxy as an auto-start service on Linux (systemd), macOS (launchd), and Windows (Task Scheduler) with `enable`/`disable`. `stop`, `restart`, `status`, and `logs` prefer the native service manager when a service is installed.
+- **Legacy Daemon Mode**: `start -d` remains available as an app-managed compatibility mode when you do not want to install a native service.
+
+On Linux, `enable` installs a user systemd service and requires systemd user lingering so the service can start after boot before the user logs in. If lingering cannot be enabled automatically, run `sudo loginctl enable-linger "$USER"` and retry `enable`.
 
 ## Prerequisites
 
@@ -195,12 +197,12 @@ npx @jer-y/copilot-proxy@latest auth
 
 Copilot API now uses a subcommand structure with these main commands:
 
-- `start`: Start the Copilot API server. This command will also handle authentication if needed. Use `-d` to run as a background daemon.
-- `stop`: Stop the background daemon.
-- `restart`: Restart the background daemon using saved configuration.
-- `status`: Show daemon status (PID, port, start time).
-- `logs`: View daemon logs. Use `-f` to follow in real time.
-- `enable`: Register the proxy as an auto-start service (systemd/launchd/Task Scheduler).
+- `start`: Start the Copilot API server in the foreground. This command will also handle authentication if needed. Use `-d` only for the legacy app-managed background daemon.
+- `stop`: Stop the installed native service, or fall back to the legacy daemon.
+- `restart`: Restart the installed native service, or fall back to the legacy daemon using saved configuration.
+- `status`: Show native service status, or fall back to legacy daemon status (PID, port, start time).
+- `logs`: View native service logs where supported, or fall back to legacy daemon logs. Use `-f` to follow in real time.
+- `enable`: Register the proxy as a native auto-start service (systemd/launchd/Task Scheduler) that runs foreground `start`. Linux requires systemd user lingering for logged-out startup.
 - `disable`: Remove the auto-start service registration.
 - `auth`: Run GitHub authentication flow without starting the server. This is typically used if you need to generate a token for use with the `--github-token` option, especially in non-interactive environments.
 - `check-usage`: Show your current GitHub Copilot usage and quota information directly in the terminal (no server required).
@@ -228,7 +230,7 @@ The following command line options are available for the `start` command:
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
-| --daemon       | Run as a background daemon with crash recovery                                | false      | -d    |
+| --daemon       | Run as a legacy app-managed background daemon                                 | false      | -d    |
 
 `auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.
 
@@ -354,32 +356,35 @@ npx @jer-y/copilot-proxy@latest start --proxy-env
 # Increase upstream timeouts for slower model start-up
 npx @jer-y/copilot-proxy@latest start --headers-timeout-ms 600000 --body-timeout-ms 600000
 
-# Start as a background daemon
-npx @jer-y/copilot-proxy@latest start -d
+# Authenticate before installing a non-interactive native service
+npx @jer-y/copilot-proxy@latest auth
 
-# Start daemon on a custom port with a GitHub token
-npx @jer-y/copilot-proxy@latest start -d --port 8080 --github-token ghp_YOUR_TOKEN
+# Linux only: required if enable cannot turn on logged-out startup automatically
+sudo loginctl enable-linger "$USER"
 
-# Check daemon status
+# Register and start a native auto-start service (systemd/launchd/Task Scheduler)
+npx @jer-y/copilot-proxy@latest enable
+
+# Check service status
 npx @jer-y/copilot-proxy@latest status
 
-# View daemon logs (last 50 lines)
+# View service logs (last 50 lines)
 npx @jer-y/copilot-proxy@latest logs
 
-# Follow daemon logs in real time
+# Follow service logs in real time
 npx @jer-y/copilot-proxy@latest logs -f
 
-# Restart the daemon
+# Restart the service
 npx @jer-y/copilot-proxy@latest restart
 
-# Stop the daemon
+# Stop the service
 npx @jer-y/copilot-proxy@latest stop
-
-# Register as auto-start service (systemd/launchd/Task Scheduler)
-npx @jer-y/copilot-proxy@latest enable
 
 # Remove auto-start registration
 npx @jer-y/copilot-proxy@latest disable
+
+# Legacy app-managed daemon mode remains available for compatibility
+npx @jer-y/copilot-proxy@latest start -d
 ```
 
 ## Using the Usage Viewer

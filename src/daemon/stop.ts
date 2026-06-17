@@ -3,6 +3,7 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
 
+import { loadInstalledNativeServiceCommands } from '~/daemon/native-service'
 import { isDaemonRunning, isProcessRunning, removePidFile } from '~/daemon/pid'
 import { PATHS } from '~/lib/paths'
 
@@ -77,9 +78,17 @@ function requestStopViaFile(pid: number): void {
 export const stop = defineCommand({
   meta: {
     name: 'stop',
-    description: 'Stop the background daemon',
+    description: 'Stop the native background service or legacy daemon',
   },
-  run() {
+  async run() {
+    const nativeService = await loadInstalledNativeServiceCommands()
+    if (nativeService) {
+      if (!nativeService.stopAutoStartService()) {
+        process.exit(1)
+      }
+      return
+    }
+
     if (!stopDaemon()) {
       process.exit(1)
     }

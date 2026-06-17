@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import type { ServerHandler } from 'srvx'
+import type { Server, ServerHandler } from 'srvx'
 import type { DaemonConfig } from '~/daemon/config'
 import process from 'node:process'
 import { defineCommand } from 'citty'
@@ -107,14 +107,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       )
     }
 
-    serve({
+    const appServer = serve({
       fetch: server.fetch as ServerHandler,
       port: options.port,
       hostname: options.host,
+      gracefulShutdown: false,
       bun: {
         idleTimeout: 0,
       },
     })
+
+    installShutdownHandlers(appServer)
   }
   catch (error) {
     if (isPortInUseError(error) && (options.exitOnPortInUse ?? true)) {
@@ -127,6 +130,35 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // This promise never resolves, which is correct for a long-running server.
   // The process exits via SIGTERM/SIGINT signal handlers.
   await new Promise(() => {})
+}
+
+function installShutdownHandlers(appServer: Server): void {
+  let shuttingDown = false
+
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown)
+      return
+
+    shuttingDown = true
+    consola.info(`Received ${signal}, shutting down...`)
+    try {
+      await Promise.race([
+        appServer.close(true),
+        new Promise(resolve => setTimeout(resolve, 3_000)),
+      ])
+    }
+    catch (error) {
+      consola.warn('Failed to close server cleanly:', error)
+    }
+    process.exit(0)
+  }
+
+  process.once('SIGTERM', () => {
+    void shutdown('SIGTERM')
+  })
+  process.once('SIGINT', () => {
+    void shutdown('SIGINT')
+  })
 }
 
 export const start = defineCommand({
@@ -215,7 +247,7 @@ export const start = defineCommand({
       alias: 'd',
       type: 'boolean',
       default: false,
-      description: 'Run as a background daemon',
+      description: 'Run as a legacy app-managed background daemon',
     },
     '_supervisor': {
       type: 'boolean',
@@ -326,6 +358,12 @@ export const start = defineCommand({
       }
       if (args['show-token']) {
         consola.error('Cannot use --show-token with --daemon because tokens would be written to daemon logs.')
+        process.exit(1)
+      }
+      const { loadInstalledNativeServiceCommands } = await import('~/daemon/native-service')
+      const nativeService = await loadInstalledNativeServiceCommands()
+      if (nativeService) {
+        consola.error('Cannot use legacy --daemon while a native auto-start service is installed. Use `restart`/`stop`, or run `disable` before starting a legacy daemon.')
         process.exit(1)
       }
 

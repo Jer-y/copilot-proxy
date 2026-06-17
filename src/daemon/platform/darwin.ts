@@ -4,9 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import consola from 'consola'
 
+import { rotateDaemonLogIfNeeded } from '~/daemon/log-file'
 import { PATHS } from '~/lib/paths'
 
 const PLIST_NAME = 'com.copilot-proxy.plist'
+const LABEL = 'com.copilot-proxy'
 const LAUNCH_AGENTS_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents')
 const PLIST_PATH = path.join(LAUNCH_AGENTS_DIR, PLIST_NAME)
 
@@ -15,6 +17,8 @@ function xmlEscape(s: string): string {
 }
 
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
+  rotateDaemonLogIfNeeded()
+
   const programArgs = [execPath, ...args]
     .map(arg => `        <string>${xmlEscape(arg)}</string>`)
     .join('\n')
@@ -24,7 +28,7 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.copilot-proxy</string>
+    <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
 ${programArgs}
@@ -58,6 +62,65 @@ ${programArgs}
 
   consola.success('Auto-start enabled via launchd')
   return true
+}
+
+export function isAutoStartInstalled(): boolean {
+  return fs.existsSync(PLIST_PATH)
+}
+
+export function stopAutoStartService(): boolean {
+  if (!isAutoStartInstalled())
+    return false
+
+  try {
+    execFileSync('launchctl', ['stop', LABEL], { stdio: 'inherit' })
+    return true
+  }
+  catch (error) {
+    consola.error('Failed to stop launchd service:', error instanceof Error ? error.message : error)
+    return false
+  }
+}
+
+export function restartAutoStartService(): boolean {
+  if (!isAutoStartInstalled())
+    return false
+
+  try {
+    execFileSync('launchctl', ['stop', LABEL], { stdio: 'pipe' })
+  }
+  catch {
+    // It may already be stopped. Starting below is the important part.
+  }
+
+  rotateDaemonLogIfNeeded()
+
+  try {
+    execFileSync('launchctl', ['start', LABEL], { stdio: 'inherit' })
+    return true
+  }
+  catch (error) {
+    consola.error('Failed to start launchd service:', error instanceof Error ? error.message : error)
+    return false
+  }
+}
+
+export function showAutoStartStatus(): boolean {
+  if (!isAutoStartInstalled())
+    return false
+
+  try {
+    execFileSync('launchctl', ['list', LABEL], { stdio: 'inherit' })
+  }
+  catch {
+    // `launchctl list <label>` exits non-zero when the job is installed but not
+    // currently loaded. Treat the native status check as handled.
+  }
+  return true
+}
+
+export function showAutoStartLogs(): boolean {
+  return false
 }
 
 export async function uninstallAutoStart(): Promise<boolean> {

@@ -24,8 +24,8 @@
   `bun test tests/messages-routing.test.ts`
 - **Common targeted tests:**
   `bun test tests/create-responses.test.ts` for Responses routing/translation, `bun test tests/messages-routing.test.ts` for Anthropic messages, `bun test tests/model-config.test.ts` for model metadata, and `bun test tests/request-signal-regression.test.ts` for inbound request-signal regressions
-- **Daemon commands:**
-  `bun run ./src/main.ts start -d` (background), `stop`, `restart`, `status`, `logs`, `enable`, `disable`
+- **Background service commands:**
+  `bun run ./src/main.ts enable` installs a native systemd/launchd/Task Scheduler service that runs foreground `start`; on Linux this requires systemd user lingering so the service can start after boot before login. `stop`, `restart`, `status`, and `logs` prefer the native service and fall back to the legacy app-managed daemon. `bun run ./src/main.ts start -d` remains a compatibility daemon path.
 - **Other CLI subcommands:**
   `auth`, `check-usage`, and `debug`
 - **Live Copilot capability probes:**

@@ -5,12 +5,13 @@ import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { readLastLogLines } from '~/daemon/log-file'
+import { loadInstalledNativeServiceCommands } from '~/daemon/native-service'
 import { PATHS } from '~/lib/paths'
 
 export const logs = defineCommand({
   meta: {
     name: 'logs',
-    description: 'Show daemon logs',
+    description: 'Show native background service or legacy daemon logs',
   },
   args: {
     follow: {
@@ -26,18 +27,23 @@ export const logs = defineCommand({
       description: 'Number of lines to show',
     },
   },
-  run({ args }) {
+  async run({ args }) {
+    const count = Number.parseInt(args.lines, 10)
+    const lineCount = Number.isFinite(count) ? count : 50
+    const nativeService = await loadInstalledNativeServiceCommands()
+    if (nativeService?.showAutoStartLogs({ follow: args.follow, lines: lineCount }))
+      return
+
     if (!fs.existsSync(PATHS.DAEMON_LOG)) {
       consola.info('No log file found')
       return
     }
 
     if (args.follow) {
-      followLogsWatch(Number.parseInt(args.lines, 10))
+      followLogsWatch(lineCount)
     }
     else {
-      const count = Number.parseInt(args.lines, 10)
-      const output = readLastLogLines(PATHS.DAEMON_LOG, Number.isFinite(count) ? count : 50)
+      const output = readLastLogLines(PATHS.DAEMON_LOG, lineCount)
       // eslint-disable-next-line no-console
       console.log(output)
     }

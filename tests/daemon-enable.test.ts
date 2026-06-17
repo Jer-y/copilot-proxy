@@ -1,7 +1,7 @@
 import type { DaemonConfig } from '../src/daemon/config'
 
 import { describe, expect, test } from 'bun:test'
-import { buildSupervisorStartArgs } from '../src/daemon/enable'
+import { buildServiceStartArgs } from '../src/daemon/enable'
 
 const baseConfig: DaemonConfig = {
   port: 4399,
@@ -14,12 +14,11 @@ const baseConfig: DaemonConfig = {
   proxyEnv: false,
 }
 
-describe('buildSupervisorStartArgs', () => {
-  test('builds minimal supervisor args', () => {
-    expect(buildSupervisorStartArgs('/tmp/main.js', baseConfig)).toEqual([
+describe('buildServiceStartArgs', () => {
+  test('builds minimal foreground start args', () => {
+    expect(buildServiceStartArgs('/tmp/main.js', baseConfig)).toEqual([
       '/tmp/main.js',
       'start',
-      '--_supervisor',
       '--port',
       '4399',
       '--host',
@@ -47,11 +46,10 @@ describe('buildSupervisorStartArgs', () => {
       githubToken: 'ghu_secret_should_not_be_in_args',
     }
 
-    const args = buildSupervisorStartArgs('/tmp/main.js', config)
+    const args = buildServiceStartArgs('/tmp/main.js', config)
     expect(args).toEqual([
       '/tmp/main.js',
       'start',
-      '--_supervisor',
       '--port',
       '4411',
       '--host',
@@ -74,5 +72,6 @@ describe('buildSupervisorStartArgs', () => {
     expect(args).not.toContain('--github-token')
     expect(args).not.toContain(config.githubToken!)
     expect(args).not.toContain('--show-token')
+    expect(args).not.toContain('--_supervisor')
   })
 })

@@ -51,8 +51,10 @@
 - **Token 可视化**：`--show-token` 显示 GitHub/Copilot token 便于调试。
 - **灵活认证**：支持交互式登录或直接传入 GitHub token，适用于 CI/CD。
 - **多账号类型**：支持个人、企业、组织三种 Copilot 账户类型。
-- **后台守护模式**：通过 `start -d` 将代理作为后台服务运行，支持崩溃自动恢复与指数退避重启。配合 `stop`、`restart`、`status`、`logs` 管理。
-- **跨平台开机自启**：通过 `enable`/`disable` 注册为系统自启动服务，支持 Linux（systemd）、macOS（launchd）和 Windows（任务计划程序）。
+- **原生后台服务**：通过 `enable`/`disable` 注册为系统自启动服务，支持 Linux（systemd）、macOS（launchd）和 Windows（任务计划程序）。安装了原生服务时，`stop`、`restart`、`status`、`logs` 会优先使用系统服务管理器。
+- **兼容守护模式**：`start -d` 仍可作为应用自管后台模式使用，适合不想安装原生服务的兼容场景。
+
+在 Linux 上，`enable` 会安装 user systemd 服务，并要求开启 systemd user lingering，这样服务才能在系统启动后、用户尚未登录时自动拉起。如果无法自动开启 lingering，请先执行 `sudo loginctl enable-linger "$USER"`，然后重试 `enable`。
 
 ## 前置要求
 
@@ -193,12 +195,12 @@ npx @jer-y/copilot-proxy@latest auth
 
 Copilot API 使用子命令结构，主要命令如下：
 
-- `start`：启动 Copilot API 服务（必要时会自动认证）。使用 `-d` 可作为后台守护进程运行。
-- `stop`：停止后台守护进程。
-- `restart`：使用已保存的配置重启后台守护进程。
-- `status`：查看守护进程状态（PID、端口、启动时间）。
-- `logs`：查看守护进程日志。使用 `-f` 实时跟踪。
-- `enable`：注册为系统自启动服务（systemd / launchd / 任务计划程序）。
+- `start`：以前台方式启动 Copilot API 服务（必要时会自动认证）。`-d` 仅用于兼容的应用自管后台守护进程。
+- `stop`：停止已安装的原生服务；如果没有原生服务，则回退到旧守护进程。
+- `restart`：重启已安装的原生服务；如果没有原生服务，则使用已保存配置回退重启旧守护进程。
+- `status`：查看原生服务状态；如果没有原生服务，则回退查看旧守护进程状态（PID、端口、启动时间）。
+- `logs`：查看原生服务日志；如果当前平台不支持或没有原生服务，则回退查看旧守护进程日志。使用 `-f` 实时跟踪。
+- `enable`：注册为原生系统自启动服务（systemd / launchd / 任务计划程序），服务中运行前台 `start`。Linux 需要 systemd user lingering 才能在未登录时启动。
 - `disable`：移除自启动服务注册。
 - `auth`：仅进行 GitHub 认证，不启动服务，常用于生成 `--github-token`（CI/CD 场景）。
 - `check-usage`：直接查看 Copilot 使用量/配额（无需启动服务）。
@@ -224,7 +226,7 @@ Copilot API 使用子命令结构，主要命令如下：
 | --claude-code  | 生成 Claude Code 配置命令                                               | false       | -c   |
 | --show-token   | 在获取/刷新时显示 GitHub/Copilot token                                 | false       | 无   |
 | --proxy-env    | 从环境变量初始化代理（HTTP_PROXY/HTTPS_PROXY 等）                      | false       | 无   |
-| --daemon       | 作为后台守护进程运行，支持崩溃自动恢复                                  | false       | -d   |
+| --daemon       | 作为兼容的应用自管后台守护进程运行                                      | false       | -d   |
 
 `自动*` 表示在 Node.js 运行时，如果没有显式覆盖，发往 `githubcopilot.com` 的请求会默认使用 `900000ms` 响应头 timeout、`900000ms` 响应体 timeout 和 `30000ms` 建连 timeout。其他域名仍沿用 Node/undici 默认值，除非你显式传参覆盖。
 
@@ -346,32 +348,35 @@ npx @jer-y/copilot-proxy@latest start --proxy-env
 # 针对较慢模型启动拉长 upstream timeout
 npx @jer-y/copilot-proxy@latest start --headers-timeout-ms 600000 --body-timeout-ms 600000
 
-# 后台守护进程模式启动
-npx @jer-y/copilot-proxy@latest start -d
+# 安装非交互式原生服务前先完成认证
+npx @jer-y/copilot-proxy@latest auth
 
-# 指定端口 + GitHub token 启动守护进程
-npx @jer-y/copilot-proxy@latest start -d --port 8080 --github-token ghp_YOUR_TOKEN
+# 仅 Linux：如果 enable 无法自动开启未登录启动能力，先手动开启 lingering
+sudo loginctl enable-linger "$USER"
 
-# 查看守护进程状态
+# 注册并启动原生开机自启服务（systemd / launchd / 任务计划程序）
+npx @jer-y/copilot-proxy@latest enable
+
+# 查看服务状态
 npx @jer-y/copilot-proxy@latest status
 
-# 查看日志（最后 50 行）
+# 查看服务日志（最后 50 行）
 npx @jer-y/copilot-proxy@latest logs
 
-# 实时跟踪日志
+# 实时跟踪服务日志
 npx @jer-y/copilot-proxy@latest logs -f
 
-# 重启守护进程
+# 重启服务
 npx @jer-y/copilot-proxy@latest restart
 
-# 停止守护进程
+# 停止服务
 npx @jer-y/copilot-proxy@latest stop
-
-# 注册为开机自启服务（systemd / launchd / 任务计划程序）
-npx @jer-y/copilot-proxy@latest enable
 
 # 移除开机自启
 npx @jer-y/copilot-proxy@latest disable
+
+# 兼容的应用自管守护模式仍可使用
+npx @jer-y/copilot-proxy@latest start -d
 ```
 
 ## 使用用量面板

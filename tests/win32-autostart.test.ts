@@ -3,7 +3,7 @@ import { buildTaskXml } from '../src/daemon/platform/win32'
 
 describe('buildTaskXml', () => {
   const execPath = 'C:\\Program Files\\nodejs\\node.exe'
-  const args = ['C:\\Users\\test\\.npm\\copilot-proxy\\main.js', 'start', '--_supervisor']
+  const args = ['C:\\Users\\test\\.npm\\copilot-proxy\\main.js', 'start', '--port', '4399']
 
   function getHeadlessXml() {
     return buildTaskXml(execPath, args, { useHeadlessConhost: true })
@@ -67,21 +67,34 @@ describe('buildTaskXml', () => {
 
   test('quotes arguments with spaces for CommandLineToArgvW', () => {
     const xml = getHeadlessXml()
-    // execPath has spaces ("C:\Program Files\..."), should be quoted in arguments
-    expect(xml).toContain('&quot;C:\\Program Files\\nodejs\\node.exe&quot;')
+    expect(xml).toContain('C:\\Program Files\\nodejs\\node.exe')
   })
 
   test('uses conhost --headless command when enabled', () => {
     const xml = getHeadlessXml()
     expect(xml).toContain('<Command>conhost.exe</Command>')
     expect(xml).toContain('--headless')
-    expect(xml).toContain('&quot;C:\\Program Files\\nodejs\\node.exe&quot;')
+    expect(xml).toContain('cmd.exe /d /s /c')
+    expect(xml).toContain('C:\\Program Files\\nodejs\\node.exe')
   })
 
-  test('falls back to direct command when headless is disabled', () => {
+  test('falls back to cmd wrapper when headless is disabled', () => {
     const xml = getDirectXml()
-    expect(xml).toContain(`<Command>${execPath}</Command>`)
+    expect(xml).toContain('<Command>cmd.exe</Command>')
     expect(xml).not.toContain('<Command>conhost.exe</Command>')
+  })
+
+  test('redirects stdout and stderr to the daemon log', () => {
+    const xml = getDirectXml()
+    expect(xml).toContain('&gt;&gt;')
+    expect(xml).toContain('daemon.log')
+    expect(xml).toContain('2&gt;&amp;1')
+  })
+
+  test('does not escape inner quotes with backslashes for cmd /s /c', () => {
+    const xml = getDirectXml()
+    expect(xml).toContain('/d /s /c &quot;&quot;C:\\Program Files\\nodejs\\node.exe&quot;')
+    expect(xml).not.toContain('\\&quot;')
   })
 
   test('does not contain DisallowStartOnRemoteAppSession (requires v1.3+)', () => {

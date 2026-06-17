@@ -3,13 +3,15 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 
 import consola from 'consola'
-import { loadDaemonConfig } from '~/daemon/config'
+import { DEFAULT_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
+import { loadInstalledNativeServiceCommands } from '~/daemon/native-service'
+import { isDaemonRunning } from '~/daemon/pid'
+import { stopDaemon } from '~/daemon/stop'
 
-export function buildSupervisorStartArgs(scriptPath: string, config: DaemonConfig): string[] {
+export function buildServiceStartArgs(scriptPath: string, config: DaemonConfig): string[] {
   const args = [
     scriptPath,
     'start',
-    '--_supervisor',
     '--port',
     String(config.port),
     '--host',
@@ -44,19 +46,18 @@ export const enable = defineCommand({
     description: 'Register as auto-start service',
   },
   async run() {
-    const config = loadDaemonConfig()
-    if (!config) {
-      consola.error('No daemon config found. Start the daemon first with `start -d`')
-      process.exit(1)
-    }
+    const savedConfig = loadDaemonConfig()
+    const config = savedConfig ?? { ...DEFAULT_SERVICE_CONFIG }
+    if (!savedConfig)
+      consola.info('No legacy daemon config found. Using default native service config.')
     if (config.showToken) {
-      consola.error('Cannot enable auto-start while --show-token is persisted in daemon config. Restart the daemon without --show-token first.')
+      consola.error('Cannot enable auto-start while --show-token is persisted in the legacy daemon config. Save the config again without --show-token first.')
       process.exit(1)
     }
 
     const execPath = process.argv[0]
     const scriptPath = process.argv[1]
-    const args = buildSupervisorStartArgs(scriptPath, config)
+    const args = buildServiceStartArgs(scriptPath, config)
 
     let success = false
     const { platform } = process
@@ -78,6 +79,25 @@ export const enable = defineCommand({
     }
 
     if (!success) {
+      process.exit(1)
+    }
+
+    const nativeService = await loadInstalledNativeServiceCommands()
+    if (!nativeService) {
+      consola.warn('Auto-start service was installed, but no native service controller was detected for this platform.')
+      return
+    }
+
+    const daemon = isDaemonRunning()
+    if (daemon.running) {
+      consola.info('Stopping existing app-managed daemon before starting the native service...')
+      if (!stopDaemon()) {
+        consola.error('Cannot start native service: failed to stop existing app-managed daemon')
+        process.exit(1)
+      }
+    }
+
+    if (!nativeService.restartAutoStartService()) {
       process.exit(1)
     }
   },

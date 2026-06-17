@@ -2,14 +2,19 @@ import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { loadDaemonConfig } from '~/daemon/config'
+import { loadInstalledNativeServiceCommands } from '~/daemon/native-service'
 import { isDaemonRunning, readPid } from '~/daemon/pid'
 
 export const status = defineCommand({
   meta: {
     name: 'status',
-    description: 'Show daemon status',
+    description: 'Show native background service or legacy daemon status',
   },
-  run() {
+  async run() {
+    const nativeService = await loadInstalledNativeServiceCommands()
+    if (nativeService?.showAutoStartStatus())
+      return
+
     const daemon = isDaemonRunning()
     if (!daemon.running) {
       consola.info('Daemon is not running')
