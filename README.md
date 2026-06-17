@@ -40,9 +40,9 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) APIs, with native Claude `/v1/messages` passthrough when the upstream supports it.
-- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for native Responses models such as `gpt-5`, `gpt-5.4`, `gpt-5.5`, `gpt-5.3-codex`, `o3-mini`, and `o4-mini`. Claude models are also reachable via `/v1/responses` through Anthropic Messages translation.
+- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for Copilot models that expose the Responses backend. Claude models are also reachable via `/v1/responses` through Anthropic Messages translation.
 - **Codex Ready**: Works with OpenAI Codex CLI/SDK by pointing its base URL to this proxy.
-- **Model-Aware Routing and Translation**: Requests are routed directly when the requested client API is supported; otherwise only `/v1/messages` and `/responses` may translate to each other. The proxy does not translate to or from `/chat/completions`. Also applies Claude prompt caching (`copilot_cache_control`), preserves adaptive-thinking / `output_config.effort` compatibility, and normalizes model names (e.g., `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`).
+- **Model-Aware Routing and Translation**: Requests are routed directly when the requested client API is supported; otherwise only `/v1/messages` and `/responses` may translate to each other. The proxy does not translate to or from `/chat/completions`. Also applies Claude prompt caching (`copilot_cache_control`), preserves adaptive-thinking / `output_config.effort` compatibility, and normalizes provider-specific model IDs when Copilot expects a different upstream name.
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
@@ -280,7 +280,7 @@ These endpoints mimic the OpenAI API structure.
 
 ### OpenAI Responses API Endpoint
 
-This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format. Native Responses models (GPT-5 family, Codex, etc.) are forwarded directly upstream. Claude models are served by translating the request into the Anthropic Messages API.
+This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format. Models backed by Copilot's Responses surface are forwarded directly upstream. Claude models are served by translating the request into the Anthropic Messages API.
 
 | Endpoint              | Method | Description                                                              |
 | --------------------- | ------ | ------------------------------------------------------------------------ |
@@ -288,7 +288,7 @@ This endpoint supports the [OpenAI Responses API](https://platform.openai.com/do
 
 ### Anthropic Compatible Endpoints
 
-These endpoints are designed to be compatible with the Anthropic Messages API. Claude models use Copilot's native `/v1/messages` surface as a passthrough. GPT-5 / Codex models are served by translating Anthropic Messages into the Responses API.
+These endpoints are designed to be compatible with the Anthropic Messages API. Claude models use Copilot's native `/v1/messages` surface as a passthrough. Responses-backed non-Claude models are served by translating Anthropic Messages into the Responses API.
 
 | Endpoint                         | Method | Description                                                  |
 | -------------------------------- | ------ | ------------------------------------------------------------ |

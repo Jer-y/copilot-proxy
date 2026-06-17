@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -48,6 +50,9 @@ jobs:
 
       - name: Build
         run: bun run build
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
 
       - run: bunx changelogithub
         env:

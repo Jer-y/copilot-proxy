@@ -1,15 +1,15 @@
 {
   "name": "@jer-y/copilot-proxy",
   "type": "module",
-  "version": "0.7.13",
+  "version": "0.7.14",
   "description": "Turn GitHub Copilot into an OpenAI/Anthropic-compatible server with Claude Code and Codex support.",
   "author": "jer-y",
-  "homepage": "https://github.com/jer-y/copilot-proxy",
+  "homepage": "https://github.com/Jer-y/copilot-proxy",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jer-y/copilot-proxy.git"
+    "url": "git+https://github.com/Jer-y/copilot-proxy.git"
   },
-  "bugs": "https://github.com/jer-y/copilot-proxy/issues",
+  "bugs": "https://github.com/Jer-y/copilot-proxy/issues",
   "keywords": [
     "proxy",
     "github-copilot",
@@ -30,7 +30,7 @@
     "lint:all": "eslint --cache .",
     "prepack": "npm run build",
     "prepare": "test -d .git && npx simple-git-hooks || true",
-    "release": "bumpp && npm publish --access public",
+    "release": "bumpp",
     "start": "NODE_ENV=production bun run ./src/main.ts start",
     "test:live:copilot": "bun test tests/live/copilot-capabilities.test.ts",
     "typecheck": "tsc"

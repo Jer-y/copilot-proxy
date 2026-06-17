@@ -40,9 +40,9 @@
 ## 功能特性
 
 - **OpenAI & Anthropic 兼容**：提供 OpenAI 兼容端点（`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`）与 Anthropic 兼容端点（`/v1/messages`），并在上游支持时优先走 Claude 原生 `/v1/messages`。
-- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 `gpt-5`、`gpt-5.4`、`gpt-5.5`、`gpt-5.3-codex`、`o3-mini`、`o4-mini` 等原生 Responses 模型；Claude 模型也可通过 Anthropic Messages 翻译在 `/v1/responses` 上调用。
+- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于当前由 Copilot 暴露 Responses 后端的模型；Claude 模型也可通过 Anthropic Messages 翻译在 `/v1/responses` 上调用。
 - **Codex 可用**：将 OpenAI Codex CLI/SDK 的 base URL 指向本代理即可使用。
-- **模型感知路由与翻译**：请求协议受模型支持时直通；否则仅 `/v1/messages` 与 `/responses` 之间可互译。代理不会与 `/chat/completions` 做互译。同时自动应用 Claude 提示缓存（`copilot_cache_control`），保留 `adaptive thinking` / `output_config.effort` 兼容，以及模型名归一化（如 `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`）。
+- **模型感知路由与翻译**：请求协议受模型支持时直通；否则仅 `/v1/messages` 与 `/responses` 之间可互译。代理不会与 `/chat/completions` 做互译。同时自动应用 Claude 提示缓存（`copilot_cache_control`），保留 `adaptive thinking` / `output_config.effort` 兼容，并在 Copilot 上游需要不同模型名时归一化 provider-specific 模型 ID。
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。
@@ -274,7 +274,7 @@ CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http:
 
 ### OpenAI Responses API 端点
 
-支持 OpenAI Responses API（`/v1/responses`）。原生 Responses 模型（GPT-5 系、Codex 等）请求会直接转发到上游；Claude 模型通过翻译为 Anthropic Messages 提供服务。
+支持 OpenAI Responses API（`/v1/responses`）。由 Copilot Responses surface 支持的模型会直接转发到上游；Claude 模型通过翻译为 Anthropic Messages 提供服务。
 
 | 端点               | 方法 | 说明                                                   |
 | ------------------ | ---- | ------------------------------------------------------ |
@@ -282,7 +282,7 @@ CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http:
 
 ### Anthropic 兼容端点
 
-这些端点与 Anthropic Messages API 兼容。Claude 模型走 Copilot 原生 `/v1/messages` 直通；GPT-5 / Codex 系通过将 Anthropic Messages 翻译到 Responses API 提供服务。
+这些端点与 Anthropic Messages API 兼容。Claude 模型走 Copilot 原生 `/v1/messages` 直通；其他由 Responses 后端支持的模型通过将 Anthropic Messages 翻译到 Responses API 提供服务。
 
 | 端点                            | 方法 | 说明                                         |
 | ------------------------------- | ---- | -------------------------------------------- |
