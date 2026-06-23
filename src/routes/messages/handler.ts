@@ -21,6 +21,7 @@ import {
   sanitizeAnthropicBetaHeader,
 } from './model-normalization'
 import {
+  convertEnabledThinkingToAdaptiveForCopilot,
   createAnthropicMessagesWithThinkingSignatureRetry,
   normalizeAdaptiveThinkingForCopilot,
   overrideAnthropicResponseModel,
@@ -79,6 +80,7 @@ export async function handleCompletion(c: Context) {
     }
   }
 
+  convertEnabledThinkingToAdaptiveForCopilot(anthropicPayload)
   normalizeAdaptiveThinkingForCopilot(anthropicPayload)
 
   const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {

@@ -152,6 +152,81 @@ export function normalizeAdaptiveThinkingForCopilot(
   }
 }
 
+/**
+ * Models whose Copilot upstream rejects the legacy `thinking.type='enabled'`
+ * schema and requires the newer `thinking.type='adaptive'` + `output_config.effort`.
+ *
+ * The Anthropic SDK still emits `thinking.enabled` by default for these models,
+ * so without this bridge every Claude Code request to opus 4.7 returns 400:
+ *   "***.***.enabled" is not supported for this model.
+ *   Use "***.***.adaptive" and "output_config.effort"...
+ *
+ * Add new model name fragments here as upstream extends the requirement.
+ */
+const MODELS_REQUIRING_ADAPTIVE_THINKING: ReadonlyArray<string> = [
+  'claude-opus-4-7',
+  'claude-opus-4.7',
+]
+
+function modelRequiresAdaptiveThinking(model: string): boolean {
+  return MODELS_REQUIRING_ADAPTIVE_THINKING.some(prefix => model.startsWith(prefix))
+}
+
+/**
+ * Map a legacy `thinking.budget_tokens` integer to the discrete `output_config.effort`
+ * value Copilot expects. Boundaries chosen to roughly preserve the relative
+ * thinking budget Anthropic SDK emits for each effort tier (low ≈ 1k–5k,
+ * medium ≈ 5k–16k, high ≈ 16k–32k, xhigh ≥ 32k).
+ */
+function budgetTokensToEffort(
+  budget: unknown,
+): 'low' | 'medium' | 'high' | 'xhigh' {
+  if (typeof budget !== 'number' || !Number.isFinite(budget))
+    return 'medium'
+  if (budget < 5000)
+    return 'low'
+  if (budget < 16000)
+    return 'medium'
+  if (budget < 32000)
+    return 'high'
+  return 'xhigh'
+}
+
+/**
+ * Bridge legacy `thinking.type='enabled'` (still emitted by Anthropic SDK) to
+ * the `adaptive` schema required by Copilot upstream for opus 4.7.
+ *
+ * No-op for models that still accept `enabled` (e.g. 4.6) so behaviour and
+ * billing for existing traffic is unchanged. Mutates payload in place.
+ */
+export function convertEnabledThinkingToAdaptiveForCopilot(
+  payload: AnthropicMessagesPayload,
+): void {
+  if (!payload.thinking || typeof payload.thinking !== 'object' || !('type' in payload.thinking)) {
+    return
+  }
+  if (payload.thinking.type !== 'enabled') {
+    return
+  }
+  if (!modelRequiresAdaptiveThinking(payload.model)) {
+    return
+  }
+
+  const original = payload.thinking as Record<string, unknown>
+  const effort = budgetTokensToEffort(original.budget_tokens)
+
+  consola.debug(
+    `Converting thinking.enabled → thinking.adaptive for ${payload.model} `
+    + `(budget_tokens=${original.budget_tokens ?? 'unset'} → effort=${effort})`,
+  )
+
+  payload.thinking = { type: 'adaptive' }
+  payload.output_config = {
+    ...(payload.output_config ?? {}),
+    effort,
+  }
+}
+
 export async function prepareAnthropicPayloadForTranslatedBackends(
   payload: AnthropicMessagesPayload,
 ): Promise<void> {

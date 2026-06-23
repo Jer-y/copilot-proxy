@@ -3,6 +3,7 @@ import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 import { describe, expect, test } from 'bun:test'
 
 import {
+  convertEnabledThinkingToAdaptiveForCopilot,
   normalizeAdaptiveThinkingForCopilot,
   sanitizeForCopilotBackend,
   stripAssistantThinkingBlocks,
@@ -115,6 +116,106 @@ describe('normalizeAdaptiveThinkingForCopilot', () => {
       type: 'adaptive',
       display: 'omitted',
     })
+  })
+})
+
+describe('convertEnabledThinkingToAdaptiveForCopilot', () => {
+  test('converts thinking.enabled → adaptive + maps budget_tokens to effort for opus 4.7', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4-7',
+      thinking: { type: 'enabled', budget_tokens: 8000 },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toEqual({ type: 'adaptive' })
+    expect(payload.output_config?.effort).toBe('medium')
+  })
+
+  test('also matches the [1m] context variant', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4-7[1m]',
+      thinking: { type: 'enabled', budget_tokens: 20000 },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toEqual({ type: 'adaptive' })
+    expect(payload.output_config?.effort).toBe('high')
+  })
+
+  test('also matches the dotted name (claude-opus-4.7)', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4.7-xhigh',
+      thinking: { type: 'enabled', budget_tokens: 40000 },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toEqual({ type: 'adaptive' })
+    expect(payload.output_config?.effort).toBe('xhigh')
+  })
+
+  test('defaults to "medium" effort when budget_tokens is missing', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4-7',
+      thinking: { type: 'enabled' },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toEqual({ type: 'adaptive' })
+    expect(payload.output_config?.effort).toBe('medium')
+  })
+
+  test('preserves existing output_config.format when adding effort', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4-7',
+      thinking: { type: 'enabled', budget_tokens: 2000 },
+      output_config: {
+        format: { type: 'json_object' },
+      },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.output_config).toEqual({
+      format: { type: 'json_object' },
+      effort: 'low',
+    })
+  })
+
+  test('leaves opus 4.6 untouched (Copilot still accepts thinking.enabled there)', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4.6',
+      thinking: { type: 'enabled', budget_tokens: 4096 },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 })
+    expect(payload.output_config).toBeUndefined()
+  })
+
+  test('no-op when thinking is absent', () => {
+    const payload = makePayload({ model: 'claude-opus-4-7' })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toBeUndefined()
+    expect(payload.output_config).toBeUndefined()
+  })
+
+  test('no-op when thinking is already adaptive', () => {
+    const payload = makePayload({
+      model: 'claude-opus-4-7',
+      thinking: { type: 'adaptive' },
+    })
+
+    convertEnabledThinkingToAdaptiveForCopilot(payload)
+
+    expect(payload.thinking).toEqual({ type: 'adaptive' })
+    expect(payload.output_config).toBeUndefined()
   })
 })
 
