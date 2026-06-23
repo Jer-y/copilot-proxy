@@ -817,14 +817,14 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     }),
   },
   {
-    id: 'responses-prompt-cache-retention-in-memory',
-    title: 'Responses accepts prompt_cache_retention=in_memory',
+    id: 'responses-prompt-cache-retention-24h',
+    title: 'Responses accepts prompt_cache_retention=24h',
     tier: 'optional',
     endpoint: 'responses',
     candidateFix: 'Forward prompt_cache_retention only if Copilot accepts the official cache-retention field.',
-    candidateMapping: 'OpenAI Responses prompt_cache_retention=in_memory -> Copilot /responses',
-    rationale: 'The official Responses schema exposes prompt cache retention separately from prompt_cache_key.',
-    expectation: 'support_or_clean_unsupported',
+    candidateMapping: 'OpenAI Responses prompt_cache_retention=24h -> Copilot /responses',
+    rationale: 'The official Responses schema exposes prompt cache retention separately from prompt_cache_key, and GPT-5.5 requires 24h extended prompt caching.',
+    expectation: 'must_support',
     isUnsupported: buildUnsupportedMatcher([
       'prompt_cache_retention',
       'cache retention',
@@ -832,7 +832,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     ]),
     buildPayload: config => ({
       ...buildBasicResponsesPayload(config),
-      prompt_cache_retention: 'in_memory',
+      prompt_cache_retention: '24h',
     }),
   },
   {
