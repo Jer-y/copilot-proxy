@@ -32,6 +32,7 @@ const sampleConfig: DaemonConfig = {
   rateLimitWait: false,
   showToken: false,
   proxyEnv: false,
+  normalizeOpenAIResponsesItemIds: false,
 }
 
 describe('saveDaemonConfig / loadDaemonConfig', () => {
@@ -91,6 +92,21 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify(oldConfig))
 
     expect(loadDaemonConfig()).toEqual(sampleConfig)
+  })
+
+  test('defaults old config files without normalizeOpenAIResponsesItemIds to false', () => {
+    const oldConfig: Record<string, unknown> = { ...sampleConfig }
+    delete oldConfig.normalizeOpenAIResponsesItemIds
+    fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify(oldConfig))
+
+    expect(loadDaemonConfig()).toEqual(sampleConfig)
+  })
+
+  test('returns null for config with non-boolean normalizeOpenAIResponsesItemIds', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, normalizeOpenAIResponsesItemIds: 'yes' }))
+    expect(loadDaemonConfig()).toBeNull()
   })
 
   test('returns null for config with invalid host', () => {

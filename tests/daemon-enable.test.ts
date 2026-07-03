@@ -14,6 +14,7 @@ const baseConfig: DaemonConfig = {
   rateLimitWait: false,
   showToken: false,
   proxyEnv: false,
+  normalizeOpenAIResponsesItemIds: false,
 }
 
 describe('buildServiceStartArgs', () => {
@@ -81,6 +82,19 @@ describe('buildServiceStartArgs', () => {
     expect(args).not.toContain(config.githubToken!)
     expect(args).not.toContain('--show-token')
     expect(args).not.toContain('--_supervisor')
+  })
+
+  test('emits --normalize-openai-responses-item-ids when enabled', () => {
+    const args = buildServiceStartArgs('/tmp/main.js', {
+      ...baseConfig,
+      normalizeOpenAIResponsesItemIds: true,
+    })
+    expect(args).toContain('--normalize-openai-responses-item-ids')
+  })
+
+  test('omits --normalize-openai-responses-item-ids when disabled', () => {
+    const args = buildServiceStartArgs('/tmp/main.js', baseConfig)
+    expect(args).not.toContain('--normalize-openai-responses-item-ids')
   })
 })
 

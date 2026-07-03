@@ -140,7 +140,12 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
   forwardUpstreamHeaders(c, result.headers)
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
-    const normalizeItemIds = createResponsesItemIdNormalizer()
+    // Opt-in (off by default): when enabled, stabilize per-item ids so every
+    // event for a given output_index carries the first-seen id. When disabled,
+    // upstream chunks are forwarded verbatim.
+    const normalizeItemIds = state.normalizeOpenAIResponsesItemIds
+      ? createResponsesItemIdNormalizer()
+      : null
     let completed = false
     let terminalSeen = false
     let nextSequenceNumber = 0
@@ -149,7 +154,7 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
       for await (const chunk of streamBody) {
         if (stream.aborted)
           break
-        const normalized = normalizeItemIds.rewrite(chunk)
+        const normalized = normalizeItemIds ? normalizeItemIds.rewrite(chunk) : chunk
         if (consola.level >= 4) {
           consola.debug('Responses streaming chunk summary:', summarizeSSEMessage(normalized as SSEMessage))
         }

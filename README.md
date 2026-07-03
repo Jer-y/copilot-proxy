@@ -277,6 +277,7 @@ The following command line options are available for the `start` command:
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
+| --normalize-openai-responses-item-ids | Stabilize per-item ids in the OpenAI `/responses` stream by rewriting each event's `id`/`item_id` to the first-seen id per `output_index`. Off by default (ids are forwarded verbatim); enable for spec-strict clients (e.g. Vercel AI SDK, opencode) | false | none  |
 | --daemon       | Run as a legacy app-managed background daemon                                 | false      | -d    |
 
 `auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.

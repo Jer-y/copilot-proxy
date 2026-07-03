@@ -35,6 +35,7 @@ export interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  normalizeOpenAIResponsesItemIds: boolean
   exitOnPortInUse?: boolean
   nativeService?: boolean
 }
@@ -305,6 +306,12 @@ export const start = defineCommand({
       default: false,
       description: 'Initialize proxy from environment variables',
     },
+    'normalize-openai-responses-item-ids': {
+      type: 'boolean',
+      default: false,
+      description:
+        'Stabilize per-item ids within a single OpenAI /responses stream by rewriting each event\'s id/item_id to the first-seen id per output_index. Off by default (forwards upstream ids verbatim); enable for spec-strict clients (e.g. Vercel AI SDK, opencode) that require stable item ids.',
+    },
     'daemon': {
       alias: 'd',
       type: 'boolean',
@@ -420,6 +427,7 @@ export const start = defineCommand({
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
+        normalizeOpenAIResponsesItemIds: args['normalize-openai-responses-item-ids'],
       }
       const configResult = loadDaemonConfigWithRecovery(fallbackConfig)
 
@@ -495,6 +503,7 @@ export const start = defineCommand({
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
+        normalizeOpenAIResponsesItemIds: args['normalize-openai-responses-item-ids'],
       })
       return
     }
@@ -515,6 +524,7 @@ export const start = defineCommand({
       showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
       nativeService: args._service,
+      normalizeOpenAIResponsesItemIds: args['normalize-openai-responses-item-ids'],
     })
   },
 })

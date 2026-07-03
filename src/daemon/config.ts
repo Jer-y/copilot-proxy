@@ -20,6 +20,7 @@ export interface DaemonConfig {
   githubToken?: string
   showToken: boolean
   proxyEnv: boolean
+  normalizeOpenAIResponsesItemIds: boolean
 }
 
 const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise']
@@ -34,6 +35,7 @@ export const DEFAULT_SERVICE_CONFIG: DaemonConfig = {
   rateLimitWait: false,
   showToken: false,
   proxyEnv: false,
+  normalizeOpenAIResponsesItemIds: false,
 }
 
 export type DaemonConfigRecoveryReason = 'missing' | 'invalid' | 'unreadable'
@@ -79,6 +81,8 @@ export function mergeDaemonConfigWithExplicitFlags(
     merged.showToken = cliConfig.showToken
   if (wasCliOptionPassed(rawArgs, 'proxy-env', undefined, true))
     merged.proxyEnv = cliConfig.proxyEnv
+  if (wasCliOptionPassed(rawArgs, 'normalize-openai-responses-item-ids', undefined, true))
+    merged.normalizeOpenAIResponsesItemIds = cliConfig.normalizeOpenAIResponsesItemIds
 
   return merged
 }
@@ -211,6 +215,12 @@ function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | nul
   if (typeof data.showToken !== 'boolean')
     return null
   if (typeof data.proxyEnv !== 'boolean')
+    return null
+  // Backward compatibility: config files written before this flag existed omit
+  // it; default to false (opt-in) rather than rejecting the whole config.
+  if (data.normalizeOpenAIResponsesItemIds === undefined)
+    data.normalizeOpenAIResponsesItemIds = false
+  if (typeof data.normalizeOpenAIResponsesItemIds !== 'boolean')
     return null
   if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400))
     return null

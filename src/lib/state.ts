@@ -12,6 +12,13 @@ export interface State {
   rateLimitWait: boolean
   showToken: boolean
 
+  /**
+   * Stabilize per-item ids within a single OpenAI `/responses` stream. Off by
+   * default so the endpoint forwards upstream ids verbatim; opt in via
+   * `--normalize-openai-responses-item-ids`.
+   */
+  normalizeOpenAIResponsesItemIds: boolean
+
   // Rate limiting configuration
   rateLimitSeconds?: number
   lastRequestTimestamp?: number
@@ -22,4 +29,5 @@ export const state: State = {
   manualApprove: false,
   rateLimitWait: false,
   showToken: false,
+  normalizeOpenAIResponsesItemIds: false,
 }

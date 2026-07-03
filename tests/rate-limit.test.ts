@@ -11,6 +11,7 @@ function makeState(overrides?: Partial<State>): State {
     manualApprove: false,
     rateLimitWait: false,
     showToken: false,
+    normalizeOpenAIResponsesItemIds: false,
     ...overrides,
   }
 }

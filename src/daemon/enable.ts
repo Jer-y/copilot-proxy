@@ -46,6 +46,8 @@ export function buildServiceStartArgs(scriptPath: string, config: DaemonConfig):
     args.push('--connect-timeout-ms', String(config.connectTimeoutMs))
   if (config.proxyEnv)
     args.push('--proxy-env')
+  if (config.normalizeOpenAIResponsesItemIds)
+    args.push('--normalize-openai-responses-item-ids')
 
   return args
 }

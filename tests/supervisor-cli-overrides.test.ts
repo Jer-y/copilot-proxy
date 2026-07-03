@@ -17,6 +17,7 @@ const savedConfig: DaemonConfig = {
   githubToken: 'ghu_saved',
   showToken: false,
   proxyEnv: false,
+  normalizeOpenAIResponsesItemIds: false,
 }
 
 describe('mergeDaemonConfigWithExplicitFlags', () => {
@@ -37,6 +38,35 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
     expect(merged.accountType).toBe(savedConfig.accountType)
   })
 
+  test('lets explicit --normalize-openai-responses-item-ids override saved daemon config in supervisor mode', () => {
+    const cliConfig: DaemonConfig = {
+      ...savedConfig,
+      normalizeOpenAIResponsesItemIds: true,
+    }
+
+    const merged = mergeDaemonConfigWithExplicitFlags(
+      savedConfig,
+      cliConfig,
+      ['start', '--_supervisor', '--normalize-openai-responses-item-ids'],
+    )
+
+    expect(merged.normalizeOpenAIResponsesItemIds).toBe(true)
+    expect(merged.port).toBe(savedConfig.port)
+  })
+
+  test('leaves saved normalizeOpenAIResponsesItemIds untouched when flag not passed', () => {
+    const savedWithNormalize: DaemonConfig = { ...savedConfig, normalizeOpenAIResponsesItemIds: true }
+    const cliConfig: DaemonConfig = { ...savedWithNormalize, normalizeOpenAIResponsesItemIds: false }
+
+    const merged = mergeDaemonConfigWithExplicitFlags(
+      savedWithNormalize,
+      cliConfig,
+      ['start', '--_supervisor', '--proxy-env'],
+    )
+
+    expect(merged.normalizeOpenAIResponsesItemIds).toBe(true)
+  })
+
   test('only applies values for flags that were explicitly passed', () => {
     const cliConfig: DaemonConfig = {
       port: 4411,
@@ -52,6 +82,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
       githubToken: 'ghu_cli',
       showToken: true,
       proxyEnv: true,
+      normalizeOpenAIResponsesItemIds: false,
     }
 
     const merged = mergeDaemonConfigWithExplicitFlags(
@@ -82,6 +113,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
       githubToken: 'ghu_cli',
       showToken: true,
       proxyEnv: true,
+      normalizeOpenAIResponsesItemIds: false,
     }
 
     const merged = mergeDaemonConfigWithExplicitFlags(
@@ -126,6 +158,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
       githubToken: 'ghu_cli',
       showToken: true,
       proxyEnv: true,
+      normalizeOpenAIResponsesItemIds: false,
     })
   })
 })
