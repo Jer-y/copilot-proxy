@@ -25,6 +25,7 @@ import {
   translateAnthropicResponseToResponses,
   translateAnthropicStreamEventToResponses,
 } from '~/lib/translation'
+import { createResponsesItemIdNormalizer } from '~/lib/translation/normalize-responses-item-ids'
 import { translateResponsesRequestToAnthropic } from '~/lib/translation/responses-to-anthropic'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { readJsonBodyText, validateBody } from '~/lib/validate'
@@ -139,6 +140,7 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
   forwardUpstreamHeaders(c, result.headers)
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
+    const normalizeItemIds = createResponsesItemIdNormalizer()
     let completed = false
     let terminalSeen = false
     let nextSequenceNumber = 0
@@ -147,10 +149,11 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
       for await (const chunk of streamBody) {
         if (stream.aborted)
           break
+        const normalized = normalizeItemIds.rewrite(chunk)
         if (consola.level >= 4) {
-          consola.debug('Responses streaming chunk summary:', summarizeSSEMessage(chunk as SSEMessage))
+          consola.debug('Responses streaming chunk summary:', summarizeSSEMessage(normalized as SSEMessage))
         }
-        const message = chunk as SSEMessage
+        const message = normalized as SSEMessage
         nextSequenceNumber = getNextResponsesSequenceNumber(message, nextSequenceNumber)
         terminalSeen ||= isTerminalResponsesSSEMessage(message)
         await stream.writeSSE(message)
