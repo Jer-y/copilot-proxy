@@ -396,7 +396,7 @@ import { createResponsesItemIdNormalizer } from '~/lib/translation/normalize-res
 
 In `handleViaResponses`, replace this block:
 
-```typescript
+```text
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
     let completed = false
@@ -416,7 +416,7 @@ In `handleViaResponses`, replace this block:
 
 with:
 
-```typescript
+```text
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
     const normalizeItemIds = createResponsesItemIdNormalizer()
@@ -541,7 +541,8 @@ const result = streamText({
 })
 
 for await (const part of result.fullStream) {
-  if (part.type === 'error') throw part.error
+  if (part.type === 'error')
+    throw part.error
 }
 console.log('OK: no summaryParts crash; text =', await result.text)
 ```

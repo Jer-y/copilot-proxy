@@ -75,6 +75,11 @@ export function createResponsesItemIdNormalizer(): {
       case 'response.incomplete':
       case 'response.failed': {
         let changed = false
+        // The terminal event carries no per-item `output_index`, so we key each
+        // `output[]` entry by its array index, relying on the OpenAI ordering
+        // guarantee that `output[i]` corresponds to `output_index === i`. If
+        // Copilot ever reordered or gapped this array, an item's final id could
+        // be pinned to the wrong index's value.
         event.response.output.forEach((item, index) => {
           const stable = stableId(index, item.id)
           if (stable !== undefined && typeof item.id === 'string' && item.id !== stable) {

@@ -69,7 +69,7 @@ New module: **`src/lib/translation/normalize-responses-item-ids.ts`**, exporting
 
 ```ts
 export function createResponsesItemIdNormalizer(): {
-  rewrite(chunk: { event?: string, data?: string | null }): { event?: string, data?: string | null }
+  rewrite: (chunk: { event?: string, data?: string | null }) => { event?: string, data?: string | null }
 }
 ```
 
@@ -128,9 +128,11 @@ return streamSSE(c, async (stream) => {
   stream.onAbort(() => result.cancel?.('...'))
   try {
     for await (const chunk of streamBody) {
-      if (stream.aborted) break
+      if (stream.aborted)
+        break
       const normalized = normalizeItemIds.rewrite(chunk)
-      if (consola.level >= 4) consola.debug('Responses streaming chunk:', JSON.stringify(normalized))
+      if (consola.level >= 4)
+        consola.debug('Responses streaming chunk:', JSON.stringify(normalized))
       await stream.writeSSE(normalized as SSEMessage)
     }
     completed = !stream.aborted
