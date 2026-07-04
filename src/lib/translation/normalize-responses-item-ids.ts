@@ -53,8 +53,8 @@ export function createResponsesItemIdNormalizer(): {
 
     // Rule A — per-item events correlate to their item via a top-level
     // `output_index`. Pin the first-seen id for that index (in practice the
-    // `output_item.added` id, which is also the id id-keyed clients store), then
-    // overwrite `item.id` and/or `item_id` on every later event for the index.
+    // `output_item.added` id, which is also the id that id-keyed clients store),
+    // then overwrite `item.id` and/or `item_id` on every later event for the index.
     // This is structural, not an event-type allowlist, so the churning
     // `reasoning_summary_*` events — and any future id-bearing event — are
     // covered.
