@@ -62,6 +62,8 @@ export function buildServiceStartArgs(
     args.push('--proxy-env')
   if (instanceToken)
     args.push('--_instance-token', instanceToken)
+  if (config.codexAutoReviewModel !== undefined)
+    args.push('--codex-auto-review-model', config.codexAutoReviewModel)
 
   return args
 }

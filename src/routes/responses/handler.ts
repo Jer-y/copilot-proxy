@@ -7,6 +7,7 @@ import type { ResponsesPayload } from '~/services/copilot/create-responses'
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
+import { applyCodexAutoReviewAlias } from '~/lib/codex-auto-review-alias'
 import { isAbortError, JSONResponseError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import {
@@ -52,6 +53,7 @@ export async function handleResponses(c: Context) {
 
   await enforceManualApproval(state)
 
+  applyCodexAutoReviewAlias(payload, state.codexAutoReviewModel)
   const requestedModel = payload.model
   const effectiveModel = normalizeAnthropicModelName(requestedModel)
   const route = resolveRoute('responses', effectiveModel, throwInvalidResponsesRequest, {

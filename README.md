@@ -200,79 +200,175 @@ copilot-proxy                           private
 GitHub Copilot upstream
 ```
 
-1. Deploy and authenticate copilot-proxy on a network reachable only by New API, for example `http://copilot-proxy:4399`.
-2. Create an OpenAI-compatible or custom New API channel with base URL `http://copilot-proxy:4399/v1`. If the form requires an upstream key, use a placeholder; copilot-proxy authenticates to GitHub itself.
-3. Give clients only the New API base URL and New API keys. They do not need direct access to copilot-proxy, `/token`, or the persisted GitHub token.
+Recommended setup:
 
-Operational boundaries:
+1. Deploy and authenticate copilot-proxy first. Keep it reachable only from the New API host or container network, for example `http://copilot-proxy:4399`.
+2. Deploy New API following its own Docker/Compose guide.
+3. In New API, create an OpenAI-compatible or custom upstream channel that points to copilot-proxy's OpenAI-compatible base URL, for example `http://copilot-proxy:4399/v1`.
+4. Put any placeholder upstream key in New API if the channel form requires one. copilot-proxy authenticates to GitHub Copilot itself and does not need New API to forward a real upstream provider key.
+5. Give users New API API keys and the New API base URL. Clients should not need direct access to copilot-proxy, `/token`, or the persisted GitHub token.
 
-- Disable New API retries for upstream `403` and `429`. Failover through the same Copilot identity hits the same risk bucket and can amplify a restriction. copilot-proxy already performs one guarded token recovery and returns `503`, `Retry-After`, and `X-Copilot-Proxy-Recovery-State` while its recovery circuit is open.
-- Add a final identity-wide bound such as `--max-concurrency 4 --max-queue 50 --queue-timeout-ms 30000` in addition to New API's per-user limits. These are local starting points, not published GitHub limits.
-- If New API reaches the container as `copilot-proxy`, set `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy`; add only exact internal hostnames that are actually used.
-- Claude clients may use New API's Claude-compatible layer or a configured conversion route. For Codex catalog metadata, verify that New API preserves `/v1/models?client_version=...` query strings unchanged.
+When New API reaches the container using the `copilot-proxy` service name, set `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy` on copilot-proxy. Add only the exact internal hostnames clients actually use.
 
-## CLI and operations
+For Claude-compatible clients, use New API's Claude-compatible access layer if your deployment exposes it, or let New API convert/route to the OpenAI-compatible copilot-proxy channel according to your New API channel configuration. For Codex CLI, validate that your New API deployment forwards `/v1/models?client_version=...` query strings unchanged if you want Codex-compatible model catalog and context-window metadata; copilot-proxy supports that catalog path directly.
 
-Commands below assume a global install. For one-off use, prefix them with `npx @jer-y/copilot-proxy@latest` or the equivalent runner from [Quick start](#quick-start).
+This gives a practical "deploy once, access everywhere" layout: copilot-proxy concentrates the Copilot compatibility work in one place, while New API provides the shared access-control and API-key layer for all downstream clients.
 
-| Command | Purpose |
-| --- | --- |
-| `start` | Start in the foreground and authenticate when needed; `-d` selects the legacy app-managed daemon |
-| `auth` | Authenticate without starting; `--github-token` securely persists an existing token and exits |
-| `check-usage` | Show Copilot usage and quota without a running server |
-| `debug` | Show version, runtime, paths, and authentication status; `--json` emits JSON |
-| `enable` / `disable` | Install or remove the native systemd/launchd/Task Scheduler auto-start service |
-| `status` | Show native service status, or legacy daemon PID/port/start time as a fallback |
-| `logs` | Show service or legacy daemon logs; use `-f` to follow and `-n <lines>` to set the count |
-| `restart` / `stop` | Control the installed native service, or fall back to the legacy daemon |
+## Using with npx (or pnpm/bunx)
 
-Common recipes:
+You can run the project directly using npx:
 
-| Goal | Command |
-| --- | --- |
-| Custom listener and diagnostics | `copilot-proxy start --port 8080 --verbose` |
-| Business or enterprise route | `copilot-proxy start --account-type business` / `enterprise` |
-| Interactive request approval | `copilot-proxy start --manual` |
-| Minimum request interval | `copilot-proxy start --rate-limit 30 --wait` |
-| Bound shared concurrency | `copilot-proxy start --max-concurrency 4 --max-queue 50 --queue-timeout-ms 30000` |
-| Persist an existing token | `copilot-proxy auth --github-token ghp_YOUR_TOKEN_HERE`, then rerun without the secret |
-| Use configured proxy variables | `copilot-proxy start --proxy-env` |
-| Extend slow-start timeouts | `copilot-proxy start --headers-timeout-ms 600000 --body-timeout-ms 600000` |
-| Inspect usage or diagnostics | `copilot-proxy check-usage` / `copilot-proxy debug --json` |
+```sh
+npx @jer-y/copilot-proxy@latest start
+```
 
-<details>
-<summary>Full <code>start</code> option reference</summary>
+With options:
 
-| Option | Description | Default | Alias |
-| --- | --- | --- | --- |
-| `--port` | Port to listen on | `4399` | `-p` |
-| `--host` | Host/IP to bind; use `0.0.0.0` only when intentionally exposing the port | `127.0.0.1` | `-H` |
-| `--verbose` | Detailed diagnostics; treat logs as sensitive | `false` | `-v` |
-| `--account-type` | `individual`, `business`, or `enterprise` | `individual` | `-a` |
-| `--manual` | Approve each request in an interactive foreground TTY | `false` | none |
-| `--rate-limit` | Minimum seconds between requests | none | `-r` |
-| `--wait` | Wait instead of error when the rate limit is hit | `false` | `-w` |
-| `--max-concurrency` | Maximum concurrent Copilot upstream requests; omitted means disabled | none | none |
-| `--max-queue` | Requests waiting for a concurrency slot; `0` disables queueing | `50*` | none |
-| `--queue-timeout-ms` | Maximum queue wait; `0` disables waiting | `30000*` | none |
-| `--headers-timeout-ms` | Upstream response-header timeout; `0` disables it | `auto*` | none |
-| `--body-timeout-ms` | Upstream response-body timeout; `0` disables it | `auto*` | none |
-| `--connect-timeout-ms` | Upstream connect timeout; `0` disables it | `auto*` | none |
-| `--github-token` | Securely persist a GitHub token, then exit; rerun without this option | none | `-g` |
-| `--claude-code` | Generate a Claude Code launch command | `false` | `-c` |
-| `--show-token` | Print GitHub and Copilot tokens during fetch/refresh | `false` | none |
-| `--proxy-env` | Initialize proxy handling from environment variables | `false` | none |
-| `--daemon` | Use the legacy app-managed background daemon | `false` | `-d` |
+```sh
+npx @jer-y/copilot-proxy@latest start --port 8080
+```
 
-The `50*` and `30000*` queue defaults apply only after `--max-concurrency` enables the limiter. On Node.js, `auto*` uses built-in defaults of `900000ms` for response headers, `900000ms` for the response body, and `30000ms` for connection setup on requests to `githubcopilot.com`. Other origins retain Node/undici defaults unless explicitly overridden. See GitHub's [subscription-based network routing documentation](https://docs.github.com/en/enterprise-cloud@latest/copilot/managing-copilot/managing-github-copilot-in-your-organization/managing-access-to-github-copilot-in-your-organization/managing-github-copilot-access-to-your-organizations-network#configuring-copilot-subscription-based-network-routing-for-your-enterprise-or-organization) for business and enterprise account routing.
+For authentication only:
 
-`auth` also accepts `--verbose`, `--show-token`, `--github-token`, and `--proxy-env`. `debug` accepts `--json`; `logs` accepts `--follow`/`-f` and `--lines`/`-n`.
+```sh
+npx @jer-y/copilot-proxy@latest auth
+```
 
-</details>
+> Tip: If you prefer pnpm/bun/yarn, replace `npx` with `pnpm dlx`, `bunx`, or `yarn dlx`.
 
-### Native background service
+## Command Structure
 
-Use a stable global install or source checkout for a long-lived service:
+Copilot API now uses a subcommand structure with these main commands:
+
+- `start`: Start the Copilot API server in the foreground. This command will also handle authentication if needed. Use `-d` only for the legacy app-managed background daemon.
+- `stop`: Stop the installed native service, or fall back to the legacy daemon.
+- `restart`: Restart the installed native service, or fall back to the legacy daemon using saved configuration.
+- `status`: Show native service status, or fall back to legacy daemon status (PID, port, start time).
+- `logs`: View native service logs where supported, or fall back to legacy daemon logs. Use `-f` to follow in real time.
+- `enable`: Register the proxy as a native auto-start service (systemd/launchd/Task Scheduler) that runs foreground `start`. Linux requires systemd user lingering for logged-out startup.
+- `disable`: Remove the auto-start service registration.
+- `auth`: Run GitHub authentication flow without starting the server. In non-interactive environments, `--github-token` can persist an existing token once; it intentionally exits, after which you start again without the secret argument.
+- `check-usage`: Show your current GitHub Copilot usage and quota information directly in the terminal (no server required).
+- `debug`: Display diagnostic information including version, runtime details, file paths, and authentication status. Useful for troubleshooting and support.
+
+## Command Line Options
+
+### Start Command Options
+
+The following command line options are available for the `start` command:
+
+| Option         | Description                                                                   | Default    | Alias |
+| -------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
+| --port         | Port to listen on                                                             | 4399       | -p    |
+| --host         | Host/IP to bind to. Use `0.0.0.0` only when intentionally exposing the port    | 127.0.0.1  | -H    |
+| --verbose      | Enable detailed diagnostics; treat logs as sensitive                          | false      | -v    |
+| --account-type | Account type to use (individual, business, enterprise)                        | individual | -a    |
+| --manual       | Approve each request in an interactive foreground TTY                         | false      | none  |
+| --rate-limit   | Rate limit in seconds between requests                                        | none       | -r    |
+| --wait         | Wait instead of error when rate limit is hit                                  | false      | -w    |
+| --headers-timeout-ms | Upstream HTTP response headers timeout in milliseconds (`0` disables timeout) | auto*  | none  |
+| --body-timeout-ms | Upstream HTTP response body timeout in milliseconds (`0` disables timeout) | auto*      | none  |
+| --connect-timeout-ms | Upstream HTTP connect timeout in milliseconds (`0` disables timeout) | auto*      | none  |
+| --github-token | Persist a GitHub token to the owner-only token file, then exit; rerun `start` without this flag | none       | -g    |
+| --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
+| --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
+| --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
+| --codex-auto-review-model | Alias the Codex guardian reviewer model (`codex-auto-review`) to this Responses-capable model on `/responses`. Unset = no alias (`codex-auto-review` remains unreachable via `/responses`). Example: `gpt-5.4-mini` | none | none  |
+| --daemon       | Run as a legacy app-managed background daemon                                 | false      | -d    |
+
+`auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.
+
+### Local Security Defaults
+
+The proxy listens on `127.0.0.1` by default and is intended for personal local use. Do not bind it to a LAN or Internet-facing interface unless every client that can reach the port is trusted. If you need container port mapping, bind inside the container with `--host 0.0.0.0` and map the host port to loopback, for example `-p 127.0.0.1:4399:4399`.
+
+CORS is restricted by default to local browser origins such as `http://localhost:*`, `http://127.0.0.1:*`, and `http://[::1]:*`. The hosted usage dashboard origin is allowed only for `/usage`. To add other exact browser origins, set `COPILOT_PROXY_CORS_ORIGINS` to a comma-separated list, for example `COPILOT_PROXY_CORS_ORIGINS=https://internal.example.com`.
+
+Requests with a disallowed browser Origin are rejected before route execution. Request Hosts are separately restricted to loopback names to prevent DNS rebinding. When intentionally serving another hostname, add its exact hostname (without a port) to `COPILOT_PROXY_ALLOWED_HOSTS`, for example `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy,proxy.internal`. JSON request bodies must use `Content-Type: application/json` (or an `application/*+json` media type).
+
+Inbound JSON request bodies are limited to 32 MiB by default. To override this, set `COPILOT_PROXY_MAX_JSON_BODY_BYTES` to a positive byte count.
+
+Legacy daemon and native-service installs snapshot the supported `COPILOT_PROXY_*`, proxy, `NO_PROXY`, and TLS CA environment into owner-only runtime files. `--proxy-env` fails closed unless a real proxy endpoint is configured. Bun services are bootstrapped with that environment before the runtime starts so Bun's startup-time proxy snapshot cannot silently bypass a restored proxy or retain an unapproved ambient proxy.
+
+Anthropic document URL sources are forwarded natively when the selected model uses Copilot's `/v1/messages` backend. Local URL fetching for translated document requests is disabled by default. If you explicitly trust the clients and URLs, set `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1`; the proxy still rejects localhost, private network, cloud metadata, and reserved DNS/IP targets before fetching and after redirects.
+
+`GET /token` is disabled by default because loopback is not a per-user security boundary. For a short-lived local diagnostic only, set `COPILOT_PROXY_EXPOSE_TOKEN=1`; the route still requires a loopback remote address, a loopback Host, and same-origin browser access. Disable it again immediately afterwards.
+
+`--manual` fails closed: requests receive `503` when no interactive TTY is available or approval times out. Use it only with a foreground `start`; it is not suitable for `enable`, `start -d`, containers without a TTY, or other unattended services. Treat all diagnostic logs as sensitive. `--show-token` deliberately prints bearer tokens and must never be used with persisted or shared logs.
+
+When a `/v1/responses` request must be translated to a native Claude `/v1/messages` backend, it must explicitly set `store: false`; the proxy cannot emulate the Responses API's default server-side persistence or make a translated response ID retrievable. Initial system/developer input is kept as the top-level Anthropic system prompt. Mid-conversation system/developer input is preserved only in Anthropic-supported positions; an unrepresentable ordering is rejected instead of being reordered.
+
+> **Codex-to-Claude limitation:** With Codex CLI 0.144.1, the tested default configuration includes hosted/custom Responses tools that cannot be represented faithfully by Anthropic Messages. The proxy intentionally rejects that request locally with HTTP `400` instead of dropping tools or reporting a misleading success. The restricted real-machine smoke passed text and `exec_command` tool-loop coverage with the following overrides; this proves only that scoped configuration, not default Codex-to-Claude compatibility:
+>
+> ```sh
+> -c 'web_search="disabled"' \
+> -c 'features.multi_agent=false' \
+> -c 'features.remote_plugin=false'
+> ```
+
+### Auth Command Options
+
+| Option       | Description               | Default | Alias |
+| ------------ | ------------------------- | ------- | ----- |
+| --verbose    | Enable sensitive diagnostics | false | -v    |
+| --show-token | Show GitHub token on auth | false   | none  |
+
+### Debug Command Options
+
+| Option | Description               | Default | Alias |
+| ------ | ------------------------- | ------- | ----- |
+| --json | Output debug info as JSON | false   | none  |
+
+### Logs Command Options
+
+| Option  | Description           | Default | Alias |
+| ------- | --------------------- | ------- | ----- |
+| --follow | Follow log output    | false   | -f    |
+| --lines  | Number of lines to show | 50   | -n    |
+
+## API Endpoints
+
+The OpenAI-compatible Chat Completions, Models, Embeddings, and Responses routes accept both the listed `/v1/...` path and the corresponding unprefixed path. Anthropic Messages is available only under `/v1/messages`; `/usage` and `/token` are unprefixed auxiliary routes.
+
+### OpenAI Compatible Endpoints
+
+These endpoints mimic the OpenAI API structure.
+
+| Endpoint                    | Method | Description                                               |
+| --------------------------- | ------ | --------------------------------------------------------- |
+| `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. |
+| `GET /v1/models`            | `GET`  | Lists the currently available models.                     |
+| `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.  |
+
+### OpenAI Responses API Endpoint
+
+This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format. Models backed by Copilot's Responses surface are forwarded directly upstream. Claude models are served by translating the request into the Anthropic Messages API.
+
+| Endpoint              | Method | Description                                                              |
+| --------------------- | ------ | ------------------------------------------------------------------------ |
+| `POST /v1/responses`  | `POST` | Creates a model response using the Responses API (supports streaming).   |
+
+### Anthropic Compatible Endpoints
+
+These endpoints are designed to be compatible with the Anthropic Messages API. Claude models use Copilot's native `/v1/messages` surface as a passthrough. Responses-backed non-Claude models are served by translating Anthropic Messages into the Responses API.
+
+| Endpoint                         | Method | Description                                                  |
+| -------------------------------- | ------ | ------------------------------------------------------------ |
+| `POST /v1/messages`              | `POST` | Creates a model response for a given conversation.           |
+| `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. |
+
+### Usage Monitoring Endpoints
+
+Endpoints for monitoring your Copilot usage and quotas.
+
+| Endpoint     | Method | Description                                                  |
+| ------------ | ------ | ------------------------------------------------------------ |
+| `GET /usage` | `GET`  | Get detailed Copilot usage statistics and quota information. |
+| `GET /token` | `GET`  | Get the current Copilot token for local diagnostics. Disabled unless `COPILOT_PROXY_EXPOSE_TOKEN=1`, then restricted to loopback and same-origin reads. |
+
+## Example Usage
+
+Using with npx (replace with `pnpm dlx`, `bunx`, or `yarn dlx` if preferred):
 
 ```sh
 npm i -g @jer-y/copilot-proxy

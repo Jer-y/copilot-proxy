@@ -25,6 +25,7 @@ export interface DaemonConfig {
   githubToken?: string
   showToken: boolean
   proxyEnv: boolean
+  codexAutoReviewModel?: string
 }
 
 const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise']
@@ -90,6 +91,8 @@ export function mergeDaemonConfigWithExplicitFlags(
     merged.showToken = cliConfig.showToken
   if (wasCliOptionPassed(rawArgs, 'proxy-env', undefined, true))
     merged.proxyEnv = cliConfig.proxyEnv
+  if (wasCliOptionPassed(rawArgs, 'codex-auto-review-model'))
+    merged.codexAutoReviewModel = cliConfig.codexAutoReviewModel
 
   return merged
 }
@@ -242,6 +245,8 @@ function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | nul
   if (isInvalidTimeout(data.connectTimeoutMs))
     return null
   if (data.githubToken !== undefined && typeof data.githubToken !== 'string')
+    return null
+  if (data.codexAutoReviewModel !== undefined && typeof data.codexAutoReviewModel !== 'string')
     return null
 
   return data as unknown as DaemonConfig

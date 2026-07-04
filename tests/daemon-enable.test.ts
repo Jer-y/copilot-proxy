@@ -200,6 +200,20 @@ describe('resolveNativeServiceEnableConfig', () => {
       maxConcurrency: '4',
       clearConcurrencyLimit: true,
     })).toThrow('cannot be combined')
+
+  test('emits --codex-auto-review-model with its value when set', () => {
+    const args = buildServiceStartArgs('/tmp/main.js', {
+      ...baseConfig,
+      codexAutoReviewModel: 'gpt-5.4-mini',
+    })
+    const flagIndex = args.indexOf('--codex-auto-review-model')
+    expect(flagIndex).toBeGreaterThanOrEqual(0)
+    expect(args[flagIndex + 1]).toBe('gpt-5.4-mini')
+  })
+
+  test('omits --codex-auto-review-model when unset', () => {
+    const args = buildServiceStartArgs('/tmp/main.js', baseConfig)
+    expect(args).not.toContain('--codex-auto-review-model')
   })
 })
 

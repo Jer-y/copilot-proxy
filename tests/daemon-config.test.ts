@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { loadDaemonConfig, loadDaemonConfigWithRecovery, MAX_DAEMON_CONFIG_BACKUPS, saveDaemonConfig } from '../src/daemon/config'
+import { loadDaemonConfig, loadDaemonConfigWithRecovery, MAX_DAEMON_CONFIG_BACKUPS, mergeDaemonConfigWithExplicitFlags, saveDaemonConfig } from '../src/daemon/config'
 import { MAX_TIMER_DELAY_MS } from '../src/lib/http-timeouts'
 import { PATHS } from '../src/lib/paths'
 
@@ -270,5 +270,37 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
       expect(backups).not.toContain(removedName)
     }
     expect(backups).toContain(path.basename(result.backupPath!))
+  })
+})
+
+describe('codexAutoReviewModel config field', () => {
+  test('persists codexAutoReviewModel in the config file', () => {
+    const config = { ...sampleConfig, codexAutoReviewModel: 'gpt-5.4-mini' }
+    saveDaemonConfig(config)
+    expect(loadDaemonConfig()).toEqual({ ...sampleConfig, codexAutoReviewModel: 'gpt-5.4-mini' })
+  })
+
+  test('returns null for a non-string codexAutoReviewModel', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, codexAutoReviewModel: 123 }))
+    expect(loadDaemonConfig()).toBeNull()
+  })
+
+  test('explicit --codex-auto-review-model overrides the saved value', () => {
+    const fileConfig = { ...sampleConfig, codexAutoReviewModel: 'gpt-5.5' }
+    const cliConfig = { ...sampleConfig, codexAutoReviewModel: 'gpt-5.4-mini' }
+    const merged = mergeDaemonConfigWithExplicitFlags(
+      fileConfig,
+      cliConfig,
+      ['--codex-auto-review-model', 'gpt-5.4-mini'],
+    )
+    expect(merged.codexAutoReviewModel).toBe('gpt-5.4-mini')
+  })
+
+  test('keeps the saved codexAutoReviewModel when the flag is absent', () => {
+    const fileConfig = { ...sampleConfig, codexAutoReviewModel: 'gpt-5.5' }
+    const cliConfig = { ...sampleConfig, codexAutoReviewModel: undefined }
+    const merged = mergeDaemonConfigWithExplicitFlags(fileConfig, cliConfig, [])
+    expect(merged.codexAutoReviewModel).toBe('gpt-5.5')
   })
 })

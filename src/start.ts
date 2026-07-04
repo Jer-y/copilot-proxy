@@ -45,6 +45,7 @@ export interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  codexAutoReviewModel?: string
   exitOnPortInUse?: boolean
   nativeService?: boolean
   nativeServiceInstanceToken?: string
@@ -554,6 +555,11 @@ export const start = defineCommand({
       default: false,
       description: 'Initialize proxy from environment variables',
     },
+    'codex-auto-review-model': {
+      type: 'string',
+      description:
+        'Alias the Codex guardian reviewer model (codex-auto-review) to this Responses-capable model on /responses. Unset = no alias (codex-auto-review remains unreachable via /responses). Example: gpt-5.4-mini',
+    },
     'daemon': {
       alias: 'd',
       type: 'boolean',
@@ -708,6 +714,7 @@ export const start = defineCommand({
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
+        codexAutoReviewModel: args['codex-auto-review-model'],
       }
       const configResult = loadDaemonConfigWithRecovery(fallbackConfig)
 
@@ -786,6 +793,7 @@ export const start = defineCommand({
         githubToken: args['github-token'],
         showToken: args['show-token'],
         proxyEnv: args['proxy-env'],
+        codexAutoReviewModel: args['codex-auto-review-model'],
       })
       return
     }
@@ -810,6 +818,7 @@ export const start = defineCommand({
       proxyEnv: args['proxy-env'],
       nativeService: args._service,
       nativeServiceInstanceToken,
+      codexAutoReviewModel: args['codex-auto-review-model'],
     })
   },
 })
