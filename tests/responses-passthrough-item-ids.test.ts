@@ -6,6 +6,10 @@ interface ParsedEvent {
   type?: string
   output_index?: number
   item_id?: string
+  summary_index?: number
+  delta?: string
+  text?: string
+  part?: unknown
   item?: {
     id?: string
     call_id?: string
@@ -193,5 +197,71 @@ describe('Responses per-item id normalization', () => {
     })))
     expect(a.item?.id).toBe('idx0')
     expect(b.item?.id).toBe('idx1')
+  })
+
+  test('stabilizes reasoning-summary event ids that churn per event', () => {
+    const n = createResponsesItemIdNormalizer()
+    const events = [
+      chunk('response.output_item.added', {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'reasoning', id: 'rs_real', encrypted_content: 'ENC_R', summary: [] },
+      }),
+      chunk('response.reasoning_summary_part.added', {
+        type: 'response.reasoning_summary_part.added',
+        output_index: 0,
+        summary_index: 0,
+        item_id: 'churn_1',
+        part: { type: 'summary_text', text: '' },
+      }),
+      chunk('response.reasoning_summary_text.delta', {
+        type: 'response.reasoning_summary_text.delta',
+        output_index: 0,
+        summary_index: 0,
+        item_id: 'churn_2',
+        delta: '**Answer',
+      }),
+      chunk('response.reasoning_summary_text.done', {
+        type: 'response.reasoning_summary_text.done',
+        output_index: 0,
+        summary_index: 0,
+        item_id: 'churn_3',
+        text: '**Answering**',
+      }),
+      chunk('response.reasoning_summary_part.done', {
+        type: 'response.reasoning_summary_part.done',
+        output_index: 0,
+        summary_index: 0,
+        item_id: 'churn_4',
+        part: { type: 'summary_text', text: '**Answering**' },
+      }),
+      chunk('response.output_item.done', {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'reasoning',
+          id: 'rs_real_done',
+          encrypted_content: 'ENC_R',
+          summary: [{ type: 'summary_text', text: '**Answering**' }],
+        },
+      }),
+    ].map(c => parse(n.rewrite(c)))
+
+    // Every reasoning-summary event collapses to the first-seen reasoning id.
+    expect(events[0].item?.id).toBe('rs_real')
+    expect(events[1].item_id).toBe('rs_real')
+    expect(events[2].item_id).toBe('rs_real')
+    expect(events[3].item_id).toBe('rs_real')
+    expect(events[4].item_id).toBe('rs_real')
+    expect(events[5].item?.id).toBe('rs_real')
+
+    // Non-id fields on summary events are preserved.
+    expect(events[1].summary_index).toBe(0)
+    expect(events[2].summary_index).toBe(0)
+    expect(events[2].delta).toBe('**Answer')
+    expect(events[3].text).toBe('**Answering**')
+    expect(events[1].part).toEqual({ type: 'summary_text', text: '' })
+    expect(events[0].item?.encrypted_content).toBe('ENC_R')
+    expect(events[5].item?.encrypted_content).toBe('ENC_R')
   })
 })
