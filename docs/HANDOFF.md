@@ -35,10 +35,11 @@ never takes.
 **The upstream quirk.** GitHub Copilot emits a **different, ~408‑char, opaque `id` on
 every SSE event for the *same* streamed item** — across `response.output_item.added`
 and `response.output_item.done` (and the `content_part.*` / `output_text.*` /
-`function_call_arguments.*` deltas), for **reasoning *and* message** items. The stable
-correlation key is `output_index`, not `id`. `encrypted_content` is returned separately
-(present as a string on the reasoning item), and `summary` is always `[]` (Copilot sends
-no `reasoning_summary_*` events even when `summary:"auto"`/`"detailed"` is requested).
+`function_call_arguments.*` / `reasoning_summary_*` deltas), for **reasoning *and*
+message** items. The stable correlation key is `output_index`, not `id`.
+`encrypted_content` is returned separately (present as a string on the reasoning item).
+Some captures show `summary: []` on item snapshots, while detailed-summary prompts can
+also emit `reasoning_summary_*` events whose `item_id` values churn in the same way.
 
 Captured with:
 
