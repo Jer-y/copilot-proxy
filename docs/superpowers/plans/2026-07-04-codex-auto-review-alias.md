@@ -440,6 +440,7 @@ git commit -m "feat: persist and re-emit --codex-auto-review-model in daemon con
 **Files:**
 - Modify: `src/start.ts` (`RunServerOptions`, arg definition, 3 call sites)
 - Modify: `src/lib/server-setup.ts` (assign option to `state`)
+- Modify: `README.md` (document the flag in the `start` options table)
 
 **Interfaces:**
 - Consumes: `DaemonConfig.codexAutoReviewModel` (Task 3), `State.codexAutoReviewModel` (Task 2), `args['codex-auto-review-model']` (citty string arg).
@@ -498,25 +499,33 @@ In `src/lib/server-setup.ts`, add after `state.normalizeOpenAIResponsesItemIds =
   state.codexAutoReviewModel = options.codexAutoReviewModel
 ```
 
-- [ ] **Step 5: Typecheck**
+- [ ] **Step 5: Document the flag in the README**
+
+In `README.md`, the `start` command options table (currently lines 257–274) documents every flag. Add a row for the new flag immediately after the `--normalize-openai-responses-item-ids` row and before the `--daemon` row:
+
+```markdown
+| --codex-auto-review-model | Alias the Codex guardian reviewer model (`codex-auto-review`) to this Responses-capable model on `/responses`. Unset = no alias (`codex-auto-review` remains unreachable via `/responses`). Example: `gpt-5.4-mini` | none | none  |
+```
+
+- [ ] **Step 6: Typecheck**
 
 Run: `bun run typecheck`
 Expected: no errors. (The supervisor path spreads `DaemonConfig` into `RunServerOptions`; both now carry `codexAutoReviewModel`, so the spread type-checks.)
 
-- [ ] **Step 6: Verify the flag appears in CLI help**
+- [ ] **Step 7: Verify the flag appears in CLI help**
 
 Run: `bun run ./src/main.ts start --help`
 Expected: output includes a `--codex-auto-review-model` line with the description text.
 
-- [ ] **Step 7: Run the full test suite**
+- [ ] **Step 8: Run the full test suite**
 
 Run: `bun test`
 Expected: PASS — entire suite green (including Task 1–3 tests). If any pre-existing `tests/live/` tests require live Copilot credentials and are skipped/failing in this environment, note that they are unrelated to this change.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src/start.ts src/lib/server-setup.ts
+git add src/start.ts src/lib/server-setup.ts README.md
 git commit -m "feat: add --codex-auto-review-model CLI flag"
 ```
 
@@ -565,6 +574,7 @@ With Codex (`approval_policy=on-request`, `approvals_reviewer=auto_review`) poin
 - §4 testing: alias unit test → Task 1; handler behavior → Task 2; daemon-config + daemon-enable extensions → Task 3. ✓
 - §5 non-goals: no translation, no `codex-compat.ts` change, no nixfiles change — respected (no such tasks). ✓
 - §6 verification → Task 5. ✓
+- Docs (repo convention, not in spec): user-facing flag documented in the `README.md` `start`-options table → Task 4 Step 5. ✓
 
 **Placeholder scan:** No TBD/TODO; every code step shows complete code; every run step shows an exact command and expected result. ✓
 
