@@ -117,6 +117,24 @@ describe('getModelConfig', () => {
     expect(config.supportsParallelToolCalls).toBe(true)
   })
 
+  test('should configure gpt-5.6 as responses-only with max reasoning', () => {
+    const config = getModelConfig('gpt-5.6')
+    expect(config.supportedApis).toEqual(['responses'])
+    expect(config.reasoningMode).toBe('thinking')
+    expect(config.defaultReasoningEffort).toBe('medium')
+    expect(config.supportedReasoningEfforts).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportsParallelToolCalls).toBe(true)
+  })
+
+  test('should match gpt-5.6 variants (sol/luna/terra) via prefix match', () => {
+    for (const id of ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra']) {
+      const config = getModelConfig(id)
+      expect(config.supportedApis).toEqual(['responses'])
+      expect(config.reasoningMode).toBe('thinking')
+    }
+  })
+
   test('should configure gpt-5.1 as both APIs', () => {
     const config = getModelConfig('gpt-5.1')
     expect(config.supportedApis).toEqual(['chat-completions', 'responses'])
