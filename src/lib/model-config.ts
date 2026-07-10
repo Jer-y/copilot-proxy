@@ -160,6 +160,14 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },
+  'gpt-5.6': {
+    supportedApis: ['responses'],
+    reasoningMode: 'thinking',
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    supportsToolChoice: true,
+    supportsParallelToolCalls: true,
+  },
 
   // Codex models — responses only
   'gpt-5.1-codex': {
