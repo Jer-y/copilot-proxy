@@ -9,6 +9,8 @@ import { ensureDaemonLogFile, readLastLogLines, rotateDaemonLogIfNeeded } from '
 import { PATHS } from '~/lib/paths'
 
 const TASK_NAME = 'CopilotProxy'
+const GRACEFUL_STOP_TIMEOUT_MS = 5_000
+let pendingInstall: { previousTaskXml: string | undefined } | undefined
 
 function escapeXmlAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
@@ -71,13 +73,13 @@ interface BuildTaskXmlOptions {
 }
 
 export function buildTaskXml(execPath: string, args: string[], options: BuildTaskXmlOptions = {}): string {
-  const commandLine = [
-    winQuoteArg(execPath),
-    ...args.map(a => winQuoteArg(a)),
-    '>>',
-    winQuoteArg(PATHS.DAEMON_LOG),
-    '2>&1',
-  ].join(' ')
+  const usesProcessLogger = args.includes('--_log-file')
+  const commandParts = [winQuoteArg(execPath), ...args.map(a => winQuoteArg(a))]
+  // The process-level rotating writer must be able to rename daemon.log on
+  // Windows. Keeping cmd.exe's append redirection open would lock that file.
+  if (!usesProcessLogger)
+    commandParts.push('>>', winQuoteArg(PATHS.DAEMON_LOG), '2>&1')
+  const commandLine = commandParts.join(' ')
 
   const cmdArgs = `/d /s /c "${commandLine}"`
 
@@ -85,7 +87,18 @@ export function buildTaskXml(execPath: string, args: string[], options: BuildTas
   const headless = options.useHeadlessConhost ?? supportsHeadlessConhost()
   let command: string
   let commandArgs: string
-  if (headless) {
+  if (usesProcessLogger && headless) {
+    // No shell is needed when the process owns log rotation. Running the
+    // executable directly prevents cmd.exe metacharacter and %VAR% expansion
+    // in user-controlled arguments while conhost still hides the window.
+    command = 'conhost.exe'
+    commandArgs = `--headless ${commandLine}`
+  }
+  else if (usesProcessLogger) {
+    command = execPath
+    commandArgs = args.map(arg => winQuoteArg(arg)).join(' ')
+  }
+  else if (headless) {
     command = 'conhost.exe'
     commandArgs = `--headless cmd.exe ${cmdArgs}`
   }
@@ -199,8 +212,60 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
     catch {}
   }
 
+  pendingInstall = { previousTaskXml }
   consola.success('Auto-start enabled via Task Scheduler')
   return true
+}
+
+export function commitAutoStartInstall(): void {
+  pendingInstall = undefined
+}
+
+export function rollbackAutoStartInstall(): boolean {
+  const install = pendingInstall
+  pendingInstall = undefined
+  if (!install)
+    return true
+
+  try {
+    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
+  }
+  catch {
+    // The replacement task may not have started.
+  }
+
+  if (!install.previousTaskXml) {
+    try {
+      execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
+      return true
+    }
+    catch (error) {
+      consola.error('Failed to remove the replacement scheduled task:', error instanceof Error ? error.message : error)
+      return false
+    }
+  }
+
+  const rollbackPath = path.join(os.tmpdir(), `copilot-proxy-task-rollback-${process.pid}.xml`)
+  try {
+    fs.writeFileSync(rollbackPath, install.previousTaskXml, { encoding: 'utf16le' })
+    execFileSync('schtasks', [
+      '/create',
+      '/tn',
+      TASK_NAME,
+      '/xml',
+      rollbackPath,
+      '/f',
+    ], { stdio: 'pipe' })
+    execFileSync('schtasks', ['/run', '/tn', TASK_NAME], { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    consola.error('Failed to restore the previous scheduled task:', error instanceof Error ? error.message : error)
+    return false
+  }
+  finally {
+    fs.rmSync(rollbackPath, { force: true })
+  }
 }
 
 function readInstalledTaskXml(): string | undefined {
@@ -231,6 +296,12 @@ export function stopAutoStartService(): boolean {
   if (!isAutoStartInstalled())
     return false
 
+  if (!isScheduledTaskRunning())
+    return true
+
+  if (requestGracefulTaskStop())
+    return true
+
   try {
     execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'inherit' })
     return true
@@ -245,11 +316,13 @@ export function restartAutoStartService(): boolean {
   if (!isAutoStartInstalled())
     return false
 
-  try {
-    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
-  }
-  catch {
-    // The task may not currently be running. Starting below is the important part.
+  if (isScheduledTaskRunning() && !requestGracefulTaskStop()) {
+    try {
+      execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
+    }
+    catch {
+      // Starting below is the important part.
+    }
   }
 
   rotateDaemonLogIfNeeded()
@@ -304,11 +377,13 @@ export async function uninstallAutoStart(): Promise<boolean> {
     return true
   }
 
-  try {
-    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
-  }
-  catch {
-    // Task may not be running, that's fine.
+  if (isScheduledTaskRunning() && !requestGracefulTaskStop()) {
+    try {
+      execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
+    }
+    catch {
+      // Task may already have stopped, that's fine.
+    }
   }
 
   try {
@@ -326,6 +401,54 @@ export async function uninstallAutoStart(): Promise<boolean> {
 
   consola.success('Auto-start disabled')
   return true
+}
+
+function isScheduledTaskRunning(): boolean {
+  try {
+    const state = execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-ScheduledTask -TaskName '${TASK_NAME}').State.ToString()`,
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim()
+    return state.toLowerCase() === 'running'
+  }
+  catch {
+    // Conservatively attempt graceful IPC if task state cannot be queried.
+    return true
+  }
+}
+
+function requestGracefulTaskStop(): boolean {
+  try {
+    fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
+    fs.writeFileSync(PATHS.DAEMON_STOP, `${Date.now()}\n`, { mode: 0o600 })
+  }
+  catch (error) {
+    consola.warn('Failed to request graceful scheduled-task shutdown:', error instanceof Error ? error.message : error)
+    return false
+  }
+
+  const deadline = Date.now() + GRACEFUL_STOP_TIMEOUT_MS
+  while (fs.existsSync(PATHS.DAEMON_STOP) && Date.now() < deadline)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+
+  let acknowledged = !fs.existsSync(PATHS.DAEMON_STOP)
+  if (acknowledged) {
+    while (Date.now() < deadline) {
+      if (!isScheduledTaskRunning())
+        break
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+    }
+  }
+  acknowledged = acknowledged && !isScheduledTaskRunning()
+  if (!acknowledged)
+    fs.rmSync(PATHS.DAEMON_STOP, { force: true })
+  return acknowledged
 }
 
 function followLogFile(lineCount: number): void {

@@ -1,17 +1,16 @@
+import { fetchWithTimeout } from '~/lib/upstream-fetch'
+
 const FALLBACK = '1.104.3'
 const RELEASES_URL = 'https://update.code.visualstudio.com/api/releases/stable'
 
 export async function getVSCodeVersion() {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => {
-    controller.abort()
-  }, 5000)
-
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       RELEASES_URL,
+      {},
       {
-        signal: controller.signal,
+        timeoutMs: 5_000,
+        timeoutLabel: 'VSCode stable releases',
       },
     )
 
@@ -24,8 +23,5 @@ export async function getVSCodeVersion() {
   }
   catch {
     return FALLBACK
-  }
-  finally {
-    clearTimeout(timeout)
   }
 }

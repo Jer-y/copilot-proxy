@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildLaunchctlKickstartArgs } from '../src/daemon/platform/darwin'
+import { buildLaunchctlKickstartArgs, commitAutoStartInstall, isLaunchdJobRunningOutput, rollbackAutoStartInstall } from '../src/daemon/platform/darwin'
 
 describe('launchd restart', () => {
   test('targets the GUI domain for reliable loaded-agent restarts', () => {
@@ -18,4 +18,14 @@ describe('launchd restart', () => {
       'com.copilot-proxy',
     ])
   })
+
+  test('recognizes launchctl running state without relying on localized list output', () => {
+    expect(isLaunchdJobRunningOutput('state = running\n')).toBe(true)
+    expect(isLaunchdJobRunningOutput('state = exited\n')).toBe(false)
+  })
+})
+
+test('launchd install transaction helpers are safe when no install is pending', () => {
+  commitAutoStartInstall()
+  expect(rollbackAutoStartInstall()).toBe(true)
 })

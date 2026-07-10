@@ -7,6 +7,7 @@ import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
+import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
 
 /** Type guard: is a message input item (has role, not a function_call/output) */
 function isMessageInput(item: ResponsesInputItem): item is ResponsesMessageInputItem {
@@ -87,6 +88,10 @@ export async function createResponses(
   }
 
   if (upstreamPayload.stream) {
+    await assertEventStreamResponse(
+      response,
+      'Invalid Copilot /responses streaming response',
+    )
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/responses',
       requestStartedAt,
@@ -98,12 +103,37 @@ export async function createResponses(
     }
   }
 
-  const json = (await response.json()) as ResponsesResponse
+  const json = await readValidatedJsonResponse(
+    response,
+    'Invalid Copilot /responses response',
+    isResponsesResponse,
+  )
   logUpstreamRequestCompleted({
     endpoint: '/responses',
     requestStartedAt,
   })
   return { body: json, headers: response.headers }
+}
+
+function isResponsesResponse(value: unknown): value is ResponsesResponse {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const response = value as Partial<ResponsesResponse>
+  const status = (value as { status?: unknown }).status
+  return response.object === 'response'
+    && typeof response.id === 'string'
+    && typeof response.model === 'string'
+    && Array.isArray(response.output)
+    && (
+      status === 'completed'
+      || status === 'failed'
+      || status === 'incomplete'
+      || status === 'in_progress'
+      || status === 'queued'
+      || status === 'cancelled'
+    )
 }
 
 function sanitizeResponsesPayloadForCopilotBackend(payload: ResponsesPayload): ResponsesPayload {
@@ -462,6 +492,7 @@ export interface ResponsesResponse {
   instructions?: string | null
   max_output_tokens?: number | null
   previous_response_id?: string | null
+  store?: boolean
   model: string
   output: Array<ResponsesOutputItem>
   text?: ResponsesTextConfig
@@ -477,7 +508,7 @@ export interface ResponsesResponse {
     input_tokens_details?: { cached_tokens: number }
     output_tokens_details?: { reasoning_tokens: number }
   }
-  status: 'completed' | 'failed' | 'incomplete' | 'in_progress'
+  status: 'completed' | 'failed' | 'incomplete' | 'in_progress' | 'queued' | 'cancelled'
   error?: ResponsesResponseError | null
   incomplete_details?: { reason?: string } | null
 }

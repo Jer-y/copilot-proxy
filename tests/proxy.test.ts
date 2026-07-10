@@ -5,9 +5,11 @@ import {
   DEFAULT_COPILOT_BODY_TIMEOUT_MS,
   DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
   DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
+  initializeNodeHttpClient,
   resolveUndiciAgentOptions,
   throwProxyDispatchError,
 } from '../src/lib/proxy'
+import { NETWORK_BOOTSTRAPPED_ENV } from '../src/lib/proxy-environment'
 
 describe('clearProxyEnvironment', () => {
   test('removes upper- and lower-case proxy variables without touching unrelated env', () => {
@@ -62,5 +64,31 @@ describe('resolveUndiciAgentOptions', () => {
       bodyTimeout: 900000,
       connectTimeout: 15000,
     })
+  })
+})
+
+describe('Bun HTTP client initialization', () => {
+  test('clears an already-sanitized ambient proxy when proxy mode is disabled', () => {
+    process.env.HTTP_PROXY = 'http://ambient.invalid:8080'
+    process.env[NETWORK_BOOTSTRAPPED_ENV] = '1'
+    try {
+      initializeNodeHttpClient({ proxyEnv: false })
+      expect(process.env.HTTP_PROXY).toBeUndefined()
+    }
+    finally {
+      delete process.env.HTTP_PROXY
+      delete process.env[NETWORK_BOOTSTRAPPED_ENV]
+    }
+  })
+
+  test('removes approved proxy credentials from the JS environment after Bun snapshots them', () => {
+    process.env.HTTPS_PROXY = 'http://approved.invalid:8080'
+    try {
+      initializeNodeHttpClient({ proxyEnv: true })
+      expect(process.env.HTTPS_PROXY).toBeUndefined()
+    }
+    finally {
+      delete process.env.HTTPS_PROXY
+    }
   })
 })

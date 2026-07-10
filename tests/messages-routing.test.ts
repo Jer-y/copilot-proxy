@@ -191,6 +191,43 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
   })
 
+  test('Responses-backed requests reject max_tokens below 16 instead of increasing it', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 15,
+        messages: [{ role: 'user', content: 'Be brief.' }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('max_tokens must be at least 16')
+  })
+
+  test('Responses-backed requests reject unknown typed tools instead of omitting them', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Fetch the page.' }],
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch' }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('server-side tools')
+  })
+
   test('Claude json_schema requests strip Responses-only metadata before native routing', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -562,6 +599,55 @@ describe('messages route upstream adaptation', () => {
     expect(body).toContain('event: content_block_stop')
     expect(body).toContain('event: message_stop')
     expect(body).toContain('\"model\":\"claude-opus-4-6-20250514\"')
+  })
+
+  test('Claude native passthrough preserves server tool stream blocks', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      if (!url.endsWith('/v1/messages')) {
+        throw new Error(`Unexpected upstream URL: ${url}`)
+      }
+
+      return new Response([
+        'event: message_start\n',
+        'data: {"type":"message_start","message":{"id":"msg_server_tool","type":"message","role":"assistant","content":[],"model":"claude-opus-4.8","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}\n\n',
+        'event: content_block_start\n',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"code_execution","input":{}}}\n\n',
+        'event: content_block_delta\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"print(1)\\"}"}}\n\n',
+        'event: content_block_stop\n',
+        'data: {"type":"content_block_stop","index":0}\n\n',
+        'event: content_block_start\n',
+        'data: {"type":"content_block_start","index":1,"content_block":{"type":"code_execution_tool_result","tool_use_id":"srvtoolu_1","content":{"stdout":"1\\n","stderr":""}}}\n\n',
+        'event: content_block_stop\n',
+        'data: {"type":"content_block_stop","index":1}\n\n',
+        'event: message_delta\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":8}}\n\n',
+        'event: message_stop\n',
+        'data: {"type":"message_stop"}\n\n',
+      ].join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.8',
+        stream: true,
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Run code.' }],
+        tools: [{ type: 'code_execution_20260120', name: 'code_execution' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('"type":"server_tool_use"')
+    expect(body).toContain('"type":"code_execution_tool_result"')
+    expect(body).toContain('event: message_stop')
+    expect(body).not.toContain('event: error')
   })
 
   test('Responses translated stream emits an error when upstream EOF arrives before terminal event', async () => {
@@ -1302,6 +1388,7 @@ describe('messages route upstream adaptation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: 'Return JSON.',
         text: {
           format: {
@@ -1318,7 +1405,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.error.message).toContain('json_object')
   })
 
-  test('count_tokens with document blocks is forwarded natively without local expansion', async () => {
+  test('count_tokens expands text documents exactly like the native messages route', async () => {
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1330,11 +1417,12 @@ describe('messages route upstream adaptation', () => {
             content: [
               {
                 type: 'document',
-                title: 'report.pdf',
+                title: 'report.md',
+                context: 'Quarterly report',
                 source: {
-                  type: 'base64',
-                  media_type: 'application/pdf',
-                  data: 'JVBERi0xLjQK',
+                  type: 'text',
+                  media_type: 'text/markdown',
+                  data: '# Revenue\n\nUp 10%.',
                 },
               },
             ],
@@ -1347,8 +1435,11 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
-    const forwardedPayload = JSON.parse(String(init.body)) as { messages: Array<{ content: Array<{ type: string }> }> }
-    expect(forwardedPayload.messages[0].content[0].type).toBe('document')
+    const forwardedPayload = JSON.parse(String(init.body)) as { messages: Array<{ content: Array<{ type: string, text?: string }> }> }
+    expect(forwardedPayload.messages[0].content[0]).toEqual({
+      type: 'text',
+      text: '[Document: report.md]\nContext: Quarterly report\n\n# Revenue\n\nUp 10%.',
+    })
 
     const body = await res.json() as { input_tokens?: number }
     expect(body.input_tokens).toBe(26)
@@ -1382,7 +1473,7 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.model).toBe('claude-opus-4.6')
     expect(forwardedPayload.tools).toBeUndefined()
     const headers = init.headers as Record<string, string>
-    expect(headers['anthropic-beta']).toBe('claude-code-2025-01-01, fast-mode-2026-02-01')
+    expect(headers['anthropic-beta']).toBe('claude-code-2025-01-01,fast-mode-2026-02-01')
   })
 })
 

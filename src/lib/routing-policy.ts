@@ -41,7 +41,7 @@ const RESPONSES_TRANSLATION_REJECTIONS = {
   prompt: 'Stored Responses prompts cannot be resolved by the Anthropic Messages translation path. Expand the prompt into instructions and input first.',
   reasoning_summary: 'Responses reasoning summaries cannot be produced faithfully by the Anthropic Messages translation path.',
   reasoning_config: 'Responses reasoning must be an object on the Anthropic Messages translation path.',
-  store: 'Responses store=true cannot be honored by the Anthropic Messages translation path.',
+  store: 'Responses are stored by default. The Anthropic Messages translation path is stateless, so requests routed through it must explicitly set store=false.',
   stream_options: 'Responses stream_options.include_obfuscation cannot be honored by the Anthropic Messages translation path.',
   text_config: 'Responses text must be an object on the Anthropic Messages translation path.',
   text_verbosity: 'Responses text.verbosity cannot be represented on the Anthropic Messages translation path.',
@@ -139,7 +139,7 @@ export function assertResponsesPayloadTranslatable(
   if (payloadHasInputFileParts(payload)) {
     onLocalError(RESPONSES_INPUT_FILE_REJECTION_MESSAGE)
   }
-  if (payload.store !== undefined && payload.store !== false) {
+  if (payload.store !== false) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.store)
   }
   if (payload.previous_response_id != null) {

@@ -202,7 +202,7 @@ test('/v1/responses streaming surfaces upstream stream errors as SSE error event
   expect(body).toContain('data: [DONE]')
 })
 
-test('/v1/responses returns non-stream JSON bodies instead of iterating error-shaped payloads', async () => {
+test('/v1/responses turns HTTP 200 error-shaped payloads into a 502', async () => {
   fetchMock.mockImplementation(async (url: string) => {
     if (!url.endsWith('/responses')) {
       throw new Error(`Unexpected upstream URL: ${url}`)
@@ -228,12 +228,13 @@ test('/v1/responses returns non-stream JSON bodies instead of iterating error-sh
     }),
   })
 
-  expect(response.status).toBe(200)
+  expect(response.status).toBe(502)
   expect(response.headers.get('content-type')).toContain('application/json')
   expect(await response.json()).toEqual({
     error: {
-      message: 'upstream returned an error-shaped JSON body',
-      type: 'invalid_request_error',
+      message: 'Invalid Copilot /responses response: upstream returned an invalid success payload',
+      type: 'api_error',
+      code: 'invalid_upstream_response',
     },
   })
 })
@@ -255,6 +256,7 @@ test('/v1/responses translated Anthropic streaming surfaces upstream stream erro
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Say hello.',
       stream: true,
     }),
@@ -466,6 +468,7 @@ test('/v1/responses translated json_schema omits the Responses-only name on the 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: sentinel,
         text: {
           format: {
@@ -519,6 +522,7 @@ test('/v1/responses malformed translated Anthropic SSE fails once without loggin
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: 'hi',
         stream: true,
       }),
@@ -562,6 +566,7 @@ test('/v1/responses normalizes Anthropic upstream errors without leaking their b
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: 'hi',
       }),
     })

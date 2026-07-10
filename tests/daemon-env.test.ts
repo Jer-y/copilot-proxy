@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { filterEnvForDaemon } from '~/daemon/start'
+import { buildLegacySupervisorArgs, filterEnvForDaemon } from '~/daemon/start'
 
 describe('filterEnvForDaemon', () => {
   test('keeps essential env vars', () => {
@@ -7,12 +7,14 @@ describe('filterEnvForDaemon', () => {
       PATH: '/usr/bin',
       HOME: '/home/user',
       LANG: 'en_US.UTF-8',
+      COPILOT_PROXY_DATA_DIR: '/custom/copilot-proxy',
       SECRET_KEY: 'should-be-dropped',
     }
     const filtered = filterEnvForDaemon(env)
     expect(filtered.PATH).toBe('/usr/bin')
     expect(filtered.HOME).toBe('/home/user')
     expect(filtered.LANG).toBe('en_US.UTF-8')
+    expect(filtered.COPILOT_PROXY_DATA_DIR).toBe('/custom/copilot-proxy')
   })
 
   test('drops proxy-related env vars by default', () => {
@@ -51,11 +53,15 @@ describe('filterEnvForDaemon', () => {
     const env = {
       PATH: '/usr/bin',
       COPILOT_PROXY_CORS_ORIGINS: 'https://internal.example.com',
+      COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal',
+      COPILOT_PROXY_EXPOSE_TOKEN: '1',
       COPILOT_PROXY_MAX_JSON_BODY_BYTES: '1048576',
       COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH: '1',
     }
     const filtered = filterEnvForDaemon(env)
     expect(filtered.COPILOT_PROXY_CORS_ORIGINS).toBe('https://internal.example.com')
+    expect(filtered.COPILOT_PROXY_ALLOWED_HOSTS).toBe('proxy.internal')
+    expect(filtered.COPILOT_PROXY_EXPOSE_TOKEN).toBe('1')
     expect(filtered.COPILOT_PROXY_MAX_JSON_BODY_BYTES).toBe('1048576')
     expect(filtered.COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH).toBe('1')
   })
@@ -91,5 +97,30 @@ describe('filterEnvForDaemon', () => {
     const filtered = filterEnvForDaemon(env)
     expect(filtered.PATH).toBe('/usr/bin')
     expect(filtered.HOME).toBeUndefined()
+  })
+})
+
+describe('buildLegacySupervisorArgs', () => {
+  test('pins the resolved data directory before the supervisor imports PATHS', () => {
+    expect(buildLegacySupervisorArgs('/stable/main.js', '/custom/copilot-proxy')).toEqual([
+      '/stable/main.js',
+      'start',
+      '--_supervisor',
+      '--_log-file',
+      '--_data-dir',
+      '/custom/copilot-proxy',
+    ])
+  })
+
+  test('preserves proxy mode in the Bun supervisor startup environment', () => {
+    expect(buildLegacySupervisorArgs('/stable/main.js', '/custom/copilot-proxy', true)).toEqual([
+      '/stable/main.js',
+      'start',
+      '--_supervisor',
+      '--_log-file',
+      '--_data-dir',
+      '/custom/copilot-proxy',
+      '--proxy-env',
+    ])
   })
 })

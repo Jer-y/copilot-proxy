@@ -9,10 +9,25 @@ interface AppDirOptions {
   platform?: NodeJS.Platform
 }
 
+export const APP_DIR_ENV = 'COPILOT_PROXY_DATA_DIR'
+
+export function getUserHomeDir(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback = os.homedir(),
+): string {
+  return env.COPILOT_PROXY_TEST_HOME || env.HOME || env.USERPROFILE || fallback
+}
+
 export function getAppDir(options: AppDirOptions = {}): string {
   const platform = options.platform ?? process.platform
   const env = options.env ?? process.env
-  const homedir = options.homedir ?? os.homedir()
+  const homedir = options.homedir ?? getUserHomeDir(env)
+
+  if (env[APP_DIR_ENV]) {
+    return platform === 'win32'
+      ? path.win32.resolve(env[APP_DIR_ENV])
+      : path.posix.resolve(env[APP_DIR_ENV])
+  }
 
   if (platform === 'win32') {
     const dataHome = env.LOCALAPPDATA || path.win32.join(homedir, 'AppData', 'Local')
@@ -30,6 +45,8 @@ const DAEMON_PID = path.join(APP_DIR, 'daemon.pid')
 const DAEMON_LOG = path.join(APP_DIR, 'daemon.log')
 const DAEMON_JSON = path.join(APP_DIR, 'daemon.json')
 const DAEMON_STOP = path.join(APP_DIR, 'daemon.stop')
+const DAEMON_ENV = path.join(APP_DIR, 'daemon-env.json')
+const NATIVE_SERVICE_ENV = path.join(APP_DIR, 'service-env.json')
 
 export const PATHS = {
   APP_DIR,
@@ -38,6 +55,8 @@ export const PATHS = {
   DAEMON_LOG,
   DAEMON_JSON,
   DAEMON_STOP,
+  DAEMON_ENV,
+  NATIVE_SERVICE_ENV,
 }
 
 export async function ensurePaths(): Promise<void> {

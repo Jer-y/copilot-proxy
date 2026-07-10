@@ -134,6 +134,7 @@ describe('review-confirmed real route regressions', () => {
   test('Responses to Anthropic translation ignores replayed reasoning input items', async () => {
     const response = await post('/v1/responses', {
       model: 'claude-opus-4.6',
+      store: false,
       input: [
         {
           type: 'reasoning',
@@ -180,6 +181,7 @@ describe('review-confirmed real route regressions', () => {
   test('Responses to Anthropic translation normalizes dated Claude aliases upstream', async () => {
     const response = await post('/v1/responses', {
       model: 'claude-sonnet-4-5-20250929',
+      store: false,
       input: 'hello',
     })
 
@@ -192,6 +194,7 @@ describe('review-confirmed real route regressions', () => {
   test('Anthropic to Responses streaming finalizes upstream EOF after visible text', async () => {
     const response = await post('/v1/responses', {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'stream please',
       stream: true,
     })

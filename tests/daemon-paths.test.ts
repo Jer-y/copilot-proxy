@@ -2,7 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'bun:test'
 
-import { getAppDir, PATHS } from '../src/lib/paths'
+import { getAppDir, getUserHomeDir, PATHS } from '../src/lib/paths'
 
 test('PATHS includes DAEMON_PID path', () => {
   expect(PATHS.DAEMON_PID).toBe(path.join(PATHS.APP_DIR, 'daemon.pid'))
@@ -14,6 +14,34 @@ test('PATHS includes DAEMON_LOG path', () => {
 
 test('PATHS includes DAEMON_JSON path', () => {
   expect(PATHS.DAEMON_JSON).toBe(path.join(PATHS.APP_DIR, 'daemon.json'))
+})
+
+test('PATHS includes the owner-only service environment path', () => {
+  expect(PATHS.NATIVE_SERVICE_ENV).toBe(path.join(PATHS.APP_DIR, 'service-env.json'))
+})
+
+test('PATHS keeps legacy and native service environments separate', () => {
+  expect(PATHS.DAEMON_ENV).toBe(path.join(PATHS.APP_DIR, 'daemon-env.json'))
+  expect(PATHS.DAEMON_ENV).not.toBe(PATHS.NATIVE_SERVICE_ENV)
+})
+
+test('getAppDir honors the native-service data directory before platform defaults', () => {
+  expect(getAppDir({
+    env: {
+      COPILOT_PROXY_DATA_DIR: '/persisted/copilot-proxy',
+      XDG_DATA_HOME: '/ignored',
+    },
+    homedir: '/ignored-home',
+    platform: 'linux',
+  })).toBe('/persisted/copilot-proxy')
+})
+
+test('getUserHomeDir honors an explicit isolated home before the runtime-cached home', () => {
+  expect(getUserHomeDir({
+    COPILOT_PROXY_TEST_HOME: '/isolated-test-home',
+    HOME: '/shell-home',
+  }, '/cached-home')).toBe('/isolated-test-home')
+  expect(getUserHomeDir({ HOME: '/shell-home' }, '/cached-home')).toBe('/shell-home')
 })
 
 test('getAppDir uses LOCALAPPDATA on Windows', () => {

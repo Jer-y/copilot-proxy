@@ -38,6 +38,6 @@ export const restart = defineCommand({
     }
 
     // Start with saved config
-    await daemonStart(config)
+    await daemonStart(config, { usePersistedEnvironment: true })
   },
 })

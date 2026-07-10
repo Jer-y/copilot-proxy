@@ -1,17 +1,18 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import consola from 'consola'
 
 import { ensureDaemonLogFile, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
-import { PATHS } from '~/lib/paths'
+import { getUserHomeDir, PATHS } from '~/lib/paths'
 
 const PLIST_NAME = 'com.copilot-proxy.plist'
 const LABEL = 'com.copilot-proxy'
-const LAUNCH_AGENTS_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents')
+const LAUNCH_AGENTS_DIR = path.join(getUserHomeDir(), 'Library', 'LaunchAgents')
 const PLIST_PATH = path.join(LAUNCH_AGENTS_DIR, PLIST_NAME)
+const LAUNCHD_STOP_TIMEOUT_MS = 5_000
+let pendingInstall: { previous: ExistingPlist | undefined } | undefined
 
 function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -85,6 +86,7 @@ ${programArgs}
     return false
   }
 
+  pendingInstall = { previous: previousPlist }
   consola.success('Auto-start enabled via launchd')
   return true
 }
@@ -109,7 +111,7 @@ function readExistingPlist(): ExistingPlist | undefined {
   }
 }
 
-function rollbackPlist(previous: ExistingPlist | undefined): void {
+function rollbackPlist(previous: ExistingPlist | undefined): boolean {
   try {
     if (previous) {
       fs.writeFileSync(PLIST_PATH, previous.content, { mode: previous.mode })
@@ -118,9 +120,42 @@ function rollbackPlist(previous: ExistingPlist | undefined): void {
     else {
       fs.rmSync(PLIST_PATH, { force: true })
     }
+    return true
   }
   catch (error) {
     consola.error('Failed to roll back launchd plist installation:', error instanceof Error ? error.message : error)
+    return false
+  }
+}
+
+export function commitAutoStartInstall(): void {
+  pendingInstall = undefined
+}
+
+export function rollbackAutoStartInstall(): boolean {
+  const install = pendingInstall
+  pendingInstall = undefined
+  if (!install)
+    return true
+
+  try {
+    execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
+  }
+  catch {
+    // The replacement may have failed before launchd kept it loaded.
+  }
+  if (!rollbackPlist(install.previous))
+    return false
+  if (!install.previous)
+    return true
+
+  try {
+    execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    consola.error('Restored the previous launchd plist but failed to load it:', error instanceof Error ? error.message : error)
+    return false
   }
 }
 
@@ -134,9 +169,16 @@ export function stopAutoStartService(): boolean {
 
   try {
     execFileSync('launchctl', ['stop', LABEL], { stdio: 'inherit' })
-    return true
+    if (waitForLaunchdStop())
+      return true
+
+    consola.warn('launchd service did not stop after the graceful deadline; forcing it down')
+    execFileSync('launchctl', ['kill', 'SIGKILL', launchdTarget(process.getuid?.())], { stdio: 'inherit' })
+    return waitForLaunchdStop()
   }
   catch (error) {
+    if (waitForLaunchdStop())
+      return true
     consola.error('Failed to stop launchd service:', error instanceof Error ? error.message : error)
     return false
   }
@@ -146,23 +188,11 @@ export function restartAutoStartService(): boolean {
   if (!isAutoStartInstalled())
     return false
 
+  if (!stopAutoStartService())
+    return false
+
   rotateDaemonLogIfNeeded()
   ensureDaemonLogFile()
-
-  try {
-    execFileSync('launchctl', buildLaunchctlKickstartArgs(process.getuid?.()), { stdio: 'inherit' })
-    return true
-  }
-  catch (error) {
-    consola.warn('launchctl kickstart failed, falling back to stop/start:', error instanceof Error ? error.message : error)
-  }
-
-  try {
-    execFileSync('launchctl', ['stop', LABEL], { stdio: 'pipe' })
-  }
-  catch {
-    // It may already be stopped. Starting below is the important part.
-  }
 
   try {
     execFileSync('launchctl', ['start', LABEL], { stdio: 'inherit' })
@@ -193,8 +223,35 @@ export function showAutoStartLogs(): boolean {
 }
 
 export function buildLaunchctlKickstartArgs(uid?: number): string[] {
-  const target = typeof uid === 'number' ? `gui/${uid}/${LABEL}` : LABEL
-  return ['kickstart', '-k', target]
+  return ['kickstart', '-k', launchdTarget(uid)]
+}
+
+function launchdTarget(uid?: number): string {
+  return typeof uid === 'number' ? `gui/${uid}/${LABEL}` : LABEL
+}
+
+export function isLaunchdJobRunningOutput(output: string): boolean {
+  return /^\s*state\s*=\s*running\s*$/m.test(output)
+}
+
+function waitForLaunchdStop(): boolean {
+  const target = launchdTarget(process.getuid?.())
+  const deadline = Date.now() + LAUNCHD_STOP_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    try {
+      const output = execFileSync('launchctl', ['print', target], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      if (!isLaunchdJobRunningOutput(output))
+        return true
+    }
+    catch {
+      return true
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+  }
+  return false
 }
 
 export async function uninstallAutoStart(): Promise<boolean> {
@@ -204,6 +261,8 @@ export async function uninstallAutoStart(): Promise<boolean> {
   }
 
   let hadErrors = false
+  if (!stopAutoStartService())
+    hadErrors = true
   try {
     execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
   }

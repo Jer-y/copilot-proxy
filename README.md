@@ -291,11 +291,15 @@ Requests with a disallowed browser Origin are rejected before route execution. R
 
 Inbound JSON request bodies are limited to 32 MiB by default. To override this, set `COPILOT_PROXY_MAX_JSON_BODY_BYTES` to a positive byte count.
 
+Legacy daemon and native-service installs snapshot the supported `COPILOT_PROXY_*`, proxy, `NO_PROXY`, and TLS CA environment into owner-only runtime files. `--proxy-env` fails closed unless a real proxy endpoint is configured. Bun services are bootstrapped with that environment before the runtime starts so Bun's startup-time proxy snapshot cannot silently bypass a restored proxy or retain an unapproved ambient proxy.
+
 Anthropic document URL sources are forwarded natively when the selected model uses Copilot's `/v1/messages` backend. Local URL fetching for translated document requests is disabled by default. If you explicitly trust the clients and URLs, set `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1`; the proxy still rejects localhost, private network, cloud metadata, and reserved DNS/IP targets before fetching and after redirects.
 
 `GET /token` is disabled by default because loopback is not a per-user security boundary. For a short-lived local diagnostic only, set `COPILOT_PROXY_EXPOSE_TOKEN=1`; the route still requires a loopback remote address, a loopback Host, and same-origin browser access. Disable it again immediately afterwards.
 
 `--manual` fails closed: requests receive `503` when no interactive TTY is available or approval times out. Use it only with a foreground `start`; it is not suitable for `enable`, `start -d`, containers without a TTY, or other unattended services. Treat all diagnostic logs as sensitive. `--show-token` deliberately prints bearer tokens and must never be used with persisted or shared logs.
+
+When a `/v1/responses` request must be translated to a native Claude `/v1/messages` backend, it must explicitly set `store: false`; the proxy cannot emulate the Responses API's default server-side persistence or make a translated response ID retrievable. Initial system/developer input is kept as the top-level Anthropic system prompt. Mid-conversation system/developer input is preserved only in Anthropic-supported positions; an unrepresentable ordering is rejected instead of being reordered.
 
 ### Auth Command Options
 

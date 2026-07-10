@@ -119,6 +119,41 @@ const AnthropicRedactedThinkingBlockSchema = z.object({
   data: z.string(),
 }).passthrough()
 
+const AnthropicServerToolUseBlockSchema = z.object({
+  type: z.literal('server_tool_use'),
+  id: z.string(),
+  name: z.string(),
+  input: z.record(z.string(), z.unknown()),
+  cache_control: AnthropicCacheControlSchema.optional(),
+}).passthrough()
+
+const STANDARD_ASSISTANT_CONTENT_BLOCK_TYPES = new Set([
+  'text',
+  'image',
+  'document',
+  'tool_result',
+  'tool_use',
+  'thinking',
+  'redacted_thinking',
+  'server_tool_use',
+])
+
+// Anthropic-hosted tools emit evolving content block shapes such as
+// server_tool_use, web_fetch_tool_result, and code_execution_tool_result.
+// Preserve unknown server blocks for native replay, while ensuring this
+// fallback cannot accidentally make a malformed standard block valid.
+const AnthropicServerContentBlockSchema = z.object({
+  type: z.string().min(1),
+}).passthrough().superRefine((value, ctx) => {
+  if (STANDARD_ASSISTANT_CONTENT_BLOCK_TYPES.has(value.type)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Malformed assistant content block of type "${value.type}"`,
+      path: ['type'],
+    })
+  }
+})
+
 const AnthropicAssistantMessageSchema = z.object({
   role: z.literal('assistant'),
   content: z.union([
@@ -128,6 +163,8 @@ const AnthropicAssistantMessageSchema = z.object({
       AnthropicToolUseBlockSchema,
       AnthropicThinkingBlockSchema,
       AnthropicRedactedThinkingBlockSchema,
+      AnthropicServerToolUseBlockSchema,
+      AnthropicServerContentBlockSchema,
     ])),
   ]),
 }).passthrough()
@@ -155,7 +192,10 @@ const AnthropicAdvisorToolSchema = z.object({
 }).passthrough()
 
 const AnthropicServerToolSchema = z.object({
-  type: z.string(),
+  type: z.string().refine(
+    type => type !== 'custom' && type !== 'advisor_20260301',
+    { message: 'Typed custom/advisor tools must include their required fields' },
+  ),
   name: z.string(),
   cache_control: AnthropicCacheControlSchema.optional(),
 }).passthrough()

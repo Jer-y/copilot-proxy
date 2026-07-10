@@ -1,6 +1,8 @@
 import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
+import { removeNativeServiceEnvironment } from '~/daemon/service-env'
+import { removeNativeServiceInstallState } from '~/daemon/service-install-state'
 
 export const disable = defineCommand({
   meta: {
@@ -30,5 +32,8 @@ export const disable = defineCommand({
     if (!success) {
       process.exit(1)
     }
+
+    removeNativeServiceEnvironment()
+    removeNativeServiceInstallState()
   },
 })

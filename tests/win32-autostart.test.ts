@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildTaskXml } from '../src/daemon/platform/win32'
+import { buildTaskXml, commitAutoStartInstall, rollbackAutoStartInstall } from '../src/daemon/platform/win32'
 
 describe('buildTaskXml', () => {
   const execPath = 'C:\\Program Files\\nodejs\\node.exe'
@@ -91,6 +91,25 @@ describe('buildTaskXml', () => {
     expect(xml).toContain('2&gt;&amp;1')
   })
 
+  test('does not hold the rotating daemon log open through cmd redirection', () => {
+    const xml = buildTaskXml('C:\\node.exe', ['main.js', 'start', '--_log-file'], { useHeadlessConhost: true })
+    expect(xml).not.toContain('&gt;&gt;')
+    expect(xml).not.toContain('2&gt;&amp;1')
+  })
+
+  test('process-rotated logging avoids cmd.exe interpretation of service arguments', () => {
+    const xml = buildTaskXml(
+      'C:\\Program Files\\nodejs\\node.exe',
+      ['C:\\app\\main.js', 'start', '--host', '127.0.0.1&calc', '--_log-file'],
+      { useHeadlessConhost: true },
+    )
+
+    expect(xml).toContain('<Command>conhost.exe</Command>')
+    expect(xml).toContain('--headless')
+    expect(xml).not.toContain('cmd.exe /d /s /c')
+    expect(xml).toContain('127.0.0.1&amp;calc')
+  })
+
   test('does not escape inner quotes with backslashes for cmd /s /c', () => {
     const xml = getDirectXml()
     expect(xml).toContain('/d /s /c &quot;&quot;C:\\Program Files\\nodejs\\node.exe&quot;')
@@ -100,4 +119,9 @@ describe('buildTaskXml', () => {
   test('does not contain DisallowStartOnRemoteAppSession (requires v1.3+)', () => {
     expect(getHeadlessXml()).not.toContain('DisallowStartOnRemoteAppSession')
   })
+})
+
+test('Task Scheduler install transaction helpers are safe when no install is pending', () => {
+  commitAutoStartInstall()
+  expect(rollbackAutoStartInstall()).toBe(true)
 })

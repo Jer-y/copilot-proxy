@@ -22,6 +22,9 @@ import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
+import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
+
+const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07'
 
 export interface AnthropicCountTokensResponse {
   input_tokens: number
@@ -61,6 +64,10 @@ export async function createAnthropicMessages(
   }
 
   if (payload.stream) {
+    await assertEventStreamResponse(
+      response,
+      'Invalid Copilot /v1/messages streaming response',
+    )
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/v1/messages',
       requestStartedAt,
@@ -73,7 +80,11 @@ export async function createAnthropicMessages(
     }
   }
 
-  const json = (await response.json()) as AnthropicResponse
+  const json = await readValidatedJsonResponse(
+    response,
+    'Invalid Copilot /v1/messages response',
+    isAnthropicResponse,
+  )
   logUpstreamRequestCompleted({
     endpoint: '/v1/messages',
     requestStartedAt,
@@ -107,7 +118,11 @@ export async function createAnthropicCountTokens(
     throw new HTTPError('Failed to count anthropic message tokens', response)
   }
 
-  const json = (await response.json()) as AnthropicCountTokensResponse
+  const json = await readValidatedJsonResponse(
+    response,
+    'Invalid Copilot /v1/messages/count_tokens response',
+    isAnthropicCountTokensResponse,
+  )
   logUpstreamRequestCompleted({
     endpoint: '/v1/messages/count_tokens',
     requestStartedAt,
@@ -121,12 +136,55 @@ function buildAnthropicRequestHeaders(
 ): Record<string, string> {
   const enableVision = payload.messages.some(messageContainsVisionInput)
   const isAgentCall = payload.messages.some(messageContinuesAgentLoop)
+  const anthropicBeta = mergeAnthropicBetaHeaders(
+    options?.anthropicBeta,
+    payload.messages.some(message => message.role === 'system')
+      ? MID_CONVERSATION_SYSTEM_BETA
+      : undefined,
+  )
 
   return {
     ...copilotHeaders(state, enableVision),
     'X-Initiator': isAgentCall ? 'agent' : 'user',
-    ...(options?.anthropicBeta ? { 'anthropic-beta': options.anthropicBeta } : {}),
+    ...(anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {}),
   }
+}
+
+function mergeAnthropicBetaHeaders(...headers: Array<string | undefined>): string | undefined {
+  const betas = new Set<string>()
+  for (const header of headers) {
+    for (const beta of header?.split(',') ?? []) {
+      const normalized = beta.trim()
+      if (normalized) {
+        betas.add(normalized)
+      }
+    }
+  }
+  return betas.size > 0 ? [...betas].join(',') : undefined
+}
+
+function isAnthropicResponse(value: unknown): value is AnthropicResponse {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const response = value as Partial<AnthropicResponse>
+  const usage = response.usage as Partial<AnthropicResponse['usage']> | undefined
+  return response.type === 'message'
+    && response.role === 'assistant'
+    && typeof response.id === 'string'
+    && typeof response.model === 'string'
+    && Array.isArray(response.content)
+    && typeof usage === 'object'
+    && usage !== null
+    && typeof usage.input_tokens === 'number'
+    && typeof usage.output_tokens === 'number'
+}
+
+function isAnthropicCountTokensResponse(value: unknown): value is AnthropicCountTokensResponse {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as Partial<AnthropicCountTokensResponse>).input_tokens === 'number'
 }
 
 function messageContainsVisionInput(

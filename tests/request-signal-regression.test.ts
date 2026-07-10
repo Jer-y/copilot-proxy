@@ -123,17 +123,24 @@ afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-function expectSingleUpstreamRequestWithoutAbortedSignalFor(pathSuffix: string): void {
+function expectSingleUpstreamRequestIsolatedFromInboundAbort(
+  pathSuffix: string,
+  inboundController: AbortController,
+): void {
   expect(upstreamRequests).toHaveLength(1)
   expect(upstreamRequests[0]?.url.endsWith(pathSuffix)).toBe(true)
+  inboundController.abort('client disconnected after upstream request started')
+  expect(upstreamRequests[0]?.signal).not.toBe(inboundController.signal)
   expect(upstreamRequests[0]?.signal?.aborted ?? false).toBe(false)
 }
 
 describe('route request-signal regression', () => {
   test('chat completions do not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
     const response = await server.request('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
       body: JSON.stringify({
         model: 'gpt-4o',
         messages: [{ role: 'user', content: 'hi' }],
@@ -149,13 +156,15 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.choices[0]?.message.content).toBe('ok')
-    expectSingleUpstreamRequestWithoutAbortedSignalFor('/chat/completions')
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/chat/completions', inboundController)
   })
 
   test('direct responses do not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
     const response = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
       body: JSON.stringify({
         model: 'gpt-5.4',
         input: 'hi',
@@ -171,27 +180,32 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.output[0]?.content[0]?.text).toBe('ok')
-    expectSingleUpstreamRequestWithoutAbortedSignalFor('/responses')
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/responses', inboundController)
   })
 
   test('responses translated through messages do not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
     const response = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
       body: JSON.stringify({
         model: 'claude-opus-4.6',
         input: 'hi',
+        store: false,
       }),
     })
 
     expect(response.status).toBe(200)
-    expectSingleUpstreamRequestWithoutAbortedSignalFor('/v1/messages')
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/v1/messages', inboundController)
   })
 
   test('native messages do not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
     const response = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
       body: JSON.stringify({
         model: 'claude-opus-4.6',
         max_tokens: 256,
@@ -206,13 +220,15 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.content[0]?.text).toBe('ok')
-    expectSingleUpstreamRequestWithoutAbortedSignalFor('/v1/messages')
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/v1/messages', inboundController)
   })
 
   test('messages translated through responses do not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
     const response = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
       body: JSON.stringify({
         model: 'gpt-5.4',
         max_tokens: 256,
@@ -221,13 +237,15 @@ describe('route request-signal regression', () => {
     })
 
     expect(response.status).toBe(200)
-    expectSingleUpstreamRequestWithoutAbortedSignalFor('/responses')
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/responses', inboundController)
   })
 
   test('embeddings do not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
     const response = await server.request('/v1/embeddings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
       body: JSON.stringify({
         model: 'text-embedding-3-small',
         input: 'hi',
@@ -241,6 +259,6 @@ describe('route request-signal regression', () => {
       }>
     }
     expect(json.data[0]?.embedding).toEqual([0.1, 0.2])
-    expectSingleUpstreamRequestWithoutAbortedSignalFor('/embeddings')
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/embeddings', inboundController)
   })
 })

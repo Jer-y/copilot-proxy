@@ -11,10 +11,15 @@ state.copilotToken = 'test-token'
 state.vsCodeVersion = '1.0.0'
 state.accountType = 'individual'
 
-const fetchMock = mock(async (_url: string, _init?: RequestInit): Promise<Response> => {
+const fetchMock = mock(async (_url: string, init?: RequestInit): Promise<Response> => {
+  const request = JSON.parse(String(init?.body)) as { input: Array<string> }
   return new Response(JSON.stringify({
     object: 'list',
-    data: [{ object: 'embedding', index: 0, embedding: [0.1, 0.2, 0.3] }],
+    data: request.input.map((_, index) => ({
+      object: 'embedding',
+      index,
+      embedding: [0.1, 0.2, 0.3],
+    })),
     model: 'text-embedding-3-small',
     usage: { prompt_tokens: 2, total_tokens: 2 },
   }), {

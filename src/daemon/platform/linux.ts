@@ -3,10 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import consola from 'consola'
+import { getUserHomeDir } from '~/lib/paths'
 
 const SERVICE_NAME = 'copilot-proxy'
-const SERVICE_DIR = path.join(os.homedir(), '.config', 'systemd', 'user')
+const SERVICE_DIR = path.join(getUserHomeDir(), '.config', 'systemd', 'user')
 const SERVICE_PATH = path.join(SERVICE_DIR, `${SERVICE_NAME}.service`)
+let pendingInstall: { previous: ExistingServiceFile | undefined } | undefined
 
 export function shellQuote(s: string): string {
   if (/[\r\n]/.test(s))
@@ -97,6 +99,7 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
     return false
   }
 
+  pendingInstall = { previous: previousUnit }
   consola.success('Auto-start enabled via systemd')
   return true
 }
@@ -121,7 +124,7 @@ function readExistingServiceFile(): ExistingServiceFile | undefined {
   }
 }
 
-function rollbackServiceFile(previous: ExistingServiceFile | undefined): void {
+function rollbackServiceFile(previous: ExistingServiceFile | undefined): boolean {
   try {
     if (previous) {
       fs.mkdirSync(SERVICE_DIR, { recursive: true })
@@ -141,9 +144,37 @@ function rollbackServiceFile(previous: ExistingServiceFile | undefined): void {
       fs.rmSync(SERVICE_PATH, { force: true })
     }
     execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
+    return true
   }
   catch (error) {
     consola.error('Failed to roll back systemd service installation:', error instanceof Error ? error.message : error)
+    return false
+  }
+}
+
+export function commitAutoStartInstall(): void {
+  pendingInstall = undefined
+}
+
+export function rollbackAutoStartInstall(): boolean {
+  const install = pendingInstall
+  pendingInstall = undefined
+  if (!install)
+    return true
+
+  if (!rollbackServiceFile(install.previous))
+    return false
+  if (!install.previous)
+    return true
+
+  try {
+    execFileSync('systemctl', ['--user', 'enable', SERVICE_NAME], { stdio: 'pipe' })
+    execFileSync('systemctl', ['--user', 'restart', SERVICE_NAME], { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    consola.error('Restored the previous systemd unit but failed to restart it:', error instanceof Error ? error.message : error)
+    return false
   }
 }
 

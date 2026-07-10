@@ -219,7 +219,7 @@ describe('Responses stream failure handling', () => {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn', stop_sequence: null },
       usage: {
-        input_tokens: 100,
+        input_tokens: 20,
         output_tokens: 7,
         cache_read_input_tokens: 80,
       },

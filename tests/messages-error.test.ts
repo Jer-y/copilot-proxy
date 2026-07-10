@@ -30,8 +30,10 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
 
   if (forwardedPayload.stream) {
     return new Response([
-      'data: {"id":"chatcmpl_test_stream","object":"chat.completion.chunk","created":0,"model":"claude-sonnet-4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":7,"completion_tokens":1,"total_tokens":8}}\n\n',
-      'data: [DONE]\n\n',
+      'event: message_start\n',
+      'data: {"type":"message_start","message":{"id":"msg_test_stream","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":7,"output_tokens":0}}}\n\n',
+      'event: message_stop\n',
+      'data: {"type":"message_stop"}\n\n',
     ].join(''), {
       status: 200,
       headers: { 'Content-Type': 'text/event-stream' },
@@ -39,19 +41,14 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
   }
 
   return new Response(JSON.stringify({
-    id: 'chatcmpl_test',
-    object: 'chat.completion',
-    created: 0,
+    id: 'msg_test',
+    type: 'message',
+    role: 'assistant',
     model: 'claude-sonnet-4',
-    choices: [{
-      index: 0,
-      message: {
-        role: 'assistant',
-        content: 'ok',
-      },
-      logprobs: null,
-      finish_reason: 'stop',
-    }],
+    content: [{ type: 'text', text: 'ok' }],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: { input_tokens: 7, output_tokens: 1 },
   }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
@@ -143,6 +140,60 @@ describe('messages error paths', () => {
     expect(result.success).toBe(true)
   })
 
+  test('assistant server tool blocks are accepted for native pause_turn replay', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [
+        { role: 'user', content: 'Research and run the example.' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'server_tool_use',
+              id: 'srvtoolu_1',
+              name: 'web_fetch',
+              input: { url: 'https://example.com' },
+            },
+            {
+              type: 'web_fetch_tool_result',
+              tool_use_id: 'srvtoolu_1',
+              content: { type: 'web_fetch_result', url: 'https://example.com' },
+            },
+            {
+              type: 'code_execution_tool_result',
+              tool_use_id: 'srvtoolu_2',
+              content: { stdout: 'ok', stderr: '' },
+            },
+          ],
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+  })
+
+  test('server block fallback does not accept malformed standard assistant blocks', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{ role: 'assistant', content: [{ type: 'text' }] }],
+    })
+
+    expect(result.success).toBe(false)
+  })
+
+  test('server block fallback does not accept malformed server_tool_use blocks', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{ role: 'assistant', content: [{ type: 'server_tool_use' }] }],
+    })
+
+    expect(result.success).toBe(false)
+  })
+
   test('output_config.effort xhigh is accepted for Copilot Claude compatibility', () => {
     const result = AnthropicMessagesPayloadSchema.safeParse({
       model: 'claude-opus-4-7',
@@ -204,6 +255,17 @@ describe('messages error paths', () => {
 
     expect(result.messages[0].content[0].cache_control).toEqual({ type: 'ephemeral' })
     expect(result.messages[1].content[0].cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  test('typed custom tools still require input_schema', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'gpt-5.4',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'custom', name: 'broken' }],
+    })
+
+    expect(result.success).toBe(false)
   })
 
   test('invalid thinking.budget_tokens type returns 400', async () => {

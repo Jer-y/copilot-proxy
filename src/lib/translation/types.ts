@@ -147,6 +147,24 @@ export interface AnthropicRedactedThinkingBlock {
   data: string
 }
 
+/**
+ * Content emitted by Anthropic-hosted tools. The concrete result payloads are
+ * tool-specific, so native /v1/messages passthrough preserves their remaining
+ * fields without trying to reinterpret them locally.
+ */
+export interface AnthropicServerToolUseBlock {
+  type: 'server_tool_use'
+  id: string
+  name: string
+  input: Record<string, unknown>
+  cache_control?: AnthropicCacheControl
+}
+
+export interface AnthropicServerToolResultBlock {
+  type: `${string}_tool_result`
+  [key: string]: unknown
+}
+
 export type AnthropicUserContentBlock
   = | AnthropicTextBlock
     | AnthropicImageBlock
@@ -158,6 +176,8 @@ export type AnthropicAssistantContentBlock
     | AnthropicToolUseBlock
     | AnthropicThinkingBlock
     | AnthropicRedactedThinkingBlock
+    | AnthropicServerToolUseBlock
+    | AnthropicServerToolResultBlock
 
 export interface AnthropicUserMessage {
   role: 'user'
@@ -245,6 +265,9 @@ export interface AnthropicContentBlockStartEvent {
       input: Record<string, unknown>
     })
     | { type: 'thinking', thinking: string, signature?: string }
+    | AnthropicRedactedThinkingBlock
+    | AnthropicServerToolUseBlock
+    | AnthropicServerToolResultBlock
 }
 
 export interface AnthropicContentBlockDeltaEvent {
@@ -364,5 +387,7 @@ export interface AnthropicToResponsesStreamState {
   hasAssistantOutput: boolean
   stopReason: string | undefined
   inputTokens: number
+  cacheCreationInputTokens: number
+  cacheReadInputTokens: number
   outputTokens: number
 }

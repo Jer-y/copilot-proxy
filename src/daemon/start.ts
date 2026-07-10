@@ -5,8 +5,9 @@ import process from 'node:process'
 
 import consola from 'consola'
 import { saveDaemonConfig } from '~/daemon/config'
-import { rotateDaemonLogIfNeeded } from '~/daemon/log-file'
+import { ensureDaemonLogFile, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
 import { isDaemonRunning, removePidFile, writePid } from '~/daemon/pid'
+import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
 import { PATHS } from '~/lib/paths'
 import { checkPortAvailable, isPortInUseError } from '~/lib/port'
 
@@ -35,11 +36,14 @@ const DAEMON_ENV_ALLOWLIST = [
   'XDG_DATA_HOME',
   'XDG_CONFIG_HOME',
   'XDG_STATE_HOME',
+  'COPILOT_PROXY_DATA_DIR',
   // GitHub token (if user passes via env)
   'GH_TOKEN',
   'GITHUB_TOKEN',
   // Proxy local security configuration
   'COPILOT_PROXY_CORS_ORIGINS',
+  'COPILOT_PROXY_ALLOWED_HOSTS',
+  'COPILOT_PROXY_EXPOSE_TOKEN',
   'COPILOT_PROXY_MAX_JSON_BODY_BYTES',
   'COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH',
   // Platform-specific (Windows)
@@ -75,6 +79,24 @@ export function filterEnvForDaemon(
     }
   }
   return filtered
+}
+
+export function buildLegacySupervisorArgs(
+  scriptPath: string,
+  dataDir: string = PATHS.APP_DIR,
+  proxyEnv = false,
+): string[] {
+  const args = [
+    scriptPath,
+    'start',
+    '--_supervisor',
+    '--_log-file',
+    '--_data-dir',
+    dataDir,
+  ]
+  if (proxyEnv)
+    args.push('--proxy-env')
+  return args
 }
 
 const LOCK_PATH = `${PATHS.DAEMON_PID}.lock`
@@ -137,7 +159,10 @@ function ensureLock(): void {
   }
 }
 
-export async function daemonStart(config: DaemonConfig): Promise<void> {
+export async function daemonStart(
+  config: DaemonConfig,
+  options: { usePersistedEnvironment?: boolean } = {},
+): Promise<void> {
   // Acquire lock to prevent concurrent starts.
   // ensureLock() calls process.exit() before lock is held,
   // so no cleanup needed in that path.
@@ -152,6 +177,43 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
 
   if (config.showToken) {
     consola.error('Cannot use --show-token with daemon mode because tokens would be written to daemon logs.')
+    exitWithLock(1)
+  }
+
+  const daemonEnv: NodeJS.ProcessEnv = { ...process.env }
+  try {
+    if (options.usePersistedEnvironment) {
+      try {
+        loadNativeServiceEnvironment({
+          proxyEnv: config.proxyEnv,
+          targetEnv: daemonEnv,
+          filePath: PATHS.DAEMON_ENV,
+        })
+      }
+      catch (error) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+          throw error
+
+        // Upgrade path for daemon.json files created before service-env.json
+        // existed. Explicit proxy mode still fails closed if the current shell
+        // cannot supply a proxy endpoint.
+        saveNativeServiceEnvironment({
+          proxyEnv: config.proxyEnv,
+          sourceEnv: daemonEnv,
+          filePath: PATHS.DAEMON_ENV,
+        })
+      }
+    }
+    else {
+      saveNativeServiceEnvironment({
+        proxyEnv: config.proxyEnv,
+        sourceEnv: daemonEnv,
+        filePath: PATHS.DAEMON_ENV,
+      })
+    }
+  }
+  catch (error) {
+    consola.error('Cannot prepare daemon environment:', error instanceof Error ? error.message : error)
     exitWithLock(1)
   }
 
@@ -189,38 +251,42 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
   }
 
   // Resolve the executable path
-  const execPath = process.argv[0]
-  const scriptPath = process.argv[1]
-
-  rotateDaemonLogIfNeeded()
-  const logStream = fs.openSync(PATHS.DAEMON_LOG, 'a', 0o600)
-  // Ensure permissions are correct even if file already existed with wider perms
+  let pid: number
   try {
-    fs.fchmodSync(logStream, 0o600)
+    pid = await spawnLegacySupervisor(config, daemonEnv)
   }
-  catch {}
-
-  const child = spawn(execPath, [scriptPath, 'start', '--_supervisor'], {
-    detached: true,
-    stdio: ['ignore', logStream, logStream],
-    env: filterEnvForDaemon(
-      process.env as Record<string, string | undefined>,
-      { proxyEnv: config.proxyEnv },
-    ),
-  })
-
-  if (child.pid === undefined) {
-    consola.error('Failed to start daemon process')
+  catch (error) {
+    consola.error('Failed to start daemon process:', error)
     removePidFile()
     return exitWithLock(1)
   }
 
-  await waitForSupervisorPid(child.pid, 2_000)
-  child.unref()
-
-  consola.success(`Daemon started (PID: ${child.pid})`)
+  consola.success(`Daemon started (PID: ${pid})`)
   consola.info(`Logs: ${PATHS.DAEMON_LOG}`)
   exitWithLock(0)
+}
+
+export async function spawnLegacySupervisor(
+  config: DaemonConfig,
+  daemonEnv: NodeJS.ProcessEnv,
+): Promise<number> {
+  const execPath = process.argv[0]
+  const scriptPath = process.argv[1]
+
+  rotateDaemonLogIfNeeded()
+  ensureDaemonLogFile()
+
+  const child = spawn(execPath, buildLegacySupervisorArgs(scriptPath, PATHS.APP_DIR, config.proxyEnv), {
+    detached: true,
+    stdio: 'ignore',
+    env: filterEnvForDaemon(daemonEnv, { proxyEnv: config.proxyEnv }),
+  })
+  if (child.pid === undefined)
+    throw new Error('Supervisor process did not return a PID')
+
+  await waitForSupervisorPid(child.pid, 2_000)
+  child.unref()
+  return child.pid
 }
 
 async function waitForSupervisorPid(pid: number, timeoutMs: number): Promise<void> {

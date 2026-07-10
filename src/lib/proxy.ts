@@ -8,6 +8,7 @@ import {
   DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
   DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
 } from './http-timeouts'
+import { hasProxyEndpointEnvironment, NETWORK_BOOTSTRAPPED_ENV, PROXY_ENV_KEYS } from './proxy-environment'
 import { configureCopilotFetchTimeouts } from './upstream-fetch'
 
 export {
@@ -23,16 +24,7 @@ export interface HttpClientConfig {
   connectTimeoutMs?: number
 }
 
-export const PROXY_ENV_KEYS = [
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'NO_PROXY',
-  'ALL_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
-  'all_proxy',
-] as const
+export { PROXY_ENV_KEYS } from './proxy-environment'
 
 export function clearProxyEnvironment(env: NodeJS.ProcessEnv): void {
   for (const key of PROXY_ENV_KEYS)
@@ -125,12 +117,18 @@ export function initializeNodeHttpClient(config: HttpClientConfig): void {
     headersTimeoutMs: config.headersTimeoutMs,
     bodyTimeoutMs: config.bodyTimeoutMs,
     connectTimeoutMs: config.connectTimeoutMs,
+    proxyEnv: config.proxyEnv,
   })
 
   if (typeof Bun !== 'undefined') {
     // Bun's native fetch implicitly reads HTTP(S)_PROXY. Explicitly remove all
     // proxy variables when --proxy-env is off so the default cannot leak
     // upstream prompts or bearer tokens through an ambient proxy.
+    if (!config.proxyEnv && hasProxyEndpointEnvironment(process.env)
+      && process.env[NETWORK_BOOTSTRAPPED_ENV] !== '1') {
+      throw new Error('Bun started with an ambient proxy while --proxy-env is disabled. Start through the copilot-proxy CLI so it can sanitize the network environment before serving requests.')
+    }
+
     if (!config.proxyEnv) {
       clearProxyEnvironment(process.env)
       consola.debug('HTTP proxy environment disabled for Bun fetch')
@@ -138,6 +136,10 @@ export function initializeNodeHttpClient(config: HttpClientConfig): void {
     else {
       consola.debug('HTTP proxy configured from environment for Bun fetch')
     }
+    // Bun already snapshotted its startup proxy configuration. Remove proxy
+    // credentials from the long-running JS environment after configuration;
+    // fetch continues using the approved snapshot.
+    clearProxyEnvironment(process.env)
     consola.debug('Configured Bun upstream timeout enforcement')
     return
   }

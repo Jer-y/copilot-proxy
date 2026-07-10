@@ -58,6 +58,7 @@ interface ModelLimits {
 interface ModelSupports {
   tool_calls?: boolean
   parallel_tool_calls?: boolean
+  reasoning_effort?: Array<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   dimensions?: boolean
   vision?: boolean
   web_search?: boolean

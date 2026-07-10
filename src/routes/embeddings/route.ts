@@ -5,10 +5,10 @@ import { forwardError } from '~/lib/error'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { EmbeddingRequestSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
+import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { validateBody } from '~/lib/validate'
 import {
   createEmbeddings,
-
 } from '~/services/copilot/create-embeddings'
 
 export const embeddingRoutes = new Hono()
@@ -22,7 +22,8 @@ embeddingRoutes.post('/', async (c) => {
 
     const response = await createEmbeddings(payload)
 
-    return c.json(response)
+    forwardUpstreamHeaders(c, response.headers)
+    return c.json(response.body)
   }
   catch (error) {
     if (error instanceof Error && error.name === 'AbortError')

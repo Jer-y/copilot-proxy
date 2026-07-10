@@ -2,6 +2,7 @@ import type { DaemonConfig } from '../src/daemon/config'
 
 import { describe, expect, test } from 'bun:test'
 import { buildServiceStartArgs, isEphemeralPackageRunnerPath } from '../src/daemon/enable'
+import { PATHS } from '../src/lib/paths'
 
 const baseConfig: DaemonConfig = {
   port: 4399,
@@ -25,6 +26,9 @@ describe('buildServiceStartArgs', () => {
       '127.0.0.1',
       '--account-type',
       'individual',
+      '--_service',
+      '--_data-dir',
+      PATHS.APP_DIR,
     ])
   })
 
@@ -56,6 +60,9 @@ describe('buildServiceStartArgs', () => {
       '0.0.0.0',
       '--account-type',
       'enterprise',
+      '--_service',
+      '--_data-dir',
+      PATHS.APP_DIR,
       '--verbose',
       '--manual',
       '--rate-limit',
@@ -79,6 +86,7 @@ describe('buildServiceStartArgs', () => {
 describe('isEphemeralPackageRunnerPath', () => {
   test('detects common npx and dlx cache paths', () => {
     expect(isEphemeralPackageRunnerPath('/home/alice/.npm/_npx/abc/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
+    expect(isEphemeralPackageRunnerPath('C:\\Users\\alice\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\@jer-y\\copilot-proxy\\dist\\main.js')).toBe(true)
     expect(isEphemeralPackageRunnerPath('/home/alice/.cache/pnpm/dlx/abc/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
     expect(isEphemeralPackageRunnerPath('/tmp/xfs-123/dlx-456/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
     expect(isEphemeralPackageRunnerPath('/tmp/bunx-123/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)

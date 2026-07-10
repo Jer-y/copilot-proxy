@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildSystemdUnit, shellQuote, shellQuoteForHelp } from '~/daemon/platform/linux'
+import { buildSystemdUnit, commitAutoStartInstall, rollbackAutoStartInstall, shellQuote, shellQuoteForHelp } from '~/daemon/platform/linux'
 
 describe('systemd shellQuote', () => {
   test('escapes systemd specifiers and dollar expansion', () => {
@@ -14,6 +14,11 @@ describe('systemd shellQuote', () => {
   test('rejects newlines in systemd arguments', () => {
     expect(() => shellQuote('/tmp/app\nExecStart=/bin/false')).toThrow('newlines')
   })
+})
+
+test('systemd install transaction helpers are safe when no install is pending', () => {
+  commitAutoStartInstall()
+  expect(rollbackAutoStartInstall()).toBe(true)
 })
 
 describe('buildSystemdUnit', () => {

@@ -1,5 +1,13 @@
 [test]
+# Every test process gets an isolated HOME/data root before application modules
+# are imported, so daemon tests can never touch a developer's real state.
+preload = [ "./tests/preload.ts" ]
 # Keep the existing suite fast by default; CI enables coverage explicitly.
 # This floor prevents broad untested regressions while leaving room for the
 # platform-specific service adapters that require native integration runners.
-coverageThreshold = { line = 0.70, function = 0.70 }
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [ "tests/**" ]
+# Bun does not currently report branch coverage. Statements provide the
+# additional executable-path gate, while targeted entry/shutdown tests cover
+# the critical branches that a global line/function floor can miss.
+coverageThreshold = { line = 0.70, function = 0.70, statement = 0.70 }

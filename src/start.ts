@@ -2,6 +2,7 @@
 
 import type { Server, ServerHandler } from 'srvx'
 import type { DaemonConfig } from '~/daemon/config'
+import fs from 'node:fs'
 import process from 'node:process'
 import { defineCommand } from 'citty'
 import clipboard from 'clipboardy'
@@ -10,6 +11,7 @@ import { serve } from 'srvx'
 import invariant from 'tiny-invariant'
 
 import { validateAccountType, validateHost, validatePort, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
+import { PATHS } from './lib/paths'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
@@ -33,6 +35,7 @@ export interface RunServerOptions {
   showToken: boolean
   proxyEnv: boolean
   exitOnPortInUse?: boolean
+  nativeService?: boolean
 }
 
 function formatHostForUrl(host: string): string {
@@ -117,7 +120,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       },
     })
 
-    installShutdownHandlers(appServer)
+    installShutdownHandlers(appServer, {
+      watchStopFile: process.platform === 'win32' && options.nativeService === true,
+    })
   }
   catch (error) {
     if (isPortInUseError(error) && (options.exitOnPortInUse ?? true)) {
@@ -132,33 +137,87 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await new Promise(() => {})
 }
 
-function installShutdownHandlers(appServer: Server): void {
+export async function closeServerGracefully(
+  appServer: Pick<Server, 'close'>,
+  timeoutMs = 3_000,
+): Promise<'graceful' | 'forced'> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+
+  try {
+    const gracefulClose = appServer.close(false)
+    const result = await Promise.race([
+      gracefulClose.then(() => 'graceful' as const),
+      new Promise<'timeout'>((resolve) => {
+        timeout = setTimeout(resolve, timeoutMs, 'timeout')
+        timeout.unref?.()
+      }),
+    ])
+
+    if (result === 'graceful')
+      return 'graceful'
+  }
+  catch (error) {
+    consola.warn('Graceful server close failed; forcing active connections closed:', error)
+  }
+  finally {
+    if (timeout)
+      clearTimeout(timeout)
+  }
+
+  await appServer.close(true)
+  return 'forced'
+}
+
+function installShutdownHandlers(
+  appServer: Server,
+  options: { watchStopFile: boolean },
+): void {
   let shuttingDown = false
+  let stopPoll: ReturnType<typeof setInterval> | undefined
 
   const shutdown = async (signal: NodeJS.Signals) => {
     if (shuttingDown)
       return
 
     shuttingDown = true
+    if (stopPoll)
+      clearInterval(stopPoll)
     consola.info(`Received ${signal}, shutting down...`)
     try {
-      await Promise.race([
-        appServer.close(true),
-        new Promise(resolve => setTimeout(resolve, 3_000)),
-      ])
+      const result = await closeServerGracefully(appServer)
+      if (result === 'forced')
+        consola.warn('Graceful shutdown timed out; active connections were forcibly closed')
     }
     catch (error) {
       consola.warn('Failed to close server cleanly:', error)
     }
+    if (options.watchStopFile) {
+      try {
+        fs.rmSync(PATHS.DAEMON_STOP, { force: true })
+      }
+      catch {}
+    }
     process.exit(0)
   }
 
-  process.once('SIGTERM', () => {
+  // Keep the listeners installed while draining. A Bun bootstrap parent and
+  // service managers may both deliver the same signal; a once-listener would
+  // disappear after the first delivery and let the duplicate take the default
+  // hard-exit path.
+  process.on('SIGTERM', () => {
     void shutdown('SIGTERM')
   })
-  process.once('SIGINT', () => {
+  process.on('SIGINT', () => {
     void shutdown('SIGINT')
   })
+
+  if (options.watchStopFile) {
+    stopPoll = setInterval(() => {
+      if (fs.existsSync(PATHS.DAEMON_STOP))
+        void shutdown('SIGTERM')
+    }, 250)
+    stopPoll.unref?.()
+  }
 }
 
 export const start = defineCommand({
@@ -254,8 +313,40 @@ export const start = defineCommand({
       default: false,
       description: 'Internal: run as supervisor (do not use directly)',
     },
+    '_service': {
+      type: 'boolean',
+      default: false,
+      description: 'Internal: load the persisted native-service environment',
+    },
+    '_log-file': {
+      type: 'boolean',
+      default: false,
+      description: 'Internal: write stdout/stderr through the rotating daemon log',
+    },
+    '_data-dir': {
+      type: 'string',
+      description: 'Internal: use the persisted native-service data directory',
+    },
   },
   async run({ args }) {
+    if (args['_log-file']) {
+      const { installRotatingProcessLog } = await import('~/daemon/log-file')
+      installRotatingProcessLog()
+    }
+
+    if (args._service) {
+      const { loadNativeServiceEnvironment } = await import('~/daemon/service-env')
+      loadNativeServiceEnvironment({ proxyEnv: args['proxy-env'] })
+      // A crash between a Windows stop request and its acknowledgement can
+      // leave a stale marker. Clear it before initialization; a concurrent stop
+      // will rewrite the marker and the watcher below will still observe it.
+      fs.rmSync(PATHS.DAEMON_STOP, { force: true })
+    }
+    else if (args['proxy-env'] && !args._supervisor) {
+      const { assertProxyEndpointAvailable } = await import('~/daemon/service-env')
+      assertProxyEndpointAvailable(process.env)
+    }
+
     const port = validatePort(args.port)
     if (port === null) {
       consola.error(`Invalid port: ${args.port}`)
@@ -350,6 +441,7 @@ export const start = defineCommand({
         ...mergedConfig,
         claudeCode: false,
         exitOnPortInUse: false,
+        nativeService: false,
       }
 
       return runAsSupervisor(() => runServer(options))
@@ -410,6 +502,7 @@ export const start = defineCommand({
       claudeCode: args['claude-code'],
       showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
+      nativeService: args._service,
     })
   },
 })

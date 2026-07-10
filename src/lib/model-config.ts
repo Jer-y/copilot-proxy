@@ -1,4 +1,7 @@
+import { state } from './state'
+
 export type BackendApiType = 'chat-completions' | 'responses' | 'anthropic-messages'
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface ModelConfig {
   /** Backend API types this model supports */
@@ -10,9 +13,9 @@ export interface ModelConfig {
   /** Whether to add copilot_cache_control headers for prompt caching */
   enableCacheControl?: boolean
   /** Default reasoning effort level */
-  defaultReasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  defaultReasoningEffort?: ReasoningEffort
   /** Supported reasoning effort levels */
-  supportedReasoningEfforts?: Array<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
+  supportedReasoningEfforts?: Array<ReasoningEffort>
   /** Whether the model supports tool_choice parameter */
   supportsToolChoice?: boolean
   /** Whether the model supports parallel tool calls */
@@ -133,6 +136,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportedApis: ['chat-completions', 'responses'],
     preferredApi: 'responses',
     reasoningMode: 'thinking',
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
   },
@@ -232,7 +236,7 @@ const DEFAULT_CONFIG: ModelConfig = {
 export function getModelConfig(modelId: string): ModelConfig {
   // Exact match
   if (MODEL_CONFIGS[modelId]) {
-    return MODEL_CONFIGS[modelId]
+    return withLiveReasoningEfforts(modelId, MODEL_CONFIGS[modelId])
   }
 
   // Try prefix match for families (e.g., 'gpt-5.2-codex-max' matches 'gpt-5.2-codex')
@@ -241,7 +245,7 @@ export function getModelConfig(modelId: string): ModelConfig {
   )
   for (const [key, config] of entries) {
     if (hasModelConfigPrefix(modelId, key)) {
-      return config
+      return withLiveReasoningEfforts(modelId, config)
     }
   }
 
@@ -249,15 +253,46 @@ export function getModelConfig(modelId: string): ModelConfig {
   // entries above: native /v1/messages for Anthropic clients, plus
   // chat-completions so that /chat/completions clients can still reach them.
   if (modelId.startsWith('claude')) {
-    return {
+    return withLiveReasoningEfforts(modelId, {
       supportedApis: ['anthropic-messages', 'chat-completions'],
       preferredApi: 'anthropic-messages',
       enableCacheControl: true,
       supportsToolChoice: false,
-    }
+    })
   }
 
-  return DEFAULT_CONFIG
+  return withLiveReasoningEfforts(modelId, DEFAULT_CONFIG)
+}
+
+function withLiveReasoningEfforts(modelId: string, config: ModelConfig): ModelConfig {
+  const models = state.models?.data
+  if (!models) {
+    return config
+  }
+
+  const liveModel = models.find(model => model.id === modelId)
+    ?? models
+      .filter(model => modelId.startsWith(`${model.id}-`))
+      .sort((a, b) => b.id.length - a.id.length)[0]
+  const liveEfforts = liveModel?.capabilities?.supports?.reasoning_effort
+  if (!Array.isArray(liveEfforts)) {
+    return config
+  }
+
+  return {
+    ...config,
+    supportedReasoningEfforts: liveEfforts.filter(isReasoningEffort),
+  }
+}
+
+function isReasoningEffort(value: string): value is ReasoningEffort {
+  return value === 'none'
+    || value === 'minimal'
+    || value === 'low'
+    || value === 'medium'
+    || value === 'high'
+    || value === 'xhigh'
+    || value === 'max'
 }
 
 function hasModelConfigPrefix(modelId: string, configModelId: string): boolean {

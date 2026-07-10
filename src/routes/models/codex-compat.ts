@@ -3,6 +3,7 @@ import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 
 import { getModelConfig } from '~/lib/model-config'
+import { fetchWithTimeout } from '~/lib/upstream-fetch'
 
 type CodexInputModality = 'text' | 'image'
 
@@ -126,9 +127,13 @@ function pruneCodexCatalogCache(): void {
 }
 
 async function fetchCodexBundledCatalogUncached(clientVersion: string): Promise<CodexModelsResponse> {
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `https://raw.githubusercontent.com/openai/codex/rust-v${clientVersion}/codex-rs/models-manager/models.json`,
-    { signal: AbortSignal.timeout(CODEX_CATALOG_FETCH_TIMEOUT_MS) },
+    {},
+    {
+      timeoutMs: CODEX_CATALOG_FETCH_TIMEOUT_MS,
+      timeoutLabel: `Codex bundled model catalog ${clientVersion}`,
+    },
   )
 
   if (!response.ok) {

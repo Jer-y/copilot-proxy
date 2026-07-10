@@ -9,9 +9,7 @@
         "-i",
         "--rm",
         "--init",
-        "--network",
-        "host",
-        "mcr.microsoft.com/playwright/mcp"
+        "mcr.microsoft.com/playwright/mcp@sha256:3d871c22ea2d4cca0966e2cfb1860e1cb03eb7353725a3d6cffd133296fb04eb"
       ],
       "enabled": true
     }

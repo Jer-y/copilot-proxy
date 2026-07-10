@@ -22,6 +22,7 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
   // preventing isDaemonRunning() from rejecting us after crash-restarts
   // or PID file self-healing.
   const supervisorStartTime = Date.now()
+  let stopRequestLogged = false
 
   // Write PID file so status/stop/restart can find us.
   // This covers both the start -d path (where parent already wrote it)
@@ -30,29 +31,31 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
 
   removeStopRequest()
 
-  const cleanup = () => {
+  const cleanupFiles = () => {
     removeStopRequest()
     removePidFile()
-    process.exit(0)
   }
 
-  process.on('SIGTERM', cleanup)
-  process.on('SIGINT', cleanup)
+  // Deliberately do not register SIGTERM/SIGINT handlers here. Once the server
+  // is active, runServer owns those signals and drains requests. Before that,
+  // the runtime's default termination is safe because there are no requests to
+  // drain, and it avoids a supervisor listener swallowing an early signal.
+  process.once('exit', cleanupFiles)
 
   const stopPoll = setInterval(() => {
     if (fs.existsSync(PATHS.DAEMON_STOP)) {
-      consola.info('Stop request file detected, shutting down daemon supervisor')
-      cleanup()
+      if (!stopRequestLogged) {
+        consola.info('Stop request file detected, requesting graceful shutdown')
+        stopRequestLogged = true
+      }
+      // Windows cannot receive SIGTERM from another process. Emitting it in
+      // process lets the same runServer shutdown handler drain requests on all
+      // platforms. Keep the stop file until exit so an early request is retried
+      // after runServer has installed its handler.
+      process.emit('SIGTERM', 'SIGTERM')
     }
   }, 500)
   stopPoll.unref?.()
-
-  // On Windows, SIGTERM doesn't fire - use 'exit' as fallback to clean up PID file
-  if (process.platform === 'win32') {
-    process.on('exit', () => {
-      removePidFile()
-    })
-  }
 
   while (true) {
     // Self-heal: restore PID file if it was deleted externally.
@@ -95,6 +98,10 @@ export async function runAsSupervisor(runFn: () => Promise<void>): Promise<void>
       backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS)
     }
   }
+
+  clearInterval(stopPoll)
+  process.removeListener('exit', cleanupFiles)
+  cleanupFiles()
 }
 
 function removeStopRequest(): void {

@@ -197,6 +197,21 @@ describe('finalizeNativeAnthropicPassthroughState', () => {
     expect(shouldEmitNativeAnthropicTerminationError(state)).toBe(true)
   })
 
+  test('refuses to recover redacted-thinking-only output as a successful message', () => {
+    const state = createNativeAnthropicPassthroughState()
+    recordNativeMessageStart(state)
+    updateNativeAnthropicPassthroughState(state, {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'redacted_thinking', data: 'opaque-reasoning' },
+    })
+
+    expect(state.hasThinkingContent).toBe(true)
+    expect(state.hasNonThinkingContent).toBe(false)
+    expect(finalizeNativeAnthropicPassthroughState(state)).toEqual([])
+    expect(shouldEmitNativeAnthropicTerminationError(state)).toBe(true)
+  })
+
   test('refuses to complete an open tool_use block', () => {
     const state = createNativeAnthropicPassthroughState()
     recordNativeMessageStart(state)
@@ -213,6 +228,51 @@ describe('finalizeNativeAnthropicPassthroughState', () => {
 
     expect(finalizeNativeAnthropicPassthroughState(state)).toEqual([])
     expect(state.messageStopSeen).toBe(false)
+  })
+
+  test('tracks server_tool_use without assuming a text field', () => {
+    const state = createNativeAnthropicPassthroughState()
+    recordNativeMessageStart(state)
+
+    expect(() => updateNativeAnthropicPassthroughState(state, {
+      type: 'content_block_start',
+      index: 0,
+      content_block: {
+        type: 'server_tool_use',
+        id: 'srvtoolu_1',
+        name: 'code_execution',
+        input: {},
+      },
+    })).not.toThrow()
+
+    expect(state.hasNonThinkingContent).toBe(true)
+    expect(finalizeNativeAnthropicPassthroughState(state)).toEqual([])
+    expect(state.messageStopSeen).toBe(false)
+  })
+
+  test('tracks hosted tool result blocks without assuming a text field', () => {
+    const state = createNativeAnthropicPassthroughState()
+    recordNativeMessageStart(state, 4)
+
+    expect(() => updateNativeAnthropicPassthroughState(state, {
+      type: 'content_block_start',
+      index: 1,
+      content_block: {
+        type: 'code_execution_tool_result',
+        tool_use_id: 'srvtoolu_1',
+        content: { stdout: 'ok', stderr: '' },
+      },
+    })).not.toThrow()
+
+    expect(finalizeNativeAnthropicPassthroughState(state)).toEqual([
+      { type: 'content_block_stop', index: 1 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 4 },
+      },
+      { type: 'message_stop' },
+    ])
   })
 })
 

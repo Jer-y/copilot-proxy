@@ -1,7 +1,7 @@
 import type { AnthropicMessagesPayload } from './types'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
-import consola from 'consola'
 import { isRecord } from '~/lib/type-guards'
+import { throwAnthropicInvalidRequestError } from './anthropic-compat'
 
 function getAnthropicOutputFormatType(
   outputConfig: AnthropicMessagesPayload['output_config'],
@@ -18,18 +18,30 @@ interface NormalizedJsonSchemaFormat {
 
 function normalizeAnthropicJsonSchemaFormat(
   outputConfig: AnthropicMessagesPayload['output_config'],
-): NormalizedJsonSchemaFormat | undefined {
+): NormalizedJsonSchemaFormat {
   const format = outputConfig?.format
   if (!isRecord(format)) {
-    return undefined
+    throwAnthropicInvalidRequestError(
+      'Anthropic output_config.format.type="json_schema" requires an object "schema".',
+    )
   }
 
   const nestedJsonSchema = isRecord(format.json_schema)
     ? format.json_schema
     : undefined
-  const schema = nestedJsonSchema?.schema ?? format.schema
+  const hasFlatSchema = isRecord(format.schema)
+  const hasNestedSchema = isRecord(nestedJsonSchema?.schema)
+  if (hasFlatSchema && hasNestedSchema) {
+    throwAnthropicInvalidRequestError(
+      'Anthropic output_config.format for json_schema must use either flat "schema" or legacy "json_schema.schema", not both.',
+    )
+  }
+
+  const schema = hasNestedSchema ? nestedJsonSchema.schema : format.schema
   if (!isRecord(schema)) {
-    return undefined
+    throwAnthropicInvalidRequestError(
+      'Anthropic output_config.format.type="json_schema" requires an object "schema".',
+    )
   }
 
   const rawName = nestedJsonSchema?.name ?? format.name
@@ -56,20 +68,20 @@ export function mapAnthropicOutputFormatToResponses(
 
   if (formatType === 'json_schema') {
     const normalized = normalizeAnthropicJsonSchemaFormat(outputConfig)
-    if (normalized) {
-      return {
-        format: {
-          type: 'json_schema',
-          name: normalized.name,
-          schema: normalized.schema,
-          ...(typeof normalized.strict === 'boolean' && { strict: normalized.strict }),
-        },
-      }
+    return {
+      format: {
+        type: 'json_schema',
+        name: normalized.name,
+        schema: normalized.schema,
+        ...(typeof normalized.strict === 'boolean' && { strict: normalized.strict }),
+      },
     }
   }
 
   if (formatType) {
-    consola.debug(`Ignoring Anthropic output_config.format.type=${formatType} on Responses — unsupported format type.`)
+    throwAnthropicInvalidRequestError(
+      `Anthropic output_config.format.type="${formatType}" cannot be represented on the Responses translation path.`,
+    )
   }
 
   return undefined

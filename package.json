@@ -39,7 +39,7 @@
     "prepare": "test -d .git && simple-git-hooks || true",
     "release": "bumpp",
     "start": "NODE_ENV=production bun run ./src/main.ts start",
-    "test:coverage": "bun test --coverage --coverage-reporter=text",
+    "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov && bun run ./scripts/check-critical-coverage.ts",
     "test:live:copilot": "bun test tests/live/copilot-capabilities.test.ts",
     "typecheck": "tsc"
   },

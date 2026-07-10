@@ -170,6 +170,7 @@ describe('assertResponsesPayloadTranslatable', () => {
       {
         model: 'claude-opus-4.6',
         input: 'hi',
+        store: false,
         tools: [
           {
             type: 'function',
@@ -204,6 +205,7 @@ describe('assertResponsesPayloadTranslatable', () => {
         {
           model: 'claude-opus-4.6',
           input: 'hi',
+          store: false,
           ...extra,
         },
         (msg) => { throw new Error(msg) },
@@ -216,6 +218,7 @@ describe('assertResponsesPayloadTranslatable', () => {
       {
         model: 'claude-opus-4.6',
         input: 'hi',
+        store: false,
         tool_choice: {
           type: 'allowed_tools',
           mode: 'required',
@@ -243,6 +246,7 @@ describe('assertResponsesPayloadTranslatable', () => {
         {
           model: 'claude-opus-4.6',
           input: 'hi',
+          store: false,
           ...extra,
         },
         (msg) => { throw new Error(msg) },
@@ -269,6 +273,16 @@ describe('assertResponsesPayloadTranslatable', () => {
       },
       (msg) => { throw new Error(msg) },
     )).not.toThrow()
+  })
+
+  test('rejects omitted store because Responses persist by default', () => {
+    expect(() => assertResponsesPayloadTranslatable(
+      {
+        model: 'claude-opus-4.6',
+        input: 'hi',
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/must explicitly set store=false/)
   })
 })
 
@@ -301,6 +315,18 @@ describe('assertMessagesPayloadTranslatable', () => {
         max_tokens: 64,
         messages: [{ role: 'user', content: 'Use code execution.' }],
         tools: [{ type: 'code_execution_20260120', name: 'code_execution' }],
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/server-side tools/)
+  })
+
+  test('rejects unknown typed non-custom tools instead of silently omitting them', () => {
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Fetch a page.' }],
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch' }],
       },
       (msg) => { throw new Error(msg) },
     )).toThrow(/server-side tools/)

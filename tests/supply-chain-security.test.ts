@@ -49,4 +49,15 @@ describe('build and release supply-chain controls', () => {
       expect(gitignore).toContain(pattern)
     }
   })
+
+  test('pins the optional Playwright MCP image and does not grant host networking', async () => {
+    const config = JSON.parse(await readFile(new URL('opencode.json', ROOT), 'utf8')) as {
+      mcp?: { playwright?: { command?: string[] } }
+    }
+    const command = config.mcp?.playwright?.command ?? []
+    const image = command.find(value => value.startsWith('mcr.microsoft.com/playwright/mcp'))
+
+    expect(image).toMatch(/^mcr\.microsoft\.com\/playwright\/mcp@sha256:[a-f0-9]{64}$/)
+    expect(command.join(' ')).not.toContain('--network host')
+  })
 })

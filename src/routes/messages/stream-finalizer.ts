@@ -258,7 +258,7 @@ function isRecoverableUpstreamTermination(error: unknown): boolean {
   return code === 'UND_ERR_SOCKET' || message === 'other side closed'
 }
 
-type NativeAnthropicBlockType = 'text' | 'thinking' | 'tool_use'
+type NativeAnthropicBlockType = string
 
 export interface NativeAnthropicPassthroughState extends RecoverableAnthropicOutputState {
   currentBlockIndex: number | null
@@ -302,11 +302,17 @@ export function updateNativeAnthropicPassthroughState(
       if (event.content_block.type === 'thinking') {
         state.hasThinkingContent ||= event.content_block.thinking.length > 0
       }
-      else if (event.content_block.type === 'tool_use') {
-        state.hasNonThinkingContent = true
+      else if (event.content_block.type === 'redacted_thinking') {
+        state.hasThinkingContent ||= event.content_block.data.length > 0
+      }
+      else if (event.content_block.type === 'text') {
+        state.hasNonThinkingContent ||= event.content_block.text.length > 0
       }
       else {
-        state.hasNonThinkingContent ||= event.content_block.text.length > 0
+        // tool_use, server_tool_use, and hosted-tool result blocks are all
+        // client-visible assistant output. Native passthrough must not assume
+        // every non-thinking block carries a `text` field.
+        state.hasNonThinkingContent = true
       }
       return
     }
@@ -364,7 +370,7 @@ export function finalizeNativeAnthropicPassthroughState(
     return []
   }
 
-  if (state.currentBlockType === 'tool_use') {
+  if (state.currentBlockType === 'tool_use' || state.currentBlockType === 'server_tool_use') {
     return []
   }
 
@@ -420,7 +426,9 @@ function summarizeAnthropicEvent(event: AnthropicStreamEventData): Record<string
           ? event.content_block.text.length
           : event.content_block.type === 'thinking'
             ? event.content_block.thinking.length
-            : 0,
+            : event.content_block.type === 'redacted_thinking'
+              ? event.content_block.data.length
+              : 0,
       }
     case 'content_block_delta': {
       const chars = event.delta.type === 'text_delta'

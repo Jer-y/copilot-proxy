@@ -16,6 +16,7 @@ export interface CopilotFetchTimeoutConfig {
   headersTimeoutMs?: number
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
+  proxyEnv?: boolean
 }
 
 let copilotFetchTimeoutConfig: CopilotFetchTimeoutConfig = {}
@@ -41,7 +42,7 @@ export function fetchCopilot(
   // even when the user configured a different value or explicitly disabled
   // the dispatcher timeout with 0.
   if (typeof Bun === 'undefined')
-    return fetch(input, init)
+    return fetchWithRuntimeProxy(input, init)
 
   return fetchCopilotUnderBun(input, init)
 }
@@ -63,7 +64,7 @@ export async function fetchWithTimeout(
   options: Required<FetchWithTimeoutOptions>,
 ): Promise<Response> {
   if (options.timeoutMs === 0)
-    return fetch(input, init)
+    return fetchWithRuntimeProxy(input, init)
 
   const timeoutSignal = AbortSignal.timeout(options.timeoutMs)
   const signal = init.signal
@@ -71,7 +72,7 @@ export async function fetchWithTimeout(
     : timeoutSignal
 
   try {
-    return await fetch(input, {
+    return await fetchWithRuntimeProxy(input, {
       ...init,
       signal,
     })
@@ -132,7 +133,7 @@ async function fetchCopilotUnderBun(
 
   let response: Response
   try {
-    response = await fetch(input, {
+    response = await fetchWithRuntimeProxy(input, {
       ...init,
       signal: requestSignal,
     })
@@ -156,6 +157,20 @@ async function fetchCopilotUnderBun(
     target,
     timeoutController,
   )
+}
+
+function fetchWithRuntimeProxy(
+  input: FetchInput,
+  init: RequestInit = {},
+): Promise<Response> {
+  if (typeof Bun === 'undefined')
+    return fetch(input, init)
+
+  // The CLI restarts Bun with either a sanitized environment or the persisted
+  // service proxy environment before this module is loaded. Bun snapshots that
+  // startup environment, so ordinary fetch now has deterministic direct/proxy
+  // behavior even after credentials are removed from process.env.
+  return fetch(input, init)
 }
 
 function wrapResponseBodyWithTimeout(

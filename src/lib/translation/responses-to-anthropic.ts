@@ -60,6 +60,12 @@ export function translateResponsesResponseToAnthropic(
     response.incomplete_details,
   )
 
+  const cachedInputTokens = response.usage?.input_tokens_details?.cached_tokens
+  const uncachedInputTokens = Math.max(
+    0,
+    (response.usage?.input_tokens ?? 0) - (cachedInputTokens ?? 0),
+  )
+
   return {
     id: response.id,
     type: 'message',
@@ -69,10 +75,10 @@ export function translateResponsesResponseToAnthropic(
     stop_reason: stopReason,
     stop_sequence: null,
     usage: {
-      input_tokens: response.usage?.input_tokens ?? 0,
+      input_tokens: uncachedInputTokens,
       output_tokens: response.usage?.output_tokens ?? 0,
-      ...(response.usage?.input_tokens_details?.cached_tokens !== undefined && {
-        cache_read_input_tokens: response.usage.input_tokens_details.cached_tokens,
+      ...(cachedInputTokens !== undefined && {
+        cache_read_input_tokens: cachedInputTokens,
       }),
     },
   }
@@ -167,8 +173,8 @@ export function translateResponsesRequestToAnthropic(
   }
 
   const model = options?.model ?? payload.model
-  const { messages, systemParts } = translateResponsesInputToAnthropicMessages(payload.input)
-  const system = buildSystemString(payload.instructions, systemParts)
+  const { messages, prefixSystemParts } = translateResponsesInputToAnthropicMessages(payload.input)
+  const system = buildSystemString(payload.instructions, prefixSystemParts)
   const tools = translateResponsesToolsToAnthropic(payload.tools)
   const toolChoice = translateResponsesToAnthropicToolChoice(
     payload.tool_choice,
@@ -196,19 +202,16 @@ export function translateResponsesRequestToAnthropic(
 
 function translateResponsesInputToAnthropicMessages(
   input: ResponsesPayload['input'],
-): { messages: Array<AnthropicMessage>, systemParts: string[] } {
-  const systemParts: string[] = []
-
+): { messages: Array<AnthropicMessage>, prefixSystemParts: string[] } {
+  const prefixSystemParts: string[] = []
   if (typeof input === 'string') {
-    return {
-      messages: [{ role: 'user', content: input }],
-      systemParts,
-    }
+    return { messages: [{ role: 'user', content: input }], prefixSystemParts }
   }
 
   const messages: Array<AnthropicMessage> = []
   let pendingAssistantBlocks: Array<AnthropicAssistantContentBlock> = []
   let pendingUserBlocks: Array<AnthropicUserContentBlock> = []
+  let conversationStarted = false
 
   const flushAssistant = () => {
     if (pendingAssistantBlocks.length > 0) {
@@ -230,6 +233,7 @@ function translateResponsesInputToAnthropicMessages(
     }
 
     if (isFunctionCallItem(item)) {
+      conversationStarted = true
       // tool_use → assistant side
       flushUser()
       const parsedInput = parseToolArguments(item.arguments, 'input[].function_call.arguments')
@@ -243,6 +247,7 @@ function translateResponsesInputToAnthropicMessages(
     }
 
     if (isFunctionCallOutputItem(item)) {
+      conversationStarted = true
       // tool_result → user side (don't flush user — merge multiple)
       flushAssistant()
       pendingUserBlocks.push({
@@ -259,11 +264,20 @@ function translateResponsesInputToAnthropicMessages(
     }
 
     if (item.role === 'system' || item.role === 'developer') {
-      systemParts.push(flattenToString(item.content))
+      const text = flattenToString(item.content)
+      if (!conversationStarted) {
+        prefixSystemParts.push(text)
+        continue
+      }
+
+      flushAssistant()
+      flushUser()
+      appendMidConversationSystemMessage(messages, text)
       continue
     }
 
     if (item.role === 'user') {
+      conversationStarted = true
       flushAssistant()
       flushUser()
       pushUserContentBlocks(item.content, pendingUserBlocks)
@@ -271,6 +285,7 @@ function translateResponsesInputToAnthropicMessages(
     }
 
     if (item.role === 'assistant') {
+      conversationStarted = true
       flushAssistant()
       flushUser()
       pushAssistantContentBlocks(item.content, pendingAssistantBlocks)
@@ -281,7 +296,49 @@ function translateResponsesInputToAnthropicMessages(
   flushAssistant()
   flushUser()
 
-  return { messages, systemParts }
+  validateMidConversationSystemFollowers(messages)
+
+  return { messages, prefixSystemParts }
+}
+
+function validateMidConversationSystemFollowers(messages: Array<AnthropicMessage>): void {
+  for (let index = 0; index < messages.length; index++) {
+    if (messages[index]?.role !== 'system')
+      continue
+
+    const next = messages[index + 1]
+    if (next !== undefined && next.role !== 'assistant') {
+      throwInvalidRequestError(
+        'A translated mid-conversation system/developer message must precede an assistant turn or end the message array.',
+      )
+    }
+  }
+}
+
+function appendMidConversationSystemMessage(
+  messages: Array<AnthropicMessage>,
+  text: string,
+): void {
+  const previous = messages.at(-1)
+  if (previous?.role === 'system') {
+    const previousText = typeof previous.content === 'string'
+      ? previous.content
+      : previous.content.map(block => block.text).join('\n\n')
+    previous.content = [previousText, text].filter(Boolean).join('\n\n')
+    return
+  }
+
+  // Anthropic's mid-conversation-system beta only permits a system turn after
+  // a user turn (tool results are represented as user turns too). Moving an
+  // instruction across an assistant turn would change its semantics, so fail
+  // explicitly instead of hoisting or sending an upstream-invalid request.
+  if (previous?.role !== 'user') {
+    throwInvalidRequestError(
+      'Responses system/developer messages can only be translated at the start of the conversation or immediately after a user/tool-result turn.',
+    )
+  }
+
+  messages.push({ role: 'system', content: text })
 }
 
 function flattenToString(content: ResponsesMessageInputItem['content']): string {
@@ -347,9 +404,9 @@ function stringifyUnknownContentPart(part: Record<string, unknown>): string {
 
 function buildSystemString(
   instructions: string | undefined,
-  systemParts: string[],
+  prefixSystemParts: string[],
 ): string | undefined {
-  const parts = [instructions, ...systemParts].filter(Boolean) as string[]
+  const parts = [instructions, ...prefixSystemParts].filter(Boolean) as string[]
   return parts.length > 0 ? parts.join('\n\n') : undefined
 }
 
@@ -958,10 +1015,15 @@ function rememberResponseEnvelope(
   state.responseModel = state.requestedModel ?? response.model ?? state.responseModel
 
   if (response.usage) {
-    state.inputTokens = response.usage.input_tokens ?? state.inputTokens
+    const cachedInputTokens = response.usage.input_tokens_details?.cached_tokens
+      ?? state.cacheReadInputTokens
+    state.inputTokens = Math.max(
+      0,
+      (response.usage.input_tokens ?? state.inputTokens) - (cachedInputTokens ?? 0),
+    )
     state.outputTokens = response.usage.output_tokens ?? state.outputTokens
-    if (response.usage.input_tokens_details?.cached_tokens !== undefined) {
-      state.cacheReadInputTokens = response.usage.input_tokens_details.cached_tokens
+    if (cachedInputTokens !== undefined) {
+      state.cacheReadInputTokens = cachedInputTokens
     }
   }
 }

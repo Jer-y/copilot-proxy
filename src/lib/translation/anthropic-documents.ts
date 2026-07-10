@@ -362,55 +362,7 @@ async function fetchDocumentUrlAtVerifiedAddresses(
   url: string,
   addresses: ReadonlyArray<DocumentResolvedAddress>,
 ): Promise<DocumentUrlFetchResult> {
-  if (typeof Bun !== 'undefined')
-    return await fetchDocumentUrlUnderBun(url, addresses)
-
   return await fetchDocumentUrlUnderNode(url, addresses)
-}
-
-async function fetchDocumentUrlUnderBun(
-  url: string,
-  addresses: ReadonlyArray<DocumentResolvedAddress>,
-): Promise<DocumentUrlFetchResult> {
-  const original = new URL(url)
-  const originalHost = original.host
-  const serverName = normalizeLookupHostname(original.hostname)
-  const candidates = [...addresses].sort((left, right) => left.family - right.family)
-  const timeoutSignal = AbortSignal.timeout(URL_FETCH_TIMEOUT)
-  let lastError: unknown
-
-  for (const candidate of candidates) {
-    const pinned = new URL(original)
-    pinned.hostname = candidate.family === 6 ? `[${candidate.address}]` : candidate.address
-
-    try {
-      const response = await fetch(pinned, {
-        headers: {
-          'Accept': 'application/pdf, text/*;q=0.9, application/octet-stream;q=0.5',
-          'Host': originalHost,
-          'User-Agent': 'copilot-proxy-document-fetch/1',
-        },
-        redirect: 'manual',
-        signal: timeoutSignal,
-        ...(original.protocol === 'https:' && {
-          // Bun exposes TLS SNI as a fetch option. Supplying the original
-          // hostname keeps certificate verification intact while the URL itself
-          // is pinned to the already-validated IP address.
-          tls: { serverName },
-        }),
-      } as RequestInit)
-
-      return {
-        response,
-        dispose: async () => {},
-      }
-    }
-    catch (error) {
-      lastError = error
-    }
-  }
-
-  throw lastError ?? new Error('No verified document URL address was reachable')
 }
 
 async function fetchDocumentUrlUnderNode(

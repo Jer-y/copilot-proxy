@@ -115,12 +115,13 @@ export function translateAnthropicRequestToResponses(
 
   return {
     model,
+    store: false,
     ...(instructions && { instructions }),
     input,
     stream: payload.stream,
     temperature: payload.temperature,
     top_p: payload.top_p,
-    max_output_tokens: clampMaxOutputTokens(payload.max_tokens),
+    max_output_tokens: validateMaxOutputTokens(payload.max_tokens),
     ...(tools && { tools }),
     ...(toolChoice !== undefined && { tool_choice: toolChoice }),
     ...(reasoning && { reasoning }),
@@ -378,10 +379,15 @@ function translateAnthropicToolChoiceToResponses(
   }
 }
 
-function clampMaxOutputTokens(maxTokens: number | null | undefined): number | undefined {
+function validateMaxOutputTokens(maxTokens: number | null | undefined): number | undefined {
   if (maxTokens === null || maxTokens === undefined)
     return undefined
-  return Math.max(maxTokens, 16)
+  if (maxTokens < 16) {
+    throwAnthropicInvalidRequestError(
+      'Anthropic max_tokens must be at least 16 when translating the request to the Responses API; the proxy will not silently increase the client limit.',
+    )
+  }
+  return maxTokens
 }
 
 function serializeToolResultContent(
@@ -539,6 +545,8 @@ export function translateAnthropicResponseToResponses(
 
   const { status, incomplete_details } = mapAnthropicStopReasonToResponsesStatus(response.stop_reason)
 
+  const usage = buildResponsesUsage(response.usage)
+
   return {
     id: response.id,
     object: 'response',
@@ -550,14 +558,27 @@ export function translateAnthropicResponseToResponses(
     error: null,
     incomplete_details: incomplete_details ?? null,
     ...buildResponsesEnvelopeDefaults(output),
-    usage: {
-      input_tokens: response.usage.input_tokens,
-      output_tokens: response.usage.output_tokens,
-      total_tokens: response.usage.input_tokens + response.usage.output_tokens,
-      ...(response.usage.cache_read_input_tokens
-        ? { input_tokens_details: { cached_tokens: response.usage.cache_read_input_tokens } }
-        : undefined),
-    },
+    usage,
+  }
+}
+
+function buildResponsesUsage(
+  usage: AnthropicResponse['usage'],
+): NonNullable<ResponsesResponse['usage']> {
+  // Anthropic reports uncached, cache-write, and cache-read input tokens as
+  // disjoint buckets. Responses input_tokens is the total input, with cache
+  // hits represented as a subset in input_tokens_details.cached_tokens.
+  const inputTokens = usage.input_tokens
+    + (usage.cache_creation_input_tokens ?? 0)
+    + (usage.cache_read_input_tokens ?? 0)
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: usage.output_tokens,
+    total_tokens: inputTokens + usage.output_tokens,
+    ...((usage.cache_read_input_tokens ?? 0) > 0
+      ? { input_tokens_details: { cached_tokens: usage.cache_read_input_tokens! } }
+      : undefined),
   }
 }
 
@@ -592,7 +613,7 @@ function buildResponsesEnvelopeDefaults(
   output: Array<ResponsesOutputItem>,
 ): Pick<
   ResponsesResponse,
-  'instructions' | 'max_output_tokens' | 'previous_response_id' | 'text' | 'reasoning' | 'metadata'
+  'instructions' | 'max_output_tokens' | 'previous_response_id' | 'store' | 'text' | 'reasoning' | 'metadata'
 > {
   const reasoningSummary = output
     .filter((item): item is ResponsesOutputItem & { type: 'reasoning', summary: Array<{ type: 'summary_text', text: string }> } =>
@@ -605,6 +626,7 @@ function buildResponsesEnvelopeDefaults(
     instructions: null,
     max_output_tokens: null,
     previous_response_id: null,
+    store: false,
     text: { format: { type: 'text' } },
     reasoning: {
       effort: null,
@@ -637,6 +659,8 @@ export function createAnthropicToResponsesStreamState(options?: { requestedModel
     hasAssistantOutput: false,
     stopReason: undefined,
     inputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
     outputTokens: 0,
   }
   streamCreatedAtByState.set(state, nowUnixSeconds())
@@ -664,6 +688,8 @@ export function translateAnthropicStreamEventToResponses(
       state.responseId = event.message.id || state.responseId
       state.model = state.requestedModel ?? event.message.model ?? state.model
       state.inputTokens = event.message.usage?.input_tokens ?? 0
+      state.cacheCreationInputTokens = event.message.usage?.cache_creation_input_tokens ?? 0
+      state.cacheReadInputTokens = event.message.usage?.cache_read_input_tokens ?? 0
       streamCreatedAtByState.set(state, streamCreatedAtByState.get(state) ?? nowUnixSeconds())
 
       const partial = buildAnthropicPartialResponse(state, 'in_progress')
@@ -843,6 +869,15 @@ export function translateAnthropicStreamEventToResponses(
 
     case 'message_delta': {
       state.stopReason = event.delta.stop_reason ?? state.stopReason
+      if (event.usage?.input_tokens !== undefined) {
+        state.inputTokens = event.usage.input_tokens
+      }
+      if (event.usage?.cache_creation_input_tokens !== undefined) {
+        state.cacheCreationInputTokens = event.usage.cache_creation_input_tokens
+      }
+      if (event.usage?.cache_read_input_tokens !== undefined) {
+        state.cacheReadInputTokens = event.usage.cache_read_input_tokens
+      }
       if (event.usage?.output_tokens !== undefined) {
         state.outputTokens = event.usage.output_tokens
       }
@@ -864,11 +899,7 @@ export function translateAnthropicStreamEventToResponses(
           ...buildAnthropicPartialResponse(state, status),
           completed_at: status === 'completed' ? nowUnixSeconds() : null,
           incomplete_details: incomplete_details ?? null,
-          usage: {
-            input_tokens: state.inputTokens,
-            output_tokens: state.outputTokens,
-            total_tokens: state.inputTokens + state.outputTokens,
-          },
+          usage: buildResponsesStreamUsage(state),
         },
       })
       state.messageStopSent = true
@@ -1139,10 +1170,17 @@ function buildAnthropicStreamFailureEvent(
 }
 
 function buildResponsesStreamUsage(state: AnthropicToResponsesStreamState): NonNullable<ResponsesResponse['usage']> {
+  const inputTokens = state.inputTokens
+    + state.cacheCreationInputTokens
+    + state.cacheReadInputTokens
+
   return {
-    input_tokens: state.inputTokens,
+    input_tokens: inputTokens,
     output_tokens: state.outputTokens,
-    total_tokens: state.inputTokens + state.outputTokens,
+    total_tokens: inputTokens + state.outputTokens,
+    ...(state.cacheReadInputTokens > 0
+      ? { input_tokens_details: { cached_tokens: state.cacheReadInputTokens } }
+      : undefined),
   }
 }
 

@@ -288,11 +288,15 @@ CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http:
 
 入站 JSON 请求体默认限制为 32 MiB。如需覆盖，可将 `COPILOT_PROXY_MAX_JSON_BODY_BYTES` 设置为正数字节数。
 
+Legacy daemon 与原生系统服务会把受支持的 `COPILOT_PROXY_*`、代理、`NO_PROXY` 和 TLS CA 环境保存到仅 owner 可读的运行时文件。`--proxy-env` 在没有实际代理端点时会 fail closed。Bun 服务会先用该环境完成 bootstrap，再启动真正的运行进程，避免 Bun 的启动时代理快照绕过恢复后的代理，或继续使用未经允许的 ambient proxy。
+
 当所选模型走 Copilot `/v1/messages` 后端时，Anthropic document URL source 会原样 native 转发。需要本地翻译的 document URL 抓取默认关闭；只有在你明确信任客户端和 URL 时，才设置 `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1`。即使开启，代理仍会在抓取前和 redirect 后拒绝 localhost、私网、云元数据以及保留 DNS/IP 目标。
 
 `GET /token` 默认关闭，因为 loopback 不是用户级安全边界。仅在短时本机诊断时设置 `COPILOT_PROXY_EXPOSE_TOKEN=1`；启用后仍要求 loopback 远端地址、loopback Host 与浏览器同源访问，用完应立即关闭。
 
 `--manual` 采用 fail-closed：没有交互式 TTY 或审批超时时，请求返回 `503`。它只适合前台 `start`，不适用于 `enable`、`start -d`、无 TTY 容器或其他无人值守服务。所有诊断日志都应按敏感信息处理；`--show-token` 会主动打印 bearer token，绝不能与持久化或共享日志一起使用。
+
+当 `/v1/responses` 请求必须翻译到 Claude 原生 `/v1/messages` 后端时，请求必须显式设置 `store: false`；代理无法模拟 Responses API 默认的服务端持久化，也无法让翻译生成的 response ID 可被再次查询。会话开头的 system/developer input 会保留为 Anthropic 顶层 system prompt；会话中途的 system/developer input 只在 Anthropic 支持的位置原样保留，无法忠实表达的顺序会被明确拒绝，而不会重排。
 
 ### auth 参数
 

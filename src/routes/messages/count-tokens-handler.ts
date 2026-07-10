@@ -11,7 +11,7 @@ import { validateBody } from '~/lib/validate'
 import { createAnthropicCountTokens } from '~/services/copilot/create-anthropic-messages'
 
 import { normalizeAnthropicModelName, sanitizeAnthropicBetaHeader } from './model-normalization'
-import { sanitizeForCopilotBackend } from './request-adaptation'
+import { prepareAnthropicPayloadForNativeCopilotBackend } from './request-adaptation'
 
 /**
  * Handles token counting for Anthropic messages
@@ -32,7 +32,10 @@ export async function handleCountTokens(c: Context) {
       }
     }
 
-    sanitizeForCopilotBackend(anthropicPayload)
+    // Count the exact request shape used by the native /v1/messages path.
+    // In particular, Copilot-unsupported text documents must be expanded in
+    // both endpoints or count_tokens can disagree with the actual request.
+    await prepareAnthropicPayloadForNativeCopilotBackend(anthropicPayload)
     assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
 
     await enforceManualApproval(state)

@@ -25,6 +25,7 @@ describe('translateAnthropicRequestToResponses', () => {
 
     const result = translateAnthropicRequestToResponses(payload)
     expect(result.model).toBe('gpt-5.4')
+    expect(result.store).toBe(false)
     expect(result.max_output_tokens).toBe(1024)
     expect(result.input).toEqual([
       { role: 'user', content: 'Hello' },
@@ -79,15 +80,16 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
-  test('max_tokens clamped to minimum 16', () => {
+  test('max_tokens below the Responses minimum is rejected instead of increased', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
       max_tokens: 5,
       messages: [{ role: 'user', content: 'Hi' }],
     }
 
-    const result = translateAnthropicRequestToResponses(payload)
-    expect(result.max_output_tokens).toBe(16)
+    expect(() => translateAnthropicRequestToResponses(payload)).toThrow(
+      'max_tokens must be at least 16',
+    )
   })
 
   test('metadata is preserved on translated Responses requests', () => {
@@ -784,12 +786,47 @@ describe('translateAnthropicRequestToResponses', () => {
       },
     })
   })
+
+  test('json_schema without an object schema is rejected on the Responses translation path', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      output_config: {
+        format: {
+          type: 'json_schema',
+        },
+      },
+    }
+
+    expect(() => translateAnthropicRequestToResponses(payload)).toThrow(
+      'output_config.format.type="json_schema" requires an object "schema"',
+    )
+  })
+
+  test('unknown output format is rejected on the Responses translation path', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Hi' }],
+      output_config: {
+        format: {
+          type: 'future_format',
+        },
+      },
+    }
+
+    expect(() => translateAnthropicRequestToResponses(payload)).toThrow(
+      'output_config.format.type="future_format" cannot be represented',
+    )
+  })
 })
 
 describe('translateResponsesRequestToAnthropic', () => {
   test('json_schema structured output is forwarded to native Anthropic output_config in flat shape', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Return JSON.',
       text: {
         format: {
@@ -824,6 +861,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('nested json_schema input is normalized to Anthropic flat schema shape', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Return JSON.',
       text: {
         format: {
@@ -860,6 +898,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('json_schema without schema is rejected instead of being passed through', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Return JSON.',
       text: {
         format: {
@@ -877,6 +916,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('conflicting strict locations are rejected instead of guessed', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Return JSON.',
       text: {
         format: {
@@ -904,6 +944,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('json_object structured output is rejected instead of returning schema-unconstrained success', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Return JSON.',
       text: {
         format: {
@@ -920,6 +961,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('reasoning.effort none disables thinking on native Anthropic requests', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Hi',
       reasoning: { effort: 'none' },
     }
@@ -932,6 +974,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('reasoning.effort minimal is downgraded to low on native Anthropic requests', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Hi',
       reasoning: { effort: 'minimal' },
     }
@@ -943,6 +986,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('reasoning.effort xhigh is preserved on native Anthropic requests', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.7',
+      store: false,
       input: 'Hi',
       reasoning: { effort: 'xhigh' },
     }
@@ -954,6 +998,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('replayed Responses reasoning input items are ignored on native Anthropic requests', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: [
         {
           type: 'reasoning',
@@ -976,6 +1021,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('unknown user content parts are preserved as JSON text blocks', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: [
         {
           role: 'user',
@@ -1000,6 +1046,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('function_call_output error metadata becomes Anthropic is_error', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: [
         {
           type: 'function_call_output',
@@ -1030,6 +1077,7 @@ describe('translateResponsesRequestToAnthropic', () => {
   test('tool strict is forwarded to native Anthropic tools', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
+      store: false,
       input: 'Call tools as needed.',
       tools: [
         {
@@ -1069,6 +1117,54 @@ describe('translateResponsesRequestToAnthropic', () => {
         input_schema: { type: 'object', properties: { id: { type: 'string' } } },
       },
     ])
+  })
+
+  test('prefix instructions become top-level system and valid mid-conversation instructions keep position', () => {
+    const result = translateResponsesRequestToAnthropic({
+      model: 'claude-opus-4.6',
+      store: false,
+      instructions: 'Global instruction.',
+      input: [
+        { role: 'developer', content: 'Initial developer instruction.' },
+        { role: 'user', content: 'First user turn.' },
+        { role: 'developer', content: 'Use the updated policy.' },
+        { role: 'system', content: 'Final local instruction.' },
+        { role: 'assistant', content: 'Acknowledged.' },
+        { role: 'user', content: 'Continue.' },
+      ],
+    })
+
+    expect(result.system).toBe('Global instruction.\n\nInitial developer instruction.')
+    expect(result.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'First user turn.' }] },
+      { role: 'system', content: 'Use the updated policy.\n\nFinal local instruction.' },
+      { role: 'assistant', content: [{ type: 'text', text: 'Acknowledged.' }] },
+      { role: 'user', content: [{ type: 'text', text: 'Continue.' }] },
+    ])
+  })
+
+  test('rejects a system/developer message after assistant output instead of changing its position', () => {
+    expect(() => translateResponsesRequestToAnthropic({
+      model: 'claude-opus-4.6',
+      store: false,
+      input: [
+        { role: 'user', content: 'First user turn.' },
+        { role: 'assistant', content: 'First assistant turn.' },
+        { role: 'developer', content: 'Late instruction.' },
+      ],
+    })).toThrow(/immediately after a user\/tool-result turn/)
+  })
+
+  test('rejects a mid-conversation system/developer message followed by a user turn', () => {
+    expect(() => translateResponsesRequestToAnthropic({
+      model: 'claude-opus-4.8',
+      store: false,
+      input: [
+        { role: 'user', content: 'First user turn.' },
+        { role: 'developer', content: 'Mid-conversation instruction.' },
+        { role: 'user', content: 'This placement is invalid upstream.' },
+      ],
+    })).toThrow(/must precede an assistant turn or end/)
   })
 })
 
@@ -1261,6 +1357,7 @@ describe('translateResponsesResponseToAnthropic', () => {
     }
 
     const result = translateResponsesResponseToAnthropic(response)
+    expect(result.usage.input_tokens).toBe(20)
     expect(result.usage.cache_read_input_tokens).toBe(80)
   })
 })
@@ -1311,6 +1408,74 @@ describe('additional Anthropic ↔ Responses coverage', () => {
       text: 'Paris',
       citations: [{ type: 'char_location', start_char_index: 0, end_char_index: 5 }],
     })
+  })
+
+  test('Anthropic cache usage is converted to inclusive Responses input tokens', () => {
+    const result = translateAnthropicResponseToResponses({
+      id: 'msg_cache_usage',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4.8',
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: 20,
+        cache_creation_input_tokens: 30,
+        cache_read_input_tokens: 80,
+        output_tokens: 5,
+      },
+    })
+
+    expect(result.usage).toEqual({
+      input_tokens: 130,
+      input_tokens_details: { cached_tokens: 80 },
+      output_tokens: 5,
+      total_tokens: 135,
+    })
+    expect(result.store).toBe(false)
+  })
+
+  test('streamed Anthropic cache usage is converted to inclusive Responses input tokens', () => {
+    const state = createAnthropicToResponsesStreamState()
+
+    translateAnthropicStreamEventToResponses({
+      type: 'message_start',
+      message: {
+        id: 'msg_stream_cache_usage',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: 'claude-opus-4.8',
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 20,
+          cache_creation_input_tokens: 30,
+          cache_read_input_tokens: 80,
+          output_tokens: 0,
+        },
+      },
+    }, state)
+    translateAnthropicStreamEventToResponses({
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 5 },
+    }, state)
+    const events = translateAnthropicStreamEventToResponses({ type: 'message_stop' }, state)
+    const terminal = events.at(-1)
+
+    expect(terminal?.type).toBe('response.completed')
+    if (terminal?.type !== 'response.completed') {
+      throw new Error('expected response.completed')
+    }
+    expect(terminal.response.usage).toEqual({
+      input_tokens: 130,
+      input_tokens_details: { cached_tokens: 80 },
+      output_tokens: 5,
+      total_tokens: 135,
+    })
+    expect(terminal.response.store).toBe(false)
   })
 
   test('Anthropic citations_delta stream events are accepted without Responses delta mapping', () => {

@@ -128,6 +128,7 @@ describe('compat routing fallback', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: 'Return JSON.',
         text: {
           format: {
@@ -167,6 +168,7 @@ describe('compat routing fallback', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: 'Return JSON.',
         text: {
           format: {
@@ -247,6 +249,7 @@ describe('compat routing fallback', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
+        store: false,
         input: 'What is 2+2? Return answer.',
         text: {
           format: {
