@@ -31,15 +31,6 @@ const DAEMON_ENV_ALLOWLIST = [
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
   'BUN_INSTALL',
-  // Proxy configuration
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
-  'ALL_PROXY',
-  'all_proxy',
   // XDG directories
   'XDG_DATA_HOME',
   'XDG_CONFIG_HOME',
@@ -59,9 +50,26 @@ const DAEMON_ENV_ALLOWLIST = [
   'COMSPEC',
 ]
 
-export function filterEnvForDaemon(env: Record<string, string | undefined>): Record<string, string> {
+const DAEMON_PROXY_ENV_ALLOWLIST = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+]
+
+export function filterEnvForDaemon(
+  env: Record<string, string | undefined>,
+  options: { proxyEnv: boolean } = { proxyEnv: false },
+): Record<string, string> {
   const filtered: Record<string, string> = {}
-  for (const key of DAEMON_ENV_ALLOWLIST) {
+  const allowlist = options.proxyEnv
+    ? [...DAEMON_ENV_ALLOWLIST, ...DAEMON_PROXY_ENV_ALLOWLIST]
+    : DAEMON_ENV_ALLOWLIST
+  for (const key of allowlist) {
     if (key in env && env[key] !== undefined) {
       filtered[key] = env[key]!
     }
@@ -195,7 +203,10 @@ export async function daemonStart(config: DaemonConfig): Promise<void> {
   const child = spawn(execPath, [scriptPath, 'start', '--_supervisor'], {
     detached: true,
     stdio: ['ignore', logStream, logStream],
-    env: filterEnvForDaemon(process.env as Record<string, string | undefined>),
+    env: filterEnvForDaemon(
+      process.env as Record<string, string | undefined>,
+      { proxyEnv: config.proxyEnv },
+    ),
   })
 
   if (child.pid === undefined) {

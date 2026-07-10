@@ -17,6 +17,8 @@ export interface ModelConfig {
   supportsToolChoice?: boolean
   /** Whether the model supports parallel tool calls */
   supportsParallelToolCalls?: boolean
+  /** Token-limit field accepted by the model on /chat/completions */
+  chatCompletionTokenParameter?: 'max_tokens' | 'max_completion_tokens'
 }
 
 const MODEL_CONFIGS: Record<string, ModelConfig> = {
@@ -143,14 +145,18 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsParallelToolCalls: true,
   },
 
-  // GPT-5.4 — responses only
+  // GPT-5.4 — current Copilot inventory exposes both APIs. Its
+  // /chat/completions surface rejects legacy `max_tokens` and requires
+  // `max_completion_tokens` instead.
   'gpt-5.4': {
-    supportedApis: ['responses'],
+    supportedApis: ['chat-completions', 'responses'],
+    preferredApi: 'responses',
     reasoningMode: 'thinking',
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh'],
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
+    chatCompletionTokenParameter: 'max_completion_tokens',
   },
   'gpt-5.5': {
     supportedApis: ['responses'],

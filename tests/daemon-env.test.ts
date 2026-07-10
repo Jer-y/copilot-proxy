@@ -15,7 +15,7 @@ describe('filterEnvForDaemon', () => {
     expect(filtered.LANG).toBe('en_US.UTF-8')
   })
 
-  test('keeps proxy-related env vars', () => {
+  test('drops proxy-related env vars by default', () => {
     const env = {
       PATH: '/usr/bin',
       HTTP_PROXY: 'http://proxy:8080',
@@ -26,9 +26,25 @@ describe('filterEnvForDaemon', () => {
       no_proxy: 'localhost',
     }
     const filtered = filterEnvForDaemon(env)
+    expect(filtered.HTTP_PROXY).toBeUndefined()
+    expect(filtered.https_proxy).toBeUndefined()
+    expect(filtered.NO_PROXY).toBeUndefined()
+  })
+
+  test('keeps proxy-related env vars only when proxy-env is enabled', () => {
+    const env = {
+      PATH: '/usr/bin',
+      HTTP_PROXY: 'http://proxy:8080',
+      HTTPS_PROXY: 'http://proxy:8080',
+      NO_PROXY: 'localhost',
+      ALL_PROXY: 'socks5://proxy:1080',
+      https_proxy: 'http://proxy:8080',
+    }
+    const filtered = filterEnvForDaemon(env, { proxyEnv: true })
     expect(filtered.HTTP_PROXY).toBe('http://proxy:8080')
     expect(filtered.https_proxy).toBe('http://proxy:8080')
     expect(filtered.NO_PROXY).toBe('localhost')
+    expect(filtered.ALL_PROXY).toBe('socks5://proxy:1080')
   })
 
   test('keeps proxy security env vars', () => {

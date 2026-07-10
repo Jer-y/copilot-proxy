@@ -32,6 +32,18 @@ describe('Responses stream failure handling', () => {
         },
       },
     ])
+
+    const lateCompletion = translateResponsesStreamEventToAnthropic({
+      type: 'response.completed',
+      response: {
+        id: 'resp_1',
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status: 'completed',
+      },
+    }, state)
+    expect(lateCompletion).toEqual([])
   })
 
   test('translateResponsesStreamEventToAnthropic finalizes response.incomplete with mapped stop_reason', () => {

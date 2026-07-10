@@ -1,4 +1,5 @@
 import { beforeEach, expect, mock, test } from 'bun:test'
+import consola from 'consola'
 
 import { state } from '../src/lib/state'
 import { server } from '../src/server'
@@ -329,6 +330,32 @@ test('/v1/responses rejects top-level typed external image URLs locally before f
   expect(json.error.message).toContain('external image URLs')
 })
 
+test('/v1/responses fills a missing OpenAI error type from the HTTP status', async () => {
+  fetchMock.mockImplementation(async () => {
+    return Response.json({
+      error: {
+        message: 'external files are not supported',
+        code: 'invalid_request_body',
+      },
+    }, { status: 400 })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.4', input: 'hi' }),
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    error: {
+      message: 'external files are not supported',
+      code: 'invalid_request_body',
+      type: 'invalid_request_error',
+    },
+  })
+})
+
 test('/v1/responses strips service_tier before forwarding upstream', async () => {
   fetchMock.mockImplementation(async () => {
     return new Response(JSON.stringify({
@@ -361,6 +388,197 @@ test('/v1/responses strips service_tier before forwarding upstream', async () =>
     model: 'gpt-5.4',
     input: 'Reply with the single word OK.',
   })
+})
+
+test('/v1/responses rejects stateful fields before Anthropic translation reaches upstream', async () => {
+  const cases = [
+    { previous_response_id: 'resp_prior' },
+    { background: true },
+    { conversation: { id: 'conv_1' } },
+    { prompt: { id: 'pmpt_1' } },
+    { max_tool_calls: 1 },
+    { context_management: [{ type: 'compaction' }] },
+    { truncation: 'auto' },
+    { tool_choice: { type: 'allowed_tools', mode: 'required', tools: [] } },
+  ]
+
+  for (const extra of cases) {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        input: 'hi',
+        ...extra,
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    const body = await response.json() as { error: { type: string } }
+    expect(body.error.type).toBe('invalid_request_error')
+  }
+
+  expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
+test('/v1/responses translated json_schema omits the Responses-only name on the Anthropic wire', async () => {
+  const sentinel = 'HANDLER_PROMPT_SECRET_SENTINEL'
+  const debugLogs: string[] = []
+  const originalDebug = consola.debug
+  const originalLevel = consola.level
+  consola.level = 4
+  consola.debug = mock((...args: unknown[]) => {
+    debugLogs.push(args.map(value => String(value)).join(' '))
+  }) as unknown as typeof consola.debug
+
+  fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+    expect(url.endsWith('/v1/messages')).toBe(true)
+    const upstreamBody = JSON.parse(String(opts?.body)) as {
+      output_config: { format: Record<string, unknown> }
+    }
+    expect(upstreamBody.output_config.format).toEqual({
+      type: 'json_schema',
+      schema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+      },
+    })
+
+    return new Response(JSON.stringify({
+      id: 'msg_json_schema',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4.6',
+      content: [{ type: 'text', text: '{"value":"ok"}' }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 4 },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        input: sentinel,
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'answer',
+            schema: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              required: ['value'],
+            },
+          },
+        },
+      }),
+    })
+    expect(response.status).toBe(200)
+  }
+  finally {
+    consola.debug = originalDebug
+    consola.level = originalLevel
+  }
+
+  expect(debugLogs.join('\n')).not.toContain(sentinel)
+})
+
+test('/v1/responses malformed translated Anthropic SSE fails once without logging raw data', async () => {
+  const sentinel = 'MALFORMED_SSE_SECRET_SENTINEL'
+  const errorLogs: string[] = []
+  const originalError = consola.error
+  consola.error = mock((...args: unknown[]) => {
+    errorLogs.push(args.map(value => String(value)).join(' '))
+  }) as unknown as typeof consola.error
+
+  fetchMock.mockImplementation(async (url: string) => {
+    expect(url.endsWith('/v1/messages')).toBe(true)
+    const sse = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_bad_sse","type":"message","role":"assistant","content":[],"model":"claude-opus-4.6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
+      `event: content_block_delta\ndata: {"type":"content_block_delta","secret":"${sentinel}"\n\n`,
+    ].join('')
+    return new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  let body = ''
+  try {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        input: 'hi',
+        stream: true,
+      }),
+    })
+    expect(response.status).toBe(200)
+    body = await response.text()
+  }
+  finally {
+    consola.error = originalError
+  }
+
+  expect(body.match(/"type":"response.failed"/g)).toHaveLength(1)
+  expect(body).not.toContain('"type":"response.completed"')
+  expect(errorLogs.join('\n')).not.toContain(sentinel)
+})
+
+test('/v1/responses normalizes Anthropic upstream errors without leaking their body to logs', async () => {
+  const sentinel = 'UPSTREAM_ERROR_SECRET_SENTINEL'
+  const errorLogs: string[] = []
+  const originalError = consola.error
+  consola.error = mock((...args: unknown[]) => {
+    errorLogs.push(args.map(value => String(value)).join(' '))
+  }) as unknown as typeof consola.error
+
+  fetchMock.mockImplementation(async () => {
+    return new Response(JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: sentinel,
+      },
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        input: 'hi',
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        type: 'invalid_request_error',
+        message: sentinel,
+      },
+    })
+  }
+  finally {
+    consola.error = originalError
+  }
+
+  expect(errorLogs.join('\n')).not.toContain(sentinel)
 })
 
 // EOF

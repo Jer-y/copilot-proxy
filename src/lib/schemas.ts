@@ -219,6 +219,7 @@ export const ChatCompletionsPayloadSchema = z.object({
   temperature: z.number().nullable().optional(),
   top_p: z.number().nullable().optional(),
   max_tokens: z.number().nullable().optional(),
+  max_completion_tokens: z.number().nullable().optional(),
   tools: z.array(z.unknown()).nullable().optional(),
   tool_choice: z.unknown().optional(),
 }).passthrough()

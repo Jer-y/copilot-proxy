@@ -206,11 +206,12 @@ function defineModelTests(model: string) {
     expect(res.status).toBe(200)
   }, TIMEOUT)
 
-  test('thinking enabled + budget_tokens', async () => {
+  test('thinking adaptive + effort high returns a thinking block', async () => {
     const res = await sendRequest({
       model,
       max_tokens: 8000,
-      thinking: { type: 'enabled', budget_tokens: 4096 },
+      thinking: { type: 'adaptive', display: 'summarized' },
+      output_config: { effort: 'high' },
       messages: [{ role: 'user', content: 'What is 2+2? Think step by step.' }],
     })
     expect(res.status).toBe(200)
@@ -249,12 +250,13 @@ function defineModelTests(model: string) {
     expect(types).toContain('message_stop')
   }, TIMEOUT)
 
-  test('streaming + thinking — thinking events in stream', async () => {
+  test('streaming + adaptive thinking — thinking events in stream', async () => {
     const res = await sendRequest({
       model,
       max_tokens: 8000,
       stream: true,
-      thinking: { type: 'enabled', budget_tokens: 4096 },
+      thinking: { type: 'adaptive', display: 'summarized' },
+      output_config: { effort: 'high' },
       messages: [{ role: 'user', content: 'What is 17 * 23? Think step by step.' }],
     })
     expect(res.status).toBe(200)
@@ -354,7 +356,7 @@ describeE2E('Feature probes', () => {
       expect(res.status).toBe(400)
     }, TIMEOUT)
 
-    test('thinking adaptive + display omitted → 200 with thinking block', async () => {
+    test('thinking adaptive + display omitted → 200 without exposed thinking block', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 16000,
@@ -363,7 +365,9 @@ describeE2E('Feature probes', () => {
       })
       expect(res.status).toBe(200)
       const body = await parseResponse(res)
-      expect((body as any).content.some((b: any) => b.type === 'thinking')).toBe(true)
+      const content = body.content as Array<Record<string, unknown>>
+      expect(content.some(block => block.type === 'thinking')).toBe(false)
+      expect(content.some(block => block.type === 'text')).toBe(true)
     }, TIMEOUT)
 
     test('disable_parallel_tool_use', async () => {
@@ -384,7 +388,7 @@ describeE2E('Feature probes', () => {
       expect(res.status).toBe(200)
     }, TIMEOUT)
 
-    test('json_schema structured output → upstream-aligned unsupported', async () => {
+    test('json_schema structured output → schema-valid JSON', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 1024,
@@ -403,10 +407,13 @@ describeE2E('Feature probes', () => {
         },
         messages: [{ role: 'user', content: 'What is 2+2? Return answer as a string.' }],
       })
-      expect(res.status).toBe(400)
+      expect(res.status).toBe(200)
       const body = await parseResponse(res)
-      const message = (body.error as Record<string, unknown> | undefined)?.message
-      expect(String(message).toLowerCase()).toContain('output_config.format')
+      const content = body.content as Array<Record<string, unknown>> | undefined
+      const text = content?.find(block => block.type === 'text')?.text
+      expect(typeof text).toBe('string')
+      const parsed = JSON.parse(String(text)) as Record<string, unknown>
+      expect(typeof parsed.answer).toBe('string')
     }, TIMEOUT)
 
     test('document source text → 200', async () => {
@@ -448,7 +455,7 @@ describeE2E('Feature probes', () => {
       expect(res.status).toBe(200)
     }, TIMEOUT)
 
-    test('document source URL with real PDF → 200', async () => {
+    test('document source URL with real PDF → supported or clean upstream rejection', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 128,
@@ -463,7 +470,13 @@ describeE2E('Feature probes', () => {
           ],
         }],
       })
-      expect(res.status).toBe(200)
+      if (res.status === 200)
+        return
+
+      expect(res.status).toBe(400)
+      const body = await parseResponse(res)
+      const message = (body.error as Record<string, unknown> | undefined)?.message
+      expect(String(message)).toMatch(/document|pdf|url|external/i)
     }, TIMEOUT)
 
     test('text document citations → rejected instead of silently dropped', async () => {

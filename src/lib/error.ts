@@ -52,7 +52,7 @@ export class JSONResponseError extends Error {
  * Used by /v1/chat/completions and /v1/responses endpoints.
  */
 export async function forwardError(c: Context, error: unknown) {
-  consola.error('Error occurred:', error)
+  consola.error('Error occurred:', summarizeErrorForLog(error))
 
   if (error instanceof JSONResponseError) {
     return c.json(error.payload as never, error.status)
@@ -73,11 +73,20 @@ export async function forwardError(c: Context, error: unknown) {
     let errorJson: unknown
     try {
       errorJson = JSON.parse(errorText)
-      consola.error('HTTP error:', errorJson)
-      return c.json(errorJson as never, status)
+      const normalizedError = normalizeOpenAIErrorEnvelope(errorJson, status)
+      consola.error('HTTP error summary:', {
+        status,
+        responseChars: errorText.length,
+        normalizedErrorEnvelope: normalizedError !== errorJson,
+      })
+      return c.json(normalizedError as never, status)
     }
     catch {
-      consola.error('HTTP error:', errorText)
+      consola.error('HTTP error summary:', {
+        status,
+        responseChars: errorText.length,
+        contentType: 'non-json',
+      })
       return c.body(errorText, status)
     }
   }
@@ -106,6 +115,63 @@ export async function forwardError(c: Context, error: unknown) {
   )
 }
 
+function normalizeOpenAIErrorEnvelope(payload: unknown, status: number): unknown {
+  if (!payload || typeof payload !== 'object') {
+    return payload
+  }
+
+  const envelope = payload as Record<string, unknown>
+  if (envelope.error && typeof envelope.error === 'object') {
+    const upstreamError = envelope.error as Record<string, unknown>
+    const message = typeof upstreamError.message === 'string'
+      ? upstreamError.message
+      : 'The upstream request failed.'
+
+    if (envelope.type === 'error') {
+      return {
+        error: {
+          message,
+          type: typeof upstreamError.type === 'string' ? upstreamError.type : mapHttpStatusToOpenAIErrorType(status),
+          ...(typeof upstreamError.code === 'string' && { code: upstreamError.code }),
+        },
+      }
+    }
+
+    return {
+      ...envelope,
+      error: {
+        ...upstreamError,
+        message,
+        type: typeof upstreamError.type === 'string' ? upstreamError.type : mapHttpStatusToOpenAIErrorType(status),
+      },
+    }
+  }
+
+  if (typeof envelope.message === 'string') {
+    return {
+      error: {
+        message: envelope.message,
+        type: mapHttpStatusToOpenAIErrorType(status),
+        ...(typeof envelope.code === 'string' && { code: envelope.code }),
+      },
+    }
+  }
+
+  return payload
+}
+
+function mapHttpStatusToOpenAIErrorType(status: number): string {
+  if (status === 400 || status === 404 || status === 422)
+    return 'invalid_request_error'
+  if (status === 401)
+    return 'authentication_error'
+  if (status === 403)
+    return 'permission_error'
+  if (status === 429)
+    return 'rate_limit_error'
+  return 'api_error'
+}
+
 /**
  * Forward errors in Anthropic-compatible format.
  * Used by /v1/messages endpoint.
@@ -113,7 +179,7 @@ export async function forwardError(c: Context, error: unknown) {
  * Anthropic format: { "type": "error", "error": { "type": "...", "message": "..." } }
  */
 export async function forwardErrorAnthropic(c: Context, error: unknown) {
-  consola.error('Error occurred:', error)
+  consola.error('Error occurred:', summarizeErrorForLog(error))
 
   if (error instanceof JSONResponseError) {
     return c.json(error.payload as never, error.status)
@@ -135,7 +201,14 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
     // Try to parse upstream error and re-wrap in Anthropic format
     try {
       const errorJson = JSON.parse(errorText) as Record<string, unknown>
-      consola.error('HTTP error:', errorJson)
+      const parsedError = errorJson.error && typeof errorJson.error === 'object'
+        ? errorJson.error as Record<string, unknown>
+        : undefined
+      consola.error('HTTP error summary:', {
+        status,
+        responseChars: errorText.length,
+        errorType: typeof parsedError?.type === 'string' ? parsedError.type : undefined,
+      })
 
       // Check if it's already in Anthropic format
       if (errorJson.type === 'error' && errorJson.error) {
@@ -159,7 +232,11 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
       )
     }
     catch {
-      consola.error('HTTP error:', errorText)
+      consola.error('HTTP error summary:', {
+        status,
+        responseChars: errorText.length,
+        contentType: 'non-json',
+      })
       return c.json(
         {
           type: 'error',
@@ -196,6 +273,33 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
     },
     500,
   )
+}
+
+function summarizeErrorForLog(error: unknown): Record<string, unknown> {
+  if (error instanceof HTTPError) {
+    return {
+      name: error.name,
+      status: error.response.status,
+      messageChars: error.message.length,
+    }
+  }
+
+  if (error instanceof JSONResponseError) {
+    return {
+      name: error.name,
+      status: error.status,
+      messageChars: error.message.length,
+    }
+  }
+
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      messageChars: error.message.length,
+    }
+  }
+
+  return { kind: typeof error }
 }
 
 function mapHttpStatusToAnthropicErrorType(status: number): string {

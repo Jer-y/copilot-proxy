@@ -48,7 +48,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot 
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
 - **Upstream Resilience Controls**: Use built-in longer Copilot upstream timeouts, tune header/body/connect timeout overrides, and emit Anthropic SSE keepalive `ping` events while waiting for the first translated stream event.
-- **Manual Request Approval**: Manually approve or deny each API request for fine-grained control over usage (`--manual`).
+- **Manual Request Approval**: Approve or deny each request in an interactive foreground TTY; unavailable or timed-out prompts fail closed (`--manual`).
 - **Token Visibility**: Option to display GitHub and Copilot tokens during authentication and refresh for debugging (`--show-token`).
 - **Flexible Authentication**: Authenticate interactively or provide a GitHub token directly, suitable for CI/CD environments.
 - **Support for Different Account Types**: Works with individual, business, and enterprise GitHub Copilot plans.
@@ -59,7 +59,8 @@ On Linux, `enable` installs a user systemd service and requires systemd user lin
 
 ## Prerequisites
 
-- Bun (>= 1.2.x)
+- Bun >= 1.3.6 when running from source or with Bun
+- Node.js >= 22.19.0 when using npm, npx, pnpm, Yarn, or Volta
 - GitHub account with Copilot subscription (individual, business, or enterprise)
 
 ## Installation
@@ -112,7 +113,7 @@ bunx @jer-y/copilot-proxy@latest start
 To install dependencies locally, run:
 
 ```sh
-bun install
+bun install --frozen-lockfile
 ```
 
 ## Using with Docker
@@ -126,28 +127,27 @@ docker build -t copilot-proxy .
 Run the container
 
 ```sh
-# Create a directory on your host to persist the GitHub token and related data
-mkdir -p ./copilot-data
+# Create a named volume so credentials never enter the source/build context
+docker volume create copilot-proxy-data
 
-# Run the container with a bind mount to persist the token
+# Run the container with the named volume to persist authentication
 # This ensures your authentication survives container restarts
-
-docker run -p 127.0.0.1:4399:4399 -v $(pwd)/copilot-data:/home/bun/.local/share/copilot-proxy copilot-proxy start --host 0.0.0.0
+docker run -p 127.0.0.1:4399:4399 -v copilot-proxy-data:/home/bun/.local/share/copilot-proxy copilot-proxy start --host 0.0.0.0
 ```
 
 > **Note:**
-> The GitHub token and related data will be stored in `copilot-data` on your host. This is mapped to `/home/bun/.local/share/copilot-proxy` inside the container, ensuring persistence across restarts.
+> The GitHub token and related data are stored in the Docker-managed `copilot-proxy-data` volume. Do not place token data inside the repository or Docker build context.
 
 ### Docker with Environment Variables
 
 You can pass the GitHub token directly to the container using environment variables:
 
 ```sh
-# Run with GitHub token
-docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy start --host 0.0.0.0
+# Store GH_TOKEN in a mode-0600 env file outside this repository, then run:
+docker run -p 127.0.0.1:4399:4399 --env-file "$HOME/.config/copilot-proxy/container.env" copilot-proxy start --host 0.0.0.0
 
 # Run with additional options
-docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_token copilot-proxy start --host 0.0.0.0 --verbose --port 4399
+docker run -p 127.0.0.1:4399:4399 --env-file "$HOME/.config/copilot-proxy/container.env" copilot-proxy start --host 0.0.0.0 --port 4399
 ```
 
 ### Docker Compose Example
@@ -161,8 +161,13 @@ services:
     ports:
       - '127.0.0.1:4399:4399'
     environment:
-      - GH_TOKEN=your_github_token_here
+      GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in an ignored .env file}
+      COPILOT_PROXY_ALLOWED_HOSTS: copilot-proxy
+    volumes:
+      - copilot-proxy-data:/home/bun/.local/share/copilot-proxy
     restart: unless-stopped
+volumes:
+  copilot-proxy-data:
 ```
 
 The Docker image includes:
@@ -170,7 +175,7 @@ The Docker image includes:
 - Multi-stage build for optimized image size
 - Non-root user for enhanced security
 - Health check for container monitoring
-- Pinned base image version for reproducible builds
+- Base image pinned by version and digest for reproducible builds
 
 ## Using with New API
 
@@ -206,6 +211,8 @@ Recommended setup:
 3. In New API, create an OpenAI-compatible or custom upstream channel that points to copilot-proxy's OpenAI-compatible base URL, for example `http://copilot-proxy:4399/v1`.
 4. Put any placeholder upstream key in New API if the channel form requires one. copilot-proxy authenticates to GitHub Copilot itself and does not need New API to forward a real upstream provider key.
 5. Give users New API API keys and the New API base URL. Clients should not need direct access to copilot-proxy, `/token`, or the persisted GitHub token.
+
+When New API reaches the container using the `copilot-proxy` service name, set `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy` on copilot-proxy. Add only the exact internal hostnames clients actually use.
 
 For Claude-compatible clients, use New API's Claude-compatible access layer if your deployment exposes it, or let New API convert/route to the OpenAI-compatible copilot-proxy channel according to your New API channel configuration. For Codex CLI, validate that your New API deployment forwards `/v1/models?client_version=...` query strings unchanged if you want Codex-compatible model catalog and context-window metadata; copilot-proxy supports that catalog path directly.
 
@@ -258,9 +265,9 @@ The following command line options are available for the `start` command:
 | -------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
 | --port         | Port to listen on                                                             | 4399       | -p    |
 | --host         | Host/IP to bind to. Use `0.0.0.0` only when intentionally exposing the port    | 127.0.0.1  | -H    |
-| --verbose      | Enable verbose logging                                                        | false      | -v    |
+| --verbose      | Enable detailed diagnostics; treat logs as sensitive                          | false      | -v    |
 | --account-type | Account type to use (individual, business, enterprise)                        | individual | -a    |
-| --manual       | Enable manual request approval                                                | false      | none  |
+| --manual       | Approve each request in an interactive foreground TTY                         | false      | none  |
 | --rate-limit   | Rate limit in seconds between requests                                        | none       | -r    |
 | --wait         | Wait instead of error when rate limit is hit                                  | false      | -w    |
 | --headers-timeout-ms | Upstream HTTP response headers timeout in milliseconds (`0` disables timeout) | auto*  | none  |
@@ -280,17 +287,21 @@ The proxy listens on `127.0.0.1` by default and is intended for personal local u
 
 CORS is restricted by default to local browser origins such as `http://localhost:*`, `http://127.0.0.1:*`, and `http://[::1]:*`. The hosted usage dashboard origin is allowed only for `/usage`. To add other exact browser origins, set `COPILOT_PROXY_CORS_ORIGINS` to a comma-separated list, for example `COPILOT_PROXY_CORS_ORIGINS=https://internal.example.com`.
 
+Requests with a disallowed browser Origin are rejected before route execution. Request Hosts are separately restricted to loopback names to prevent DNS rebinding. When intentionally serving another hostname, add its exact hostname (without a port) to `COPILOT_PROXY_ALLOWED_HOSTS`, for example `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy,proxy.internal`. JSON request bodies must use `Content-Type: application/json` (or an `application/*+json` media type).
+
 Inbound JSON request bodies are limited to 32 MiB by default. To override this, set `COPILOT_PROXY_MAX_JSON_BODY_BYTES` to a positive byte count.
 
 Anthropic document URL sources are forwarded natively when the selected model uses Copilot's `/v1/messages` backend. Local URL fetching for translated document requests is disabled by default. If you explicitly trust the clients and URLs, set `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1`; the proxy still rejects localhost, private network, cloud metadata, and reserved DNS/IP targets before fetching and after redirects.
 
-`GET /token` is additionally restricted to loopback requests and same-origin browser reads. It should not be used as a general browser API.
+`GET /token` is disabled by default because loopback is not a per-user security boundary. For a short-lived local diagnostic only, set `COPILOT_PROXY_EXPOSE_TOKEN=1`; the route still requires a loopback remote address, a loopback Host, and same-origin browser access. Disable it again immediately afterwards.
+
+`--manual` fails closed: requests receive `503` when no interactive TTY is available or approval times out. Use it only with a foreground `start`; it is not suitable for `enable`, `start -d`, containers without a TTY, or other unattended services. Treat all diagnostic logs as sensitive. `--show-token` deliberately prints bearer tokens and must never be used with persisted or shared logs.
 
 ### Auth Command Options
 
 | Option       | Description               | Default | Alias |
 | ------------ | ------------------------- | ------- | ----- |
-| --verbose    | Enable verbose logging    | false   | -v    |
+| --verbose    | Enable sensitive diagnostics | false | -v    |
 | --show-token | Show GitHub token on auth | false   | none  |
 
 ### Debug Command Options
@@ -308,7 +319,7 @@ Anthropic document URL sources are forwarded natively when the selected model us
 
 ## API Endpoints
 
-The server exposes several endpoints to interact with the Copilot API. It provides OpenAI-compatible endpoints and Anthropic-compatible endpoints, allowing for greater flexibility with different tools and services. All endpoints are available with or without the `/v1/` prefix.
+The OpenAI-compatible Chat Completions, Models, Embeddings, and Responses routes accept both the listed `/v1/...` path and the corresponding unprefixed path. Anthropic Messages is available only under `/v1/messages`; `/usage` and `/token` are unprefixed auxiliary routes.
 
 ### OpenAI Compatible Endpoints
 
@@ -344,7 +355,7 @@ Endpoints for monitoring your Copilot usage and quotas.
 | Endpoint     | Method | Description                                                  |
 | ------------ | ------ | ------------------------------------------------------------ |
 | `GET /usage` | `GET`  | Get detailed Copilot usage statistics and quota information. |
-| `GET /token` | `GET`  | Get the current Copilot token being used by the API. Restricted to loopback and same-origin reads. |
+| `GET /token` | `GET`  | Get the current Copilot token for local diagnostics. Disabled unless `COPILOT_PROXY_EXPOSE_TOKEN=1`, then restricted to loopback and same-origin reads. |
 
 ## Example Usage
 
@@ -396,36 +407,41 @@ npx @jer-y/copilot-proxy@latest start --proxy-env
 # Increase upstream timeouts for slower model start-up
 npx @jer-y/copilot-proxy@latest start --headers-timeout-ms 600000 --body-timeout-ms 600000
 
+# Native services must use a stable global installation, not an npx/dlx cache
+npm i -g @jer-y/copilot-proxy
+
 # Authenticate before installing a non-interactive native service
-npx @jer-y/copilot-proxy@latest auth
+copilot-proxy auth
 
 # Linux only: required if enable cannot turn on logged-out startup automatically
 sudo loginctl enable-linger "$USER"
 
 # Register and start a native auto-start service (systemd/launchd/Task Scheduler)
-npx @jer-y/copilot-proxy@latest enable
+copilot-proxy enable
 
 # Check service status
-npx @jer-y/copilot-proxy@latest status
+copilot-proxy status
 
 # View service logs (last 50 lines)
-npx @jer-y/copilot-proxy@latest logs
+copilot-proxy logs
 
 # Follow service logs in real time
-npx @jer-y/copilot-proxy@latest logs -f
+copilot-proxy logs -f
 
 # Restart the service
-npx @jer-y/copilot-proxy@latest restart
+copilot-proxy restart
 
 # Stop the service
-npx @jer-y/copilot-proxy@latest stop
+copilot-proxy stop
 
 # Remove auto-start registration
-npx @jer-y/copilot-proxy@latest disable
+copilot-proxy disable
 
 # Legacy app-managed daemon mode remains available for compatibility
-npx @jer-y/copilot-proxy@latest start -d
+copilot-proxy start -d
 ```
+
+`enable` rejects `_npx`, `pnpm dlx`, `yarn dlx`, and `bunx` cache paths because a long-lived service would break as soon as that cache is cleaned. A global installation or a stable source checkout is required for native auto-start.
 
 ## Using the Usage Viewer
 
@@ -477,10 +493,10 @@ Here is an example `.claude/settings.json` file:
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4399",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-4.1",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4.1",
-    "ANTHROPIC_SMALL_FAST_MODEL": "gpt-4.1",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-4.1",
+    "ANTHROPIC_MODEL": "claude-sonnet-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5",
+    "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-4.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5",
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
@@ -491,6 +507,8 @@ Here is an example `.claude/settings.json` file:
   }
 }
 ```
+
+Model availability changes upstream. Before saving this configuration, query `GET /v1/models` and choose current models that advertise Anthropic Messages support; do not use a Chat-Completions-only model for Claude Code.
 
 You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
@@ -521,6 +539,8 @@ The repository includes an opt-in live probe suite:
 ```sh
 COPILOT_LIVE_TEST=1 \
 COPILOT_TOKEN=ghu_xxx \
+COPILOT_LIVE_CLAUDE_MODEL=claude-model-under-test \
+COPILOT_LIVE_RESPONSES_MODEL=responses-model-under-test \
 bun run test:live:copilot
 ```
 
@@ -529,7 +549,7 @@ See [docs/copilot-capability-validation.md](docs/copilot-capability-validation.m
 ## Usage Tips
 
 - To avoid hitting GitHub Copilot's rate limits, you can use the following flags:
-  - `--manual`: Enables manual approval for each request, giving you full control over when requests are sent.
+  - `--manual`: Enables fail-closed approval for each request in an interactive foreground TTY. It rejects requests if the prompt cannot be shown or times out.
   - `--rate-limit <seconds>`: Enforces a minimum time interval between requests. For example, `copilot-proxy start --rate-limit 30` will ensure there's at least a 30-second gap between requests.
   - `--wait`: Use this with `--rate-limit`. It makes the server wait for the cooldown period to end instead of rejecting the request with an error. This is useful for clients that don't automatically retry on rate limit errors.
 - If you have a GitHub business or enterprise plan account with Copilot, use the `--account-type` flag (e.g., `--account-type business`). See the [official documentation](https://docs.github.com/en/enterprise-cloud@latest/copilot/managing-copilot/managing-github-copilot-in-your-organization/managing-access-to-github-copilot-in-your-organization/managing-github-copilot-access-to-your-organizations-network#configuring-copilot-subscription-based-network-routing-for-your-enterprise-or-organization) for more details.

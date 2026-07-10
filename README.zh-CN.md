@@ -48,7 +48,7 @@
 - **用量面板**：Web 仪表盘查看 Copilot API 使用量与配额。
 - **速率限制**：通过 `--rate-limit` 与 `--wait` 控制请求节流，避免频繁请求报错。
 - **上游稳健性控制**：内置更长的 Copilot 上游 timeout，可按需覆盖 headers/body/connect timeout，并在等待首个 Anthropic 流事件时发送 SSE keepalive `ping`。
-- **手动审核**：通过 `--manual` 对每个请求进行人工确认。
+- **手动审核**：通过 `--manual` 在交互式前台 TTY 中逐个确认；无法显示或超时的提示会 fail-closed。
 - **Token 可视化**：`--show-token` 显示 GitHub/Copilot token 便于调试。
 - **灵活认证**：支持交互式登录或直接传入 GitHub token，适用于 CI/CD。
 - **多账号类型**：支持个人、企业、组织三种 Copilot 账户类型。
@@ -59,7 +59,8 @@
 
 ## 前置要求
 
-- Bun (>= 1.2.x)
+- 使用 Bun 或从源码运行时要求 Bun >= 1.3.6
+- 使用 npm、npx、pnpm、Yarn 或 Volta 时要求 Node.js >= 22.19.0
 - 拥有 Copilot 订阅的 GitHub 账号（个人 / 企业 / 组织）
 
 ## 安装
@@ -112,7 +113,7 @@ bunx @jer-y/copilot-proxy@latest start
 本地安装依赖：
 
 ```sh
-bun install
+bun install --frozen-lockfile
 ```
 
 ## 使用 Docker
@@ -126,26 +127,26 @@ docker build -t copilot-proxy .
 运行容器：
 
 ```sh
-# 在宿主机创建目录以持久化 GitHub token 等数据
-mkdir -p ./copilot-data
+# 使用 Docker 命名卷，避免凭据进入源码和构建上下文
+docker volume create copilot-proxy-data
 
-# 使用挂载目录来保持认证信息，确保容器重启后依旧有效
-docker run -p 127.0.0.1:4399:4399 -v $(pwd)/copilot-data:/home/bun/.local/share/copilot-proxy copilot-proxy start --host 0.0.0.0
+# 使用命名卷保持认证信息，确保容器重启后依旧有效
+docker run -p 127.0.0.1:4399:4399 -v copilot-proxy-data:/home/bun/.local/share/copilot-proxy copilot-proxy start --host 0.0.0.0
 ```
 
 > **提示：**
-> GitHub token 与相关数据会保存在宿主机的 `copilot-data`，映射到容器内 `/home/bun/.local/share/copilot-proxy`，便于持久化。
+> GitHub token 与相关数据保存在 Docker 管理的 `copilot-proxy-data` 命名卷中。不要把 token 数据放进仓库或 Docker 构建上下文。
 
 ### Docker 环境变量
 
 可以通过环境变量直接传入 GitHub token：
 
 ```sh
-# 运行时传入 GitHub token
-docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_github_token_here copilot-proxy start --host 0.0.0.0
+# 在仓库外创建权限为 0600 的 env 文件并写入 GH_TOKEN，然后运行：
+docker run -p 127.0.0.1:4399:4399 --env-file "$HOME/.config/copilot-proxy/container.env" copilot-proxy start --host 0.0.0.0
 
 # 运行时追加参数
-docker run -p 127.0.0.1:4399:4399 -e GH_TOKEN=your_token copilot-proxy start --host 0.0.0.0 --verbose --port 4399
+docker run -p 127.0.0.1:4399:4399 --env-file "$HOME/.config/copilot-proxy/container.env" copilot-proxy start --host 0.0.0.0 --port 4399
 ```
 
 ### Docker Compose 示例
@@ -159,8 +160,13 @@ services:
     ports:
       - '127.0.0.1:4399:4399'
     environment:
-      - GH_TOKEN=your_github_token_here
+      GH_TOKEN: ${GH_TOKEN:?请在已忽略的 .env 文件中设置 GH_TOKEN}
+      COPILOT_PROXY_ALLOWED_HOSTS: copilot-proxy
+    volumes:
+      - copilot-proxy-data:/home/bun/.local/share/copilot-proxy
     restart: unless-stopped
+volumes:
+  copilot-proxy-data:
 ```
 
 Docker 镜像包含：
@@ -168,7 +174,7 @@ Docker 镜像包含：
 - 多阶段构建，体积更小
 - 非 root 用户，安全性更好
 - 健康检查，便于容器监控
-- 固定基础镜像版本，保证可复现
+- 同时固定基础镜像版本与 digest，保证可复现
 
 ## 配合 New API 使用
 
@@ -204,6 +210,8 @@ GitHub Copilot 上游
 3. 在 New API 中创建 OpenAI 兼容或自定义上游渠道，指向 copilot-proxy 的 OpenAI 兼容 base URL，例如 `http://copilot-proxy:4399/v1`。
 4. 如果 New API 的渠道表单要求填写上游 Key，可以填占位值。copilot-proxy 自己负责登录 GitHub Copilot，不需要 New API 转发真实的上游 provider key。
 5. 对用户只分发 New API 的 API Key 和 New API 的 base URL。客户端不需要直接访问 copilot-proxy、`/token` 或持久化的 GitHub token。
+
+当 New API 通过 `copilot-proxy` 服务名访问容器时，请在 copilot-proxy 上设置 `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy`。只添加客户端实际使用的精确内网主机名。
 
 对于 Claude 兼容客户端，如果你的 New API 部署暴露了 Claude 兼容入口，可以直接使用该入口；也可以根据 New API 渠道配置，让 New API 转换或路由到 copilot-proxy 的 OpenAI 兼容渠道。对于 Codex CLI，如果希望保留 Codex 专用模型目录和上下文窗口信息，请确认你的 New API 部署会原样透传 `/v1/models?client_version=...` 这类 query string；copilot-proxy 已经直接支持这个目录路径。
 
@@ -254,9 +262,9 @@ Copilot API 使用子命令结构，主要命令如下：
 | -------------- | ----------------------------------------------------------------------- | ----------- | ---- |
 | --port         | 监听端口                                                                | 4399        | -p   |
 | --host         | 绑定的 Host/IP。仅在确实要暴露端口时使用 `0.0.0.0`                      | 127.0.0.1   | -H   |
-| --verbose      | 开启详细日志                                                            | false       | -v   |
+| --verbose      | 开启详细诊断；日志应按敏感信息处理                                        | false       | -v   |
 | --account-type | 账户类型（individual, business, enterprise）                            | individual  | -a   |
-| --manual       | 手动审批每个请求                                                        | false       | 无   |
+| --manual       | 在交互式前台 TTY 中审批每个请求                                          | false       | 无   |
 | --rate-limit   | 两次请求之间的最小间隔（秒）                                            | 无          | -r   |
 | --wait         | 触发限流时等待，而非直接报错                                            | false       | -w   |
 | --headers-timeout-ms | upstream 响应头超时（毫秒，`0` 表示禁用）                         | 自动*       | 无   |
@@ -276,17 +284,21 @@ Copilot API 使用子命令结构，主要命令如下：
 
 CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http://127.0.0.1:*` 和 `http://[::1]:*`。托管的用量面板来源只允许访问 `/usage`。如需添加其他精确浏览器来源，可设置逗号分隔的 `COPILOT_PROXY_CORS_ORIGINS`，例如 `COPILOT_PROXY_CORS_ORIGINS=https://internal.example.com`。
 
+来源不在允许列表内的浏览器请求会在执行路由前被拒绝。为防止 DNS rebinding，Host 还会单独限制为 loopback 名称；如确实需要其他服务名，请用不带端口的精确名称配置 `COPILOT_PROXY_ALLOWED_HOSTS`，例如 `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy,proxy.internal`。JSON 请求体必须使用 `Content-Type: application/json`（也接受 `application/*+json`）。
+
 入站 JSON 请求体默认限制为 32 MiB。如需覆盖，可将 `COPILOT_PROXY_MAX_JSON_BODY_BYTES` 设置为正数字节数。
 
 当所选模型走 Copilot `/v1/messages` 后端时，Anthropic document URL source 会原样 native 转发。需要本地翻译的 document URL 抓取默认关闭；只有在你明确信任客户端和 URL 时，才设置 `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1`。即使开启，代理仍会在抓取前和 redirect 后拒绝 localhost、私网、云元数据以及保留 DNS/IP 目标。
 
-`GET /token` 额外限制为 loopback 请求和同源浏览器读取，不应作为通用浏览器 API 使用。
+`GET /token` 默认关闭，因为 loopback 不是用户级安全边界。仅在短时本机诊断时设置 `COPILOT_PROXY_EXPOSE_TOKEN=1`；启用后仍要求 loopback 远端地址、loopback Host 与浏览器同源访问，用完应立即关闭。
+
+`--manual` 采用 fail-closed：没有交互式 TTY 或审批超时时，请求返回 `503`。它只适合前台 `start`，不适用于 `enable`、`start -d`、无 TTY 容器或其他无人值守服务。所有诊断日志都应按敏感信息处理；`--show-token` 会主动打印 bearer token，绝不能与持久化或共享日志一起使用。
 
 ### auth 参数
 
 | 参数         | 说明                | 默认值 | 简写 |
 | ------------ | ------------------- | ------ | ---- |
-| --verbose    | 开启详细日志        | false  | -v   |
+| --verbose    | 开启敏感诊断日志    | false  | -v   |
 | --show-token | 显示 GitHub token   | false  | 无   |
 
 ### debug 参数
@@ -304,7 +316,7 @@ CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http:
 
 ## API 端点
 
-服务提供多组端点，以兼容 OpenAI / Anthropic API。所有端点均支持有无 `/v1/` 前缀。
+OpenAI 兼容的 Chat Completions、Models、Embeddings 与 Responses 路由同时接受表中 `/v1/...` 路径和对应的无前缀路径。Anthropic Messages 只在 `/v1/messages` 下提供；`/usage` 与 `/token` 是无前缀辅助路由。
 
 ### OpenAI 兼容端点
 
@@ -336,7 +348,7 @@ CORS 默认只允许本地浏览器来源，例如 `http://localhost:*`、`http:
 | 端点     | 方法 | 说明                                           |
 | -------- | ---- | ---------------------------------------------- |
 | `GET /usage` | GET  | 获取 Copilot 使用量与配额信息                 |
-| `GET /token` | GET  | 获取当前正在使用的 Copilot token；限制为 loopback 和同源读取 |
+| `GET /token` | GET  | 本机诊断用 Copilot token；仅在 `COPILOT_PROXY_EXPOSE_TOKEN=1` 时启用，并限制为 loopback 与同源读取 |
 
 ## 使用示例
 
@@ -388,36 +400,41 @@ npx @jer-y/copilot-proxy@latest start --proxy-env
 # 针对较慢模型启动拉长 upstream timeout
 npx @jer-y/copilot-proxy@latest start --headers-timeout-ms 600000 --body-timeout-ms 600000
 
+# 原生服务必须使用稳定的全局安装，不能指向 npx/dlx 缓存
+npm i -g @jer-y/copilot-proxy
+
 # 安装非交互式原生服务前先完成认证
-npx @jer-y/copilot-proxy@latest auth
+copilot-proxy auth
 
 # 仅 Linux：如果 enable 无法自动开启未登录启动能力，先手动开启 lingering
 sudo loginctl enable-linger "$USER"
 
 # 注册并启动原生开机自启服务（systemd / launchd / 任务计划程序）
-npx @jer-y/copilot-proxy@latest enable
+copilot-proxy enable
 
 # 查看服务状态
-npx @jer-y/copilot-proxy@latest status
+copilot-proxy status
 
 # 查看服务日志（最后 50 行）
-npx @jer-y/copilot-proxy@latest logs
+copilot-proxy logs
 
 # 实时跟踪服务日志
-npx @jer-y/copilot-proxy@latest logs -f
+copilot-proxy logs -f
 
 # 重启服务
-npx @jer-y/copilot-proxy@latest restart
+copilot-proxy restart
 
 # 停止服务
-npx @jer-y/copilot-proxy@latest stop
+copilot-proxy stop
 
 # 移除开机自启
-npx @jer-y/copilot-proxy@latest disable
+copilot-proxy disable
 
 # 兼容的应用自管守护模式仍可使用
-npx @jer-y/copilot-proxy@latest start -d
+copilot-proxy start -d
 ```
+
+`enable` 会拒绝 `_npx`、`pnpm dlx`、`yarn dlx` 和 `bunx` 缓存路径，因为缓存一旦清理，长期服务就会失效。原生自启动必须使用全局安装或稳定的源码 checkout。
 
 ## 使用用量面板
 
@@ -463,10 +480,10 @@ npx @jer-y/copilot-proxy@latest start --claude-code
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4399",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-4.1",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4.1",
-    "ANTHROPIC_SMALL_FAST_MODEL": "gpt-4.1",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-4.1",
+    "ANTHROPIC_MODEL": "claude-sonnet-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5",
+    "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-4.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5",
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
@@ -477,6 +494,8 @@ npx @jer-y/copilot-proxy@latest start --claude-code
   }
 }
 ```
+
+上游模型会变化。保存配置前先查询 `GET /v1/models`，选择当前声明支持 Anthropic Messages 的模型；不要给 Claude Code 配置仅支持 Chat Completions 的模型。
 
 更多选项见：[Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
@@ -505,6 +524,8 @@ bun run start
 ```sh
 COPILOT_LIVE_TEST=1 \
 COPILOT_TOKEN=ghu_xxx \
+COPILOT_LIVE_CLAUDE_MODEL=claude-model-under-test \
+COPILOT_LIVE_RESPONSES_MODEL=responses-model-under-test \
 bun run test:live:copilot
 ```
 
@@ -513,7 +534,7 @@ bun run test:live:copilot
 ## 使用建议
 
 - 为避免触发 GitHub Copilot 的速率限制，可使用：
-  - `--manual`：每次请求手动确认
+  - `--manual`：在交互式前台 TTY 中逐个审批；无法显示提示或超时时会拒绝请求
   - `--rate-limit <seconds>`：限制请求最小间隔
   - `--wait`：配合 `--rate-limit` 使用，触发限流时等待而不是报错
 - 如果你是商业版/企业版 Copilot 账号，可使用 `--account-type`：

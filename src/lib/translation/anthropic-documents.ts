@@ -1,3 +1,4 @@
+import type { LookupFunction } from 'node:net'
 import type {
   AnthropicDocumentBlock,
   AnthropicMessagesPayload,
@@ -8,7 +9,11 @@ import type {
 
 import { Buffer } from 'node:buffer'
 import { lookup } from 'node:dns/promises'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { isIP } from 'node:net'
 import process from 'node:process'
+import { Readable } from 'node:stream'
 
 import consola from 'consola'
 import { JSONResponseError } from '~/lib/error'
@@ -54,17 +59,47 @@ function parseContentType(raw: string): { mediaType: string, charset?: string } 
   return { mediaType, charset }
 }
 
-type DocumentHostnameLookup = (hostname: string) => Promise<Array<{ address: string, family: number }>>
+export interface DocumentResolvedAddress {
+  address: string
+  family: number
+}
+
+type DocumentHostnameLookup = (hostname: string) => Promise<Array<DocumentResolvedAddress>>
+
+interface DocumentUrlFetchResult {
+  response: Response
+  dispose: () => Promise<void>
+}
+
+type DocumentUrlFetcher = (
+  url: string,
+  addresses: ReadonlyArray<DocumentResolvedAddress>,
+) => Promise<DocumentUrlFetchResult>
 
 let documentHostnameLookup: DocumentHostnameLookup = async (hostname: string) => {
   return await lookup(hostname, { all: true, verbatim: true })
 }
+
+let documentUrlFetcher: DocumentUrlFetcher = fetchDocumentUrlAtVerifiedAddresses
 
 export function setDocumentUrlResolverForTesting(resolver: DocumentHostnameLookup): () => void {
   const previous = documentHostnameLookup
   documentHostnameLookup = resolver
   return () => {
     documentHostnameLookup = previous
+  }
+}
+
+export function setDocumentUrlFetcherForTesting(
+  fetcher: (url: string, addresses: ReadonlyArray<DocumentResolvedAddress>) => Promise<Response>,
+): () => void {
+  const previous = documentUrlFetcher
+  documentUrlFetcher = async (url, addresses) => ({
+    response: await fetcher(url, addresses),
+    dispose: async () => {},
+  })
+  return () => {
+    documentUrlFetcher = previous
   }
 }
 
@@ -226,36 +261,42 @@ function isPrivateIPv4(ip: string): boolean {
  * the SSRF blocklist. This allows legitimate redirects (301/302/307) while
  * preventing redirects to internal hosts.
  */
-async function fetchWithSsrfCheck(initialUrl: string): Promise<Response> {
+async function fetchWithSsrfCheck(initialUrl: string): Promise<DocumentUrlFetchResult> {
   let url = initialUrl
 
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     const parsed = new URL(url)
-    await assertDocumentUrlFetchTargetAllowed(parsed, i > 0)
-
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(URL_FETCH_TIMEOUT),
-      redirect: 'manual',
-    })
+    const addresses = await assertDocumentUrlFetchTargetAllowed(parsed, i > 0)
+    const fetched = await documentUrlFetcher(url, addresses)
+    const { response } = fetched
 
     // 3xx redirect — extract Location and re-check
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (!location) {
-        throwAnthropicInvalidRequestError('Document URL redirect missing Location header')
+      try {
+        const location = response.headers.get('location')
+        if (!location) {
+          throwAnthropicInvalidRequestError('Document URL redirect missing Location header')
+        }
+        // Resolve relative URLs
+        url = new URL(location, url).href
       }
-      // Resolve relative URLs
-      url = new URL(location, url).href
+      finally {
+        await cancelResponseBody(response)
+        await fetched.dispose()
+      }
       continue
     }
 
-    return response
+    return fetched
   }
 
   throwAnthropicInvalidRequestError(`Document URL exceeded maximum of ${MAX_REDIRECTS} redirects`)
 }
 
-async function assertDocumentUrlFetchTargetAllowed(url: URL, isRedirect: boolean): Promise<void> {
+async function assertDocumentUrlFetchTargetAllowed(
+  url: URL,
+  isRedirect: boolean,
+): Promise<Array<DocumentResolvedAddress>> {
   if (!['http:', 'https:'].includes(url.protocol)) {
     throwAnthropicInvalidRequestError(
       isRedirect
@@ -272,10 +313,13 @@ async function assertDocumentUrlFetchTargetAllowed(url: URL, isRedirect: boolean
     )
   }
 
-  await assertDocumentHostnameResolvesPublicly(url.hostname, isRedirect)
+  return await resolveDocumentHostnamePublicAddresses(url.hostname, isRedirect)
 }
 
-async function assertDocumentHostnameResolvesPublicly(hostname: string, isRedirect: boolean): Promise<void> {
+async function resolveDocumentHostnamePublicAddresses(
+  hostname: string,
+  isRedirect: boolean,
+): Promise<Array<DocumentResolvedAddress>> {
   const lookupHostname = normalizeLookupHostname(hostname)
   let addresses: Array<{ address: string, family: number }>
 
@@ -292,15 +336,192 @@ async function assertDocumentHostnameResolvesPublicly(hostname: string, isRedire
     throwAnthropicInvalidRequestError(`Failed to resolve document URL hostname '${lookupHostname}': no addresses returned`)
   }
 
+  const invalidAddress = addresses.find(result => isIP(result.address) === 0)
+  if (invalidAddress) {
+    throwAnthropicInvalidRequestError(
+      `Failed to resolve document URL hostname '${lookupHostname}': resolver returned an invalid IP address`,
+    )
+  }
+
   const blockedAddress = addresses.find(result => isBlockedHost(result.address))
-  if (!blockedAddress)
-    return
+  if (!blockedAddress) {
+    return addresses.map(result => ({
+      address: result.address,
+      family: isIP(result.address),
+    }))
+  }
 
   throwAnthropicInvalidRequestError(
     isRedirect
       ? `Document URL redirected to a hostname that resolves to a blocked address (${blockedAddress.address}). URLs targeting localhost, private networks, or cloud metadata endpoints are not allowed.`
       : `Document URL hostname resolves to a blocked address (${blockedAddress.address}). URLs targeting localhost, private networks, or cloud metadata endpoints are not allowed.`,
   )
+}
+
+async function fetchDocumentUrlAtVerifiedAddresses(
+  url: string,
+  addresses: ReadonlyArray<DocumentResolvedAddress>,
+): Promise<DocumentUrlFetchResult> {
+  if (typeof Bun !== 'undefined')
+    return await fetchDocumentUrlUnderBun(url, addresses)
+
+  return await fetchDocumentUrlUnderNode(url, addresses)
+}
+
+async function fetchDocumentUrlUnderBun(
+  url: string,
+  addresses: ReadonlyArray<DocumentResolvedAddress>,
+): Promise<DocumentUrlFetchResult> {
+  const original = new URL(url)
+  const originalHost = original.host
+  const serverName = normalizeLookupHostname(original.hostname)
+  const candidates = [...addresses].sort((left, right) => left.family - right.family)
+  const timeoutSignal = AbortSignal.timeout(URL_FETCH_TIMEOUT)
+  let lastError: unknown
+
+  for (const candidate of candidates) {
+    const pinned = new URL(original)
+    pinned.hostname = candidate.family === 6 ? `[${candidate.address}]` : candidate.address
+
+    try {
+      const response = await fetch(pinned, {
+        headers: {
+          'Accept': 'application/pdf, text/*;q=0.9, application/octet-stream;q=0.5',
+          'Host': originalHost,
+          'User-Agent': 'copilot-proxy-document-fetch/1',
+        },
+        redirect: 'manual',
+        signal: timeoutSignal,
+        ...(original.protocol === 'https:' && {
+          // Bun exposes TLS SNI as a fetch option. Supplying the original
+          // hostname keeps certificate verification intact while the URL itself
+          // is pinned to the already-validated IP address.
+          tls: { serverName },
+        }),
+      } as RequestInit)
+
+      return {
+        response,
+        dispose: async () => {},
+      }
+    }
+    catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError ?? new Error('No verified document URL address was reachable')
+}
+
+async function fetchDocumentUrlUnderNode(
+  url: string,
+  addresses: ReadonlyArray<DocumentResolvedAddress>,
+): Promise<DocumentUrlFetchResult> {
+  const target = new URL(url)
+  const requestFn = target.protocol === 'https:' ? httpsRequest : httpRequest
+
+  return await new Promise<DocumentUrlFetchResult>((resolve, reject) => {
+    let responseReceived = false
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    const request = requestFn(target, {
+      method: 'GET',
+      lookup: createPinnedDocumentLookup(addresses),
+      headers: {
+        'Accept': 'application/pdf, text/*;q=0.9, application/octet-stream;q=0.5',
+        'User-Agent': 'copilot-proxy-document-fetch/1',
+      },
+    }, (incoming) => {
+      responseReceived = true
+      try {
+        const status = incoming.statusCode ?? 502
+        if (status < 200 || status > 599)
+          throw new Error(`Document URL returned unsupported HTTP status ${status}`)
+
+        const body = status === 204 || status === 205 || status === 304
+          ? null
+          : Readable.toWeb(incoming) as unknown as ReadableStream<Uint8Array>
+        const response = new Response(body, {
+          status,
+          statusText: incoming.statusMessage,
+          headers: headersFromRawPairs(incoming.rawHeaders),
+        })
+
+        resolve({
+          response,
+          dispose: async () => {
+            if (timeout)
+              clearTimeout(timeout)
+            incoming.destroy()
+            request.destroy()
+          },
+        })
+      }
+      catch (error) {
+        if (timeout)
+          clearTimeout(timeout)
+        incoming.destroy()
+        request.destroy()
+        reject(error)
+      }
+    })
+
+    timeout = setTimeout(() => {
+      request.destroy(new Error(`Document URL fetch timed out after ${URL_FETCH_TIMEOUT}ms`))
+    }, URL_FETCH_TIMEOUT)
+    timeout.unref?.()
+
+    request.once('error', (error) => {
+      if (timeout)
+        clearTimeout(timeout)
+      if (!responseReceived)
+        reject(error)
+    })
+    request.end()
+  })
+}
+
+function headersFromRawPairs(rawHeaders: string[]): Headers {
+  const headers = new Headers()
+  for (let index = 0; index + 1 < rawHeaders.length; index += 2)
+    headers.append(rawHeaders[index], rawHeaders[index + 1])
+  return headers
+}
+
+function createPinnedDocumentLookup(
+  addresses: ReadonlyArray<DocumentResolvedAddress>,
+): LookupFunction {
+  return (_hostname, options, callback) => {
+    const requestedFamily = options.family === 4 || options.family === 6
+      ? options.family
+      : undefined
+    const candidates = requestedFamily
+      ? addresses.filter(address => address.family === requestedFamily)
+      : [...addresses]
+
+    if (candidates.length === 0) {
+      const error = Object.assign(new Error('No verified document URL address matches the requested family'), {
+        code: 'ENOTFOUND',
+      }) as NodeJS.ErrnoException
+      callback(error, '')
+      return
+    }
+
+    if (options.all) {
+      callback(null, candidates.map(candidate => ({
+        address: candidate.address,
+        family: candidate.family,
+      })))
+      return
+    }
+
+    const selected = candidates[0]
+    callback(null, selected.address, selected.family)
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => {})
 }
 
 function normalizeLookupHostname(hostname: string): string {
@@ -335,6 +556,7 @@ async function readResponseWithSizeLimit(
 
   const chunks: Uint8Array[] = []
   let totalSize = 0
+  let completed = false
 
   try {
     while (true) {
@@ -348,8 +570,12 @@ async function readResponseWithSizeLimit(
       }
       chunks.push(value)
     }
+    completed = true
   }
   finally {
+    if (!completed) {
+      await reader.cancel().catch(() => {})
+    }
     reader.releaseLock()
   }
 
@@ -660,59 +886,66 @@ async function resolveDocumentSource(
 
   try {
     // Follow redirects manually with SSRF re-check at each hop
-    const response = await fetchWithSsrfCheck(source.url)
+    const fetched = await fetchWithSsrfCheck(source.url)
+    const { response } = fetched
 
-    if (!response.ok) {
-      throwAnthropicInvalidRequestError(
-        `Failed to fetch document from URL: HTTP ${response.status}`,
-      )
-    }
-
-    // Pre-flight size check via Content-Length header to reject obviously oversized responses
-    const contentLength = response.headers.get('content-length')
-    if (contentLength && Number.parseInt(contentLength, 10) > MAX_DOCUMENT_SIZE) {
-      throwAnthropicInvalidRequestError(
-        'Document exceeds maximum size of 32MB',
-      )
-    }
-
-    // Pre-flight Content-Type check: reject definitely unsupported types before downloading body
-    const contentType = response.headers.get('content-type') ?? 'application/octet-stream'
-    let { mediaType, charset } = parseContentType(contentType)
-    if (mediaType !== 'application/pdf'
-      && mediaType !== 'application/octet-stream' // may be PDF, sniff after download
-      && !mediaType.startsWith('text/')) {
-      throwAnthropicInvalidRequestError(
-        `Unsupported document media_type '${mediaType}'. Supported: application/pdf, text/*`,
-      )
-    }
-
-    // Stream response body with size enforcement to prevent memory exhaustion
-    // (Content-Length may be absent, chunked, or lie)
-    const buffer = await readResponseWithSizeLimit(response, MAX_DOCUMENT_SIZE)
-
-    // Sniff content when Content-Type is generic/missing (common for pre-signed URLs, attachment endpoints)
-    if (mediaType === 'application/octet-stream' && buffer.length > 0) {
-      // %PDF- magic bytes check (needs at least 5 bytes)
-      if (buffer.length >= 5 && buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46 && buffer[4] === 0x2D) {
-        mediaType = 'application/pdf'
+    try {
+      if (!response.ok) {
+        throwAnthropicInvalidRequestError(
+          `Failed to fetch document from URL: HTTP ${response.status}`,
+        )
       }
-      else {
-        // Try to detect text: if the buffer decodes as valid UTF-8 without replacement chars,
-        // treat it as text/plain. This handles common cases where text files are served as octet-stream.
-        try {
-          const decoded = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
-          if (decoded.length > 0) {
-            mediaType = 'text/plain'
+
+      // Pre-flight size check via Content-Length header to reject obviously oversized responses
+      const contentLength = response.headers.get('content-length')
+      if (contentLength && Number.parseInt(contentLength, 10) > MAX_DOCUMENT_SIZE) {
+        throwAnthropicInvalidRequestError(
+          'Document exceeds maximum size of 32MB',
+        )
+      }
+
+      // Pre-flight Content-Type check: reject definitely unsupported types before downloading body
+      const contentType = response.headers.get('content-type') ?? 'application/octet-stream'
+      let { mediaType, charset } = parseContentType(contentType)
+      if (mediaType !== 'application/pdf'
+        && mediaType !== 'application/octet-stream' // may be PDF, sniff after download
+        && !mediaType.startsWith('text/')) {
+        throwAnthropicInvalidRequestError(
+          `Unsupported document media_type '${mediaType}'. Supported: application/pdf, text/*`,
+        )
+      }
+
+      // Stream response body with size enforcement to prevent memory exhaustion
+      // (Content-Length may be absent, chunked, or lie)
+      const buffer = await readResponseWithSizeLimit(response, MAX_DOCUMENT_SIZE)
+
+      // Sniff content when Content-Type is generic/missing (common for pre-signed URLs, attachment endpoints)
+      if (mediaType === 'application/octet-stream' && buffer.length > 0) {
+        // %PDF- magic bytes check (needs at least 5 bytes)
+        if (buffer.length >= 5 && buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46 && buffer[4] === 0x2D) {
+          mediaType = 'application/pdf'
+        }
+        else {
+          // Try to detect text: if the buffer decodes as valid UTF-8 without replacement chars,
+          // treat it as text/plain. This handles common cases where text files are served as octet-stream.
+          try {
+            const decoded = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+            if (decoded.length > 0) {
+              mediaType = 'text/plain'
+            }
+          }
+          catch {
+            // Not valid UTF-8 — leave as octet-stream, will be rejected downstream
           }
         }
-        catch {
-          // Not valid UTF-8 — leave as octet-stream, will be rejected downstream
-        }
       }
-    }
 
-    return { kind: 'bytes', buffer, mediaType, charset }
+      return { kind: 'bytes', buffer, mediaType, charset }
+    }
+    finally {
+      await cancelResponseBody(response)
+      await fetched.dispose()
+    }
   }
   catch (error) {
     // Re-throw already-wrapped Anthropic errors

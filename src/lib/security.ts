@@ -3,6 +3,8 @@ import process from 'node:process'
 
 export const DEFAULT_HOST = '127.0.0.1'
 export const CORS_ORIGINS_ENV = 'COPILOT_PROXY_CORS_ORIGINS'
+export const ALLOWED_HOSTS_ENV = 'COPILOT_PROXY_ALLOWED_HOSTS'
+export const EXPOSE_TOKEN_ENV = 'COPILOT_PROXY_EXPOSE_TOKEN'
 export const HOSTED_USAGE_VIEWER_ORIGIN = 'https://jer-y.github.io'
 
 interface RequestWithIp extends Request {
@@ -15,6 +17,8 @@ loopbackV6.addSubnet('::ffff:127.0.0.0', 104, 'ipv6')
 
 let cachedCorsOriginsRaw: string | undefined
 let cachedCorsOrigins = new Set<string>()
+let cachedAllowedHostsRaw: string | undefined
+let cachedAllowedHosts = new Set<string>()
 
 function normalizeHostname(hostname: string): string {
   let normalized = hostname.trim().toLowerCase()
@@ -108,6 +112,21 @@ function configuredCorsOrigins(): Set<string> {
   return cachedCorsOrigins
 }
 
+function configuredAllowedHosts(): Set<string> {
+  const raw = process.env[ALLOWED_HOSTS_ENV] ?? ''
+  if (raw === cachedAllowedHostsRaw)
+    return cachedAllowedHosts
+
+  cachedAllowedHostsRaw = raw
+  cachedAllowedHosts = new Set(
+    raw
+      .split(',')
+      .map(host => normalizeHostname(host))
+      .filter(Boolean),
+  )
+  return cachedAllowedHosts
+}
+
 function isUsagePath(path?: string): boolean {
   return path === '/usage' || path?.startsWith('/usage/') === true
 }
@@ -132,7 +151,46 @@ export function resolveCorsOrigin(origin: string, path?: string): string | null 
   return null
 }
 
+export function isRequestOriginAllowed(request: Request, path?: string): boolean {
+  const origin = request.headers.get('origin')
+  return !origin || resolveCorsOrigin(origin, path) !== null
+}
+
+export function isRequestHostAllowed(request: Request): boolean {
+  const hostname = requestHostname(request)
+  if (!hostname)
+    return false
+
+  return isLoopbackHostname(hostname) || configuredAllowedHosts().has(normalizeHostname(hostname))
+}
+
+export function isTokenExposureEnabled(): boolean {
+  return process.env[EXPOSE_TOKEN_ENV]?.trim() === '1'
+}
+
+function requestHostname(request: Request): string | null {
+  const hostHeader = request.headers.get('host')?.trim()
+  if (hostHeader) {
+    try {
+      return new URL(`http://${hostHeader}`).hostname
+    }
+    catch {
+      return null
+    }
+  }
+
+  try {
+    return new URL(request.url).hostname
+  }
+  catch {
+    return null
+  }
+}
+
 export function isTokenRequestAllowed(request: Request): boolean {
+  if (!isTokenExposureEnabled())
+    return false
+
   // srvx attaches the socket address as request.ip for Node/Bun adapters. Revisit
   // this check if the proxy is ever placed behind another HTTP reverse proxy.
   const remoteIp = (request as RequestWithIp).ip
@@ -147,7 +205,7 @@ export function isTokenRequestAllowed(request: Request): boolean {
     return false
   }
 
-  if (!isLoopbackHostname(requestUrl.hostname))
+  if (!isLoopbackHostname(requestUrl.hostname) || !isRequestHostAllowed(request))
     return false
 
   const origin = request.headers.get('origin')

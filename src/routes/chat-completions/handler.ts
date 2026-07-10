@@ -5,6 +5,8 @@ import type { ChatCompletionResponse, ChatCompletionsPayload } from '~/services/
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
+import { getModelConfig } from '~/lib/model-config'
+import { findModelWithFallback } from '~/lib/model-utils'
 import {
   chatCompletionsHasExternalImageUrls,
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
@@ -28,7 +30,7 @@ export async function handleCompletion(c: Context) {
 
   let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
   if (consola.level >= 4) {
-    consola.debug('Request payload:', JSON.stringify(payload).slice(-400))
+    consola.debug('Chat completions request:', summarizeChatCompletionRequest(payload))
   }
 
   if (chatCompletionsHasExternalImageUrls(payload)) {
@@ -36,9 +38,7 @@ export async function handleCompletion(c: Context) {
   }
 
   // Find the selected model
-  const selectedModel = state.models?.data?.find(
-    model => model.id === payload.model,
-  )
+  const selectedModel = findModelWithFallback(payload.model, state.models?.data)
 
   // Calculate and display token count
   try {
@@ -56,15 +56,10 @@ export async function handleCompletion(c: Context) {
 
   await enforceManualApproval(state)
 
-  if (isNullish(payload.max_tokens)) {
-    payload = {
-      ...payload,
-      max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
-    }
-    if (consola.level >= 4) {
-      consola.debug('Set max_tokens to:', JSON.stringify(payload.max_tokens))
-    }
-  }
+  payload = normalizeChatCompletionTokenLimit(
+    payload,
+    selectedModel?.capabilities.limits.max_output_tokens,
+  )
 
   const route = resolveRoute('chat-completions', payload.model, throwOpenAIInvalidRequestError, {
     models: state.models?.data,
@@ -93,7 +88,7 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
 
   if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {
-      consola.debug('Non-streaming response:', JSON.stringify(result.body))
+      consola.debug('Chat completions response:', summarizeChatCompletionResponse(result.body))
     }
     forwardUpstreamHeaders(c, result.headers)
     return c.json(normalizeChatCompletionResponse(result.body))
@@ -110,7 +105,7 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
         if (stream.aborted)
           break
         if (consola.level >= 4) {
-          consola.debug('Streaming chunk:', JSON.stringify(chunk))
+          consola.debug('Chat completions stream chunk:', summarizeChatCompletionStreamChunk(chunk as SSEMessage))
         }
         await stream.writeSSE(normalizeChatCompletionStreamChunk(chunk as SSEMessage))
       }
@@ -132,6 +127,80 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
 
 function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>>['body']): body is ChatCompletionResponse {
   return Object.hasOwn(body, 'choices')
+}
+
+export function normalizeChatCompletionTokenLimit(
+  payload: ChatCompletionsPayload,
+  modelMaxOutputTokens?: number,
+): ChatCompletionsPayload {
+  const tokenParameter = getModelConfig(payload.model).chatCompletionTokenParameter ?? 'max_tokens'
+
+  if (tokenParameter === 'max_completion_tokens') {
+    const maxCompletionTokens = payload.max_completion_tokens
+      ?? payload.max_tokens
+      ?? modelMaxOutputTokens
+    const { max_tokens: _legacyMaxTokens, ...rest } = payload
+    return isNullish(maxCompletionTokens)
+      ? rest
+      : { ...rest, max_completion_tokens: maxCompletionTokens }
+  }
+
+  if (!isNullish(payload.max_tokens) || !isNullish(payload.max_completion_tokens))
+    return payload
+
+  return isNullish(modelMaxOutputTokens)
+    ? payload
+    : { ...payload, max_tokens: modelMaxOutputTokens }
+}
+
+function summarizeChatCompletionRequest(payload: ChatCompletionsPayload): Record<string, unknown> {
+  return {
+    model: payload.model,
+    stream: Boolean(payload.stream),
+    messageCount: payload.messages.length,
+    toolCount: payload.tools?.length ?? 0,
+    hasImageInput: payload.messages.some(message => Array.isArray(message.content)
+      && message.content.some(part => part.type === 'image_url')),
+    maxTokens: payload.max_tokens ?? undefined,
+    maxCompletionTokens: payload.max_completion_tokens ?? undefined,
+  }
+}
+
+function summarizeChatCompletionResponse(response: ChatCompletionResponse): Record<string, unknown> {
+  return {
+    id: response.id,
+    model: response.model,
+    choiceCount: response.choices.length,
+    finishReasons: response.choices.map(choice => choice.finish_reason),
+    promptTokens: response.usage?.prompt_tokens,
+    completionTokens: response.usage?.completion_tokens,
+  }
+}
+
+function summarizeChatCompletionStreamChunk(chunk: SSEMessage): Record<string, unknown> {
+  if (typeof chunk.data !== 'string' || chunk.data === '[DONE]') {
+    return { event: chunk.event, done: chunk.data === '[DONE]' }
+  }
+
+  try {
+    const data = JSON.parse(chunk.data) as {
+      id?: unknown
+      model?: unknown
+      choices?: Array<{ finish_reason?: unknown }>
+    }
+    return {
+      event: chunk.event,
+      id: typeof data.id === 'string' ? data.id : undefined,
+      model: typeof data.model === 'string' ? data.model : undefined,
+      choiceCount: Array.isArray(data.choices) ? data.choices.length : undefined,
+      finishReasons: Array.isArray(data.choices)
+        ? data.choices.map(choice => choice.finish_reason).filter(reason => reason != null)
+        : undefined,
+    }
+  }
+  catch {
+    return { event: chunk.event, validJson: false }
+  }
 }
 
 function normalizeChatCompletionResponse(response: ChatCompletionResponse): ChatCompletionResponse {

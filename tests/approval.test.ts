@@ -2,7 +2,7 @@ import process from 'node:process'
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import consola from 'consola'
 
-import { awaitApproval } from '~/lib/approval'
+import { awaitApproval, setApprovalRequestModel, withApprovalRequestContext } from '~/lib/approval'
 
 const originalPrompt = consola.prompt
 const originalStdinIsTTY = process.stdin.isTTY
@@ -15,22 +15,26 @@ afterEach(() => {
 })
 
 describe('awaitApproval', () => {
-  test('allows without prompting when no TTY is available', async () => {
+  test('rejects without prompting when no TTY is available', async () => {
     const prompt = mock(async () => true)
     consola.prompt = prompt as unknown as typeof consola.prompt
     setIsTTY(process.stdin, false)
     setIsTTY(process.stdout, false)
 
-    await expect(awaitApproval()).resolves.toBeUndefined()
+    await expect(awaitApproval()).rejects.toMatchObject({
+      response: expect.objectContaining({ status: 503 }),
+    })
     expect(prompt).toHaveBeenCalledTimes(0)
   })
 
-  test('allows after prompt timeout to avoid blocking the server', async () => {
+  test('rejects after prompt timeout', async () => {
     consola.prompt = mock(async () => new Promise<boolean>(() => {})) as unknown as typeof consola.prompt
     setIsTTY(process.stdin, true)
     setIsTTY(process.stdout, true)
 
-    await expect(awaitApproval({ timeoutMs: 5 })).resolves.toBeUndefined()
+    await expect(awaitApproval({ timeoutMs: 5 })).rejects.toMatchObject({
+      response: expect.objectContaining({ status: 503 }),
+    })
   })
 
   test('aborts the prompt when approval times out', async () => {
@@ -42,7 +46,9 @@ describe('awaitApproval', () => {
     setIsTTY(process.stdin, true)
     setIsTTY(process.stdout, true)
 
-    await expect(awaitApproval({ timeoutMs: 5 })).resolves.toBeUndefined()
+    await expect(awaitApproval({ timeoutMs: 5 })).rejects.toMatchObject({
+      response: expect.objectContaining({ status: 503 }),
+    })
     expect(signal?.aborted).toBe(true)
   })
 
@@ -70,6 +76,33 @@ describe('awaitApproval', () => {
 
     resolvers[1](true)
     await second
+  })
+
+  test('shows bounded request context before approval', async () => {
+    let message = ''
+    consola.prompt = mock(async (promptMessage: string) => {
+      message = promptMessage
+      return true
+    }) as unknown as typeof consola.prompt
+    setIsTTY(process.stdin, true)
+    setIsTTY(process.stdout, true)
+
+    await withApprovalRequestContext({
+      method: 'POST',
+      path: '/v1/messages',
+      clientAddress: '127.0.0.1',
+      origin: 'http://localhost:3000',
+      userAgent: 'test-client/1.0',
+    }, async () => {
+      setApprovalRequestModel('claude-test')
+      await awaitApproval({ timeoutMs: 1000 })
+    })
+
+    expect(message).toContain('POST /v1/messages')
+    expect(message).toContain('model=claude-test')
+    expect(message).toContain('client=127.0.0.1')
+    expect(message).toContain('origin=http://localhost:3000')
+    expect(message).toContain('user-agent=test-client/1.0')
   })
 })
 

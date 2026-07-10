@@ -20,6 +20,8 @@
   `bun run audit`
 - **Test all:**
   `bun test`
+- **Test with coverage gate:**
+  `bun run test:coverage` (enforces the repository floor from `bunfig.toml`)
 - **Test single file:**
   `bun test tests/messages-routing.test.ts`
 - **Common targeted tests:**

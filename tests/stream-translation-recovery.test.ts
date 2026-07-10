@@ -1,7 +1,8 @@
 import type { AnthropicStreamState } from '~/lib/translation/types'
 import type { NativeAnthropicPassthroughState } from '~/routes/messages/stream-finalizer'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
+import consola from 'consola'
 
 import {
   createAnthropicToResponsesStreamState,
@@ -16,6 +17,7 @@ import {
   finalizeTruncatedAnthropicStreamFromState,
   shouldEmitNativeAnthropicTerminationError,
   updateNativeAnthropicPassthroughState,
+  writeAnthropicEvents,
 } from '~/routes/messages/stream-finalizer'
 
 function makeState(overrides: Partial<AnthropicStreamState> = {}): AnthropicStreamState {
@@ -77,6 +79,34 @@ function recordNativeTextDelta(
 }
 
 describe('canRecoverUpstreamTerminationAsMessage', () => {
+  test('verbose translated-event logs contain summaries, not streamed content', async () => {
+    const sentinel = 'STREAM_SECRET_SENTINEL'
+    const originalDebug = consola.debug
+    const originalLevel = consola.level
+    const logs: string[] = []
+    consola.level = 4
+    consola.debug = mock((...args: unknown[]) => {
+      logs.push(args.map(value => String(value)).join(' '))
+    }) as unknown as typeof consola.debug
+
+    try {
+      await writeAnthropicEvents({
+        writeEvent: async () => {},
+      }, [{
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: sentinel },
+      }], { debugTranslatedEvents: true })
+    }
+    finally {
+      consola.debug = originalDebug
+      consola.level = originalLevel
+    }
+
+    expect(logs.join('\n')).not.toContain(sentinel)
+    expect(logs.join('\n')).toContain('Translated Anthropic event summary')
+  })
+
   test('refuses recovery when only thinking content was streamed', () => {
     const state = makeState({
       hasThinkingContent: true,
@@ -97,6 +127,19 @@ describe('canRecoverUpstreamTerminationAsMessage', () => {
 })
 
 describe('finalizeNativeAnthropicPassthroughState', () => {
+  test('does not recover an empty text block as a successful message', () => {
+    const state = createNativeAnthropicPassthroughState()
+    recordNativeMessageStart(state)
+    updateNativeAnthropicPassthroughState(state, {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    })
+
+    expect(finalizeNativeAnthropicPassthroughState(state)).toEqual([])
+    expect(shouldEmitNativeAnthropicTerminationError(state)).toBe(true)
+  })
+
   test('synthesizes a complete Anthropic ending after visible text', () => {
     const state = createNativeAnthropicPassthroughState()
     recordNativeMessageStart(state, 2)
@@ -270,6 +313,67 @@ describe('finalizeAnthropicStreamFromState', () => {
 })
 
 describe('finalizeAnthropicToResponsesStreamState', () => {
+  test('Anthropic error is terminal and cannot be followed by response.completed', () => {
+    const state = createAnthropicToResponsesStreamState()
+    translateAnthropicStreamEventToResponses({
+      type: 'message_start',
+      message: {
+        id: 'msg_failed',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: 'claude-opus-4.6',
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    }, state)
+
+    const failureEvents = translateAnthropicStreamEventToResponses({
+      type: 'error',
+      error: { type: 'api_error', message: 'upstream failed' },
+    }, state)
+    const lateCompletionEvents = translateAnthropicStreamEventToResponses({ type: 'message_stop' }, state)
+    const finalEvents = finalizeAnthropicToResponsesStreamState(state)
+
+    expect(failureEvents.map(event => event.type)).toEqual(['response.failed'])
+    expect(lateCompletionEvents).toEqual([])
+    expect(finalEvents).toEqual([])
+  })
+
+  test('empty text block followed by EOF emits only a failed terminal event', () => {
+    const state = createAnthropicToResponsesStreamState()
+    translateAnthropicStreamEventToResponses({
+      type: 'message_start',
+      message: {
+        id: 'msg_empty',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: 'claude-opus-4.6',
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    }, state)
+    translateAnthropicStreamEventToResponses({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    }, state)
+
+    const events = finalizeAnthropicToResponsesStreamState(state)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'response.failed',
+      response: {
+        status: 'failed',
+        error: { code: 'upstream_stream_terminated' },
+      },
+    })
+  })
+
   test('synthesizes response.completed when Anthropic stream ends after visible text', () => {
     const state = createAnthropicToResponsesStreamState()
     translateAnthropicStreamEventToResponses({

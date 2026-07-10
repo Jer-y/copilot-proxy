@@ -1,0 +1,5 @@
+[test]
+# Keep the existing suite fast by default; CI enables coverage explicitly.
+# This floor prevents broad untested regressions while leaving room for the
+# platform-specific service adapters that require native integration runners.
+coverageThreshold = { line = 0.70, function = 0.70 }

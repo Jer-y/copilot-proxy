@@ -160,6 +160,8 @@ export function finalizeTruncatedAnthropicStreamFromState(
   events.push(translateErrorToAnthropicErrorEvent(
     getUpstreamTerminationErrorMessage(state),
   ))
+  state.upstreamTerminalEventSeen = true
+  state.messageStopSent = true
 
   return events
 }
@@ -185,7 +187,7 @@ export async function writeAnthropicEvents(
 ): Promise<void> {
   for (const event of events) {
     if (options?.debugTranslatedEvents && consola.level >= 4) {
-      consola.debug('Translated Anthropic event:', JSON.stringify(event))
+      consola.debug('Translated Anthropic event summary:', summarizeAnthropicEvent(event))
     }
     await writer.writeEvent(event)
   }
@@ -224,7 +226,7 @@ export async function handleAnthropicStreamFailure(
   const message = options.error instanceof Error
     ? options.error.message
     : options.unexpectedErrorMessage
-  consola.error(`${options.errorLabel} failed:`, options.error)
+  consola.error(`${options.errorLabel} failed:`, summarizeStreamFailure(options.error))
   await options.writer.writeEvent(translateErrorToAnthropicErrorEvent(message))
 }
 
@@ -298,20 +300,29 @@ export function updateNativeAnthropicPassthroughState(
       state.currentBlockType = event.content_block.type
 
       if (event.content_block.type === 'thinking') {
-        state.hasThinkingContent = true
+        state.hasThinkingContent ||= event.content_block.thinking.length > 0
+      }
+      else if (event.content_block.type === 'tool_use') {
+        state.hasNonThinkingContent = true
       }
       else {
-        state.hasNonThinkingContent = true
+        state.hasNonThinkingContent ||= event.content_block.text.length > 0
       }
       return
     }
 
     case 'content_block_delta': {
       if (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta') {
-        state.hasThinkingContent = true
+        const content = event.delta.type === 'thinking_delta'
+          ? event.delta.thinking
+          : event.delta.signature
+        state.hasThinkingContent ||= content.length > 0
       }
-      else {
-        state.hasNonThinkingContent = true
+      else if (event.delta.type === 'text_delta') {
+        state.hasNonThinkingContent ||= event.delta.text.length > 0
+      }
+      else if (event.delta.type === 'input_json_delta') {
+        state.hasNonThinkingContent ||= event.delta.partial_json.length > 0
       }
       return
     }
@@ -390,4 +401,76 @@ export function shouldEmitNativeAnthropicTerminationError(
   state: NativeAnthropicPassthroughState,
 ): boolean {
   return state.messageStartSeen && !state.messageStopSeen && !state.errorSeen
+}
+
+function summarizeAnthropicEvent(event: AnthropicStreamEventData): Record<string, unknown> {
+  switch (event.type) {
+    case 'message_start':
+      return {
+        type: event.type,
+        model: event.message.model,
+        inputTokens: event.message.usage.input_tokens,
+      }
+    case 'content_block_start':
+      return {
+        type: event.type,
+        index: event.index,
+        blockType: event.content_block.type,
+        initialChars: event.content_block.type === 'text'
+          ? event.content_block.text.length
+          : event.content_block.type === 'thinking'
+            ? event.content_block.thinking.length
+            : 0,
+      }
+    case 'content_block_delta': {
+      const chars = event.delta.type === 'text_delta'
+        ? event.delta.text.length
+        : event.delta.type === 'thinking_delta'
+          ? event.delta.thinking.length
+          : event.delta.type === 'signature_delta'
+            ? event.delta.signature.length
+            : event.delta.type === 'input_json_delta'
+              ? event.delta.partial_json.length
+              : 0
+      return {
+        type: event.type,
+        index: event.index,
+        deltaType: event.delta.type,
+        chars,
+      }
+    }
+    case 'content_block_stop':
+      return { type: event.type, index: event.index }
+    case 'message_delta':
+      return {
+        type: event.type,
+        stopReason: event.delta.stop_reason,
+        outputTokens: event.usage?.output_tokens,
+      }
+    case 'error':
+      return {
+        type: event.type,
+        errorType: event.error.type,
+        messageChars: event.error.message.length,
+      }
+    case 'message_stop':
+    case 'ping':
+      return { type: event.type }
+  }
+}
+
+function summarizeStreamFailure(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) {
+    return { kind: typeof error }
+  }
+
+  const cause = error.cause && typeof error.cause === 'object'
+    ? error.cause as Record<string, unknown>
+    : undefined
+
+  return {
+    name: error.name,
+    messageChars: error.message.length,
+    ...(typeof cause?.code === 'string' && { causeCode: cause.code }),
+  }
 }

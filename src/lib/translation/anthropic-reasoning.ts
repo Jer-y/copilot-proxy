@@ -2,7 +2,7 @@ import type { AnthropicMessagesPayload } from './types'
 import type { ModelConfig } from '~/lib/model-config'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 
-export type AnthropicReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type AnthropicReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 function mapThinkingBudgetToEffort(budgetTokens: number): Exclude<AnthropicReasoningEffort, 'xhigh' | 'max'> {
   if (budgetTokens <= 4_096) {
@@ -21,7 +21,7 @@ export function resolveAnthropicReasoningEffort(
   modelConfig: ModelConfig,
 ): AnthropicReasoningEffort | undefined {
   if (payload.thinking?.type === 'disabled') {
-    return undefined
+    return 'none'
   }
 
   if (payload.output_config?.effort) {

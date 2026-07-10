@@ -33,6 +33,7 @@ import type {
 
 import { randomUUID } from 'node:crypto'
 import { JSONResponseError } from '~/lib/error'
+import { assertResponsesPayloadTranslatable } from '~/lib/routing-policy'
 import { isRecord } from '~/lib/type-guards'
 import { logLossyAnthropicCompatibility } from './anthropic-compat'
 import {
@@ -144,6 +145,27 @@ export function translateResponsesRequestToAnthropic(
   payload: ResponsesPayload,
   options?: { model?: string },
 ): AnthropicMessagesPayload {
+  assertResponsesPayloadTranslatable(payload, throwInvalidRequestError)
+
+  if (payload.prompt_cache_key !== undefined) {
+    logLossyAnthropicCompatibility(
+      'responses prompt_cache_key',
+      'Anthropic Messages has no equivalent cache-routing key; the hint is omitted without changing response semantics.',
+    )
+  }
+  if (payload.prompt_cache_retention !== undefined && payload.prompt_cache_retention !== null) {
+    logLossyAnthropicCompatibility(
+      'responses prompt_cache_retention',
+      'Anthropic Messages cache retention is controlled by block-level cache_control, so the Responses retention hint is omitted.',
+    )
+  }
+  if (payload.service_tier !== undefined && payload.service_tier !== null) {
+    logLossyAnthropicCompatibility(
+      'responses service_tier',
+      'Responses service_tier values do not map one-to-one to Anthropic Messages service_tier and are omitted on translation.',
+    )
+  }
+
   const model = options?.model ?? payload.model
   const { messages, systemParts } = translateResponsesInputToAnthropicMessages(payload.input)
   const system = buildSystemString(payload.instructions, systemParts)
@@ -153,6 +175,9 @@ export function translateResponsesRequestToAnthropic(
     payload.parallel_tool_calls,
   )
   const outputConfig = buildOutputConfig(payload)
+  const thinking = payload.reasoning?.effort === 'none'
+    ? { type: 'disabled' as const }
+    : undefined
 
   return {
     model,
@@ -164,6 +189,7 @@ export function translateResponsesRequestToAnthropic(
     ...(payload.max_output_tokens != null && { max_tokens: payload.max_output_tokens }),
     ...(tools && { tools }),
     ...(toolChoice && { tool_choice: toolChoice }),
+    ...(thinking && { thinking }),
     ...(outputConfig && { output_config: outputConfig }),
   }
 }
@@ -488,7 +514,7 @@ function translateResponsesToAnthropicToolChoice(
   else if (toolChoice === 'none') {
     mapped = { type: 'none' }
   }
-  else if (typeof toolChoice === 'object' && 'name' in toolChoice && typeof toolChoice.name === 'string') {
+  else if (typeof toolChoice === 'object' && toolChoice.type === 'function' && typeof toolChoice.name === 'string') {
     mapped = { type: 'tool', name: toolChoice.name }
   }
 
@@ -513,9 +539,13 @@ function buildOutputConfig(
     format = normalizeResponsesJsonSchemaFormat(payload.text.format)
   }
   else if (payload.text?.format?.type === 'json_object') {
-    logLossyAnthropicCompatibility(
-      'responses text.format=json_object',
-      'Anthropic native /v1/messages only accepts json_schema structured output, so json_object must use an OpenAI-compatible backend.',
+    throwInvalidRequestError(
+      'Responses text.format.type="json_object" cannot be represented by Anthropic native /v1/messages. Use json_schema with an explicit schema or a model routed directly through /responses.',
+    )
+  }
+  else if (payload.text?.format?.type && payload.text.format.type !== 'text') {
+    throwInvalidRequestError(
+      `Unsupported Responses text.format.type="${payload.text.format.type}" for anthropic-messages translation`,
     )
   }
 
@@ -598,11 +628,16 @@ function normalizeResponsesJsonSchemaFormat(
       'Anthropic native output_config.format does not support a strict flag, so strict is ignored on anthropic-messages translation.',
     )
   }
+  if (typeof name === 'string' && name.trim().length > 0) {
+    logLossyAnthropicCompatibility(
+      'responses text.format.name',
+      'Anthropic native output_config.format does not accept a schema name, so the Responses-only name is omitted.',
+    )
+  }
 
   return {
     type: 'json_schema',
     schema,
-    ...(typeof name === 'string' && name.trim().length > 0 && { name }),
   }
 }
 
@@ -730,6 +765,10 @@ export function translateResponsesStreamEventToAnthropic(
 ): Array<AnthropicStreamEventData> {
   const events: Array<AnthropicStreamEventData> = []
 
+  if (state.messageStopSent) {
+    return events
+  }
+
   switch (event.type) {
     case 'response.created': {
       rememberResponseEnvelope(state, event.response)
@@ -823,6 +862,7 @@ export function translateResponsesStreamEventToAnthropic(
           type: 'error',
           error: createAnthropicErrorPayloadFromResponses(event.response).error,
         })
+        state.messageStopSent = true
         break
       }
 
@@ -856,6 +896,7 @@ export function translateResponsesStreamEventToAnthropic(
         type: 'error',
         error: createAnthropicErrorPayloadFromResponses(event.response).error,
       })
+      state.messageStopSent = true
       break
     }
 
@@ -866,6 +907,7 @@ export function translateResponsesStreamEventToAnthropic(
         type: 'error',
         error: createAnthropicErrorPayloadFromResponses(event.error).error,
       })
+      state.messageStopSent = true
       break
     }
 

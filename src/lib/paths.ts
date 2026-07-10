@@ -42,15 +42,28 @@ export const PATHS = {
 
 export async function ensurePaths(): Promise<void> {
   await fs.mkdir(PATHS.APP_DIR, { recursive: true })
-  await ensureFile(PATHS.GITHUB_TOKEN_PATH)
+  await ensureOwnerOnlyFile(PATHS.GITHUB_TOKEN_PATH)
 }
 
-async function ensureFile(filePath: string): Promise<void> {
+export async function ensureOwnerOnlyFile(filePath: string): Promise<void> {
   try {
-    await fs.access(filePath, fs.constants.W_OK)
+    await fs.access(filePath, fs.constants.F_OK)
   }
-  catch {
-    await fs.writeFile(filePath, '', { mode: 0o600 })
-    await fs.chmod(filePath, 0o600)
+  catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+      throw error
+
+    try {
+      await fs.writeFile(filePath, '', { flag: 'wx', mode: 0o600 })
+    }
+    catch (writeError) {
+      // Another initializer may have created the file after the access check.
+      if (!(writeError instanceof Error && 'code' in writeError && writeError.code === 'EEXIST'))
+        throw writeError
+    }
   }
+
+  // chmod existing files too. Earlier versions only corrected permissions for
+  // newly-created files, leaving an existing 0644 token readable by others.
+  await fs.chmod(filePath, 0o600)
 }

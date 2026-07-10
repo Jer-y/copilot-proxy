@@ -17,7 +17,6 @@ import type {
   AnthropicTextBlock,
   AnthropicTool,
   AnthropicToolResultBlock,
-  AnthropicToolUseBlock,
   AnthropicToResponsesStreamState,
   AnthropicUserContentBlock,
   AnthropicUserMessage,
@@ -219,27 +218,36 @@ function handleUserMessage(
     return
   }
 
-  const toolResults = msg.content.filter(
-    (b): b is AnthropicToolResultBlock => b.type === 'tool_result',
-  )
-  const otherBlocks = msg.content.filter(b => b.type !== 'tool_result')
+  let pendingUserBlocks: Array<Exclude<AnthropicUserContentBlock, AnthropicToolResultBlock>> = []
+  const flushUserBlocks = () => {
+    if (pendingUserBlocks.length === 0) {
+      return
+    }
 
-  for (const tr of toolResults) {
-    input.push({
-      type: 'function_call_output',
-      call_id: tr.tool_use_id,
-      output: serializeToolResultContent(tr.content, tr.is_error === true),
-      ...(tr.is_error === true && { status: 'incomplete', is_error: true }),
-    } as ResponsesFunctionCallOutputItem)
-  }
-
-  if (otherBlocks.length > 0) {
-    const content = otherBlocks.map(translateUserBlockToResponsesContent)
+    const content = pendingUserBlocks.map(translateUserBlockToResponsesContent)
+    pendingUserBlocks = []
     input.push({
       role: 'user',
       content,
     } as ResponsesMessageInputItem)
   }
+
+  for (const block of msg.content) {
+    if (block.type !== 'tool_result') {
+      pendingUserBlocks.push(block)
+      continue
+    }
+
+    flushUserBlocks()
+    input.push({
+      type: 'function_call_output',
+      call_id: block.tool_use_id,
+      output: serializeToolResultContent(block.content, block.is_error === true),
+      ...(block.is_error === true && { status: 'incomplete' }),
+    } as ResponsesFunctionCallOutputItem)
+  }
+
+  flushUserBlocks()
 }
 
 function handleAssistantMessage(
@@ -254,13 +262,6 @@ function handleAssistantMessage(
     return
   }
 
-  const toolUseBlocks = msg.content.filter(
-    (b): b is AnthropicToolUseBlock => b.type === 'tool_use',
-  )
-  const textBlocks = msg.content.filter(
-    (b): b is AnthropicTextBlock =>
-      b.type === 'text',
-  )
   const thinkingBlocks = msg.content.filter(block => block.type === 'thinking' || block.type === 'redacted_thinking')
 
   if (thinkingBlocks.length > 0) {
@@ -270,12 +271,14 @@ function handleAssistantMessage(
     )
   }
 
-  if (textBlocks.length > 0) {
-    const textContent = textBlocks
-      .map(b => b.text)
-      .join('\n\n')
-
-    if (textContent) {
+  let pendingText: string[] = []
+  const flushText = () => {
+    if (pendingText.length > 0) {
+      const textContent = pendingText.join('\n\n')
+      pendingText = []
+      if (!textContent) {
+        return
+      }
       input.push({
         role: 'assistant',
         content: [{ type: 'output_text', text: textContent }],
@@ -283,16 +286,26 @@ function handleAssistantMessage(
     }
   }
 
-  for (const tu of toolUseBlocks) {
-    input.push({
-      type: 'function_call',
-      id: `fc_${tu.id}`,
-      call_id: tu.id,
-      name: tu.name,
-      arguments: JSON.stringify(tu.input),
-      status: 'completed',
-    } as ResponsesFunctionCallItem)
+  for (const block of msg.content) {
+    if (block.type === 'text') {
+      pendingText.push(block.text)
+      continue
+    }
+
+    if (block.type === 'tool_use') {
+      flushText()
+      input.push({
+        type: 'function_call',
+        id: `fc_${block.id}`,
+        call_id: block.id,
+        name: block.name,
+        arguments: JSON.stringify(block.input),
+        status: 'completed',
+      } as ResponsesFunctionCallItem)
+    }
   }
+
+  flushText()
 }
 
 function translateAnthropicToolsToResponses(
@@ -621,6 +634,7 @@ export function createAnthropicToResponsesStreamState(options?: { requestedModel
     toolCalls: new Map(),
     currentThinkingText: '',
     completedOutputItems: [],
+    hasAssistantOutput: false,
     stopReason: undefined,
     inputTokens: 0,
     outputTokens: 0,
@@ -637,6 +651,13 @@ export function translateAnthropicStreamEventToResponses(
   state: AnthropicToResponsesStreamState,
 ): Array<ResponsesStreamEvent> {
   const events: Array<ResponsesStreamEvent> = []
+
+  // `messageStopSent` represents any terminal client event, including a
+  // response.failed/error. Ignore late upstream events after a terminal so an
+  // Anthropic error can never be followed by response.completed.
+  if (state.messageStopSent) {
+    return events
+  }
 
   switch (event.type) {
     case 'message_start': {
@@ -658,7 +679,8 @@ export function translateAnthropicStreamEventToResponses(
 
       if (blockType === 'text') {
         state.currentBlockType = 'text'
-        state.currentPartText = ''
+        const block = event.content_block as AnthropicTextBlock
+        state.currentPartText = block.text
         openMessageIfNeeded(events, state)
         const messageItemId = getCurrentMessageItemId(state)
         events.push({
@@ -668,6 +690,16 @@ export function translateAnthropicStreamEventToResponses(
           content_index: state.contentPartIndex,
           part: { type: 'output_text', text: '' },
         })
+        if (block.text) {
+          state.hasAssistantOutput = true
+          events.push({
+            type: 'response.output_text.delta',
+            item_id: messageItemId,
+            output_index: state.messageOutputIndex!,
+            content_index: state.contentPartIndex,
+            delta: block.text,
+          })
+        }
       }
       else if (blockType === 'tool_use') {
         state.currentBlockType = 'tool_use'
@@ -715,6 +747,9 @@ export function translateAnthropicStreamEventToResponses(
     case 'content_block_delta': {
       if (state.currentBlockType === 'text' && event.delta.type === 'text_delta') {
         state.currentPartText += event.delta.text
+        if (event.delta.text) {
+          state.hasAssistantOutput = true
+        }
         const messageItemId = getCurrentMessageItemId(state)
         events.push({
           type: 'response.output_text.delta',
@@ -776,6 +811,7 @@ export function translateAnthropicStreamEventToResponses(
           })
           // Preserve in completedOutputItems for buildAnthropicPartialResponse
           state.completedOutputItems.push(functionCallItem)
+          state.hasAssistantOutput = true
         }
       }
       // thinking → emit reasoning output item (consistent with non-streaming T11)
@@ -864,6 +900,7 @@ export function translateAnthropicStreamEventToResponses(
           },
         })
       }
+      state.messageStopSent = true
       break
     }
 
@@ -880,10 +917,6 @@ export function finalizeAnthropicToResponsesStreamState(
   const events: Array<ResponsesStreamEvent> = []
   if (!state.createdSent || state.messageStopSent) {
     return events
-  }
-
-  if (state.currentBlockType === 'text') {
-    closeCurrentTextBlock(events, state)
   }
 
   if (state.currentBlockType === 'tool_use') {
@@ -904,9 +937,22 @@ export function finalizeAnthropicToResponsesStreamState(
     return events
   }
 
+  if (state.currentBlockType === 'text' && !state.hasAssistantOutput && state.currentPartText.length === 0) {
+    events.push(buildAnthropicStreamFailureEvent(
+      state,
+      'Copilot Anthropic upstream stream terminated before emitting assistant output.',
+    ))
+    state.messageStopSent = true
+    return events
+  }
+
+  if (state.currentBlockType === 'text') {
+    closeCurrentTextBlock(events, state)
+  }
+
   closeMessageIfOpen(events, state)
 
-  if (state.completedOutputItems.length === 0) {
+  if (!state.hasAssistantOutput) {
     events.push(buildAnthropicStreamFailureEvent(
       state,
       'Copilot Anthropic upstream stream terminated before emitting assistant output.',

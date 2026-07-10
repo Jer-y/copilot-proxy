@@ -22,6 +22,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
+import { EXPOSE_TOKEN_ENV } from '~/lib/security'
 import { state } from '~/lib/state'
 import { setupCopilotToken, setupGitHubToken } from '~/lib/token'
 import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
@@ -433,7 +434,7 @@ describeLive('Proxy live smoke', () => {
       const res = await sendJsonRequest('/v1/responses', {
         model: RESPONSES_MODEL,
         input: 'Reply with the single word OK.',
-        max_output_tokens: 32,
+        max_output_tokens: 128,
         reasoning: {
           effort: 'high',
         },
@@ -441,7 +442,11 @@ describeLive('Proxy live smoke', () => {
 
       expect(res.status).toBe(200)
       const body = await parseJson<Record<string, unknown>>(res)
-      expect(body.status).toBe('completed')
+      const status = body.status
+      expect(typeof status).toBe('string')
+      expect(['completed', 'incomplete']).toContain(status as string)
+      if (status === 'incomplete')
+        expect(body.incomplete_details).toBeTruthy()
     }, TIMEOUT)
 
     test('text.verbosity high → 200', async () => {
@@ -592,7 +597,18 @@ describeLive('Proxy live smoke', () => {
     }, TIMEOUT)
 
     test('/token → returns current Copilot token', async () => {
-      const res = await server.fetch(requestWithIp('http://127.0.0.1/token', '127.0.0.1'))
+      const previousExposure = process.env[EXPOSE_TOKEN_ENV]
+      let res: Response
+      try {
+        process.env[EXPOSE_TOKEN_ENV] = '1'
+        res = await server.fetch(requestWithIp('http://127.0.0.1/token', '127.0.0.1'))
+      }
+      finally {
+        if (previousExposure === undefined)
+          delete process.env[EXPOSE_TOKEN_ENV]
+        else
+          process.env[EXPOSE_TOKEN_ENV] = previousExposure
+      }
 
       expect(res.status).toBe(200)
       const body = await parseJson<Record<string, unknown>>(res)

@@ -129,7 +129,7 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
 
   if (!isResponsesStreamBody(result.body)) {
     if (consola.level >= 4) {
-      consola.debug('Non-streaming responses:', JSON.stringify(result.body))
+      consola.debug('Non-streaming Responses response summary:', summarizeResponsesResponse(result.body))
     }
     forwardUpstreamHeaders(c, result.headers)
     return c.json(result.body as never)
@@ -146,7 +146,7 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
         if (stream.aborted)
           break
         if (consola.level >= 4) {
-          consola.debug('Responses streaming chunk:', JSON.stringify(chunk))
+          consola.debug('Responses streaming chunk summary:', summarizeSSEMessage(chunk as SSEMessage))
         }
         await stream.writeSSE(chunk as SSEMessage)
       }
@@ -202,7 +202,7 @@ async function handleViaAnthropic(
 
   const anthropicPayload = translateResponsesRequestToAnthropic(payload, { model: effectiveModel })
   if (consola.level >= 4) {
-    consola.debug('Translated Responses→Anthropic payload:', JSON.stringify(anthropicPayload).slice(-400))
+    consola.debug('Translated Responses→Anthropic payload summary:', summarizeAnthropicPayload(anthropicPayload))
   }
 
   const result = await createAnthropicMessages(anthropicPayload)
@@ -210,7 +210,7 @@ async function handleViaAnthropic(
   // Non-streaming
   if (!result.streaming) {
     if (consola.level >= 4) {
-      consola.debug('Non-streaming Anthropic response (translated):', JSON.stringify(result.body))
+      consola.debug('Non-streaming Anthropic response summary:', summarizeAnthropicResponse(result.body))
     }
     const responsesResponse = translateAnthropicResponseToResponses(result.body, { requestedModel })
     forwardUpstreamHeaders(c, result.headers)
@@ -224,11 +224,14 @@ async function handleViaAnthropic(
   return streamSSE(c, async (stream) => {
     const streamState = createAnthropicToResponsesStreamState({ requestedModel })
     let completed = false
+    let translationFailed = false
     stream.onAbort(() => result.cancel?.('responses client disconnected before translated Anthropic stream completed'))
 
     try {
       for await (const rawEvent of streamBody) {
         if (stream.aborted)
+          break
+        if (rawEvent.data === '[DONE]')
           break
         if (!rawEvent.data)
           continue
@@ -238,8 +241,26 @@ async function handleViaAnthropic(
           parsed = JSON.parse(rawEvent.data)
         }
         catch {
-          consola.error('Failed to parse Anthropic stream event:', rawEvent.data)
-          continue
+          consola.error('Failed to parse Anthropic stream event:', {
+            event: rawEvent.event ?? 'message',
+            dataChars: rawEvent.data.length,
+          })
+          const failureEvents = translateAnthropicStreamEventToResponses({
+            type: 'error',
+            error: {
+              type: 'api_error',
+              message: 'Failed to parse a streaming event from the Copilot Anthropic upstream response.',
+            },
+          }, streamState)
+          for (const evt of failureEvents) {
+            await stream.writeSSE({
+              event: evt.type,
+              data: JSON.stringify(evt),
+            })
+          }
+          await result.cancel?.('malformed Anthropic upstream stream event').catch(() => {})
+          translationFailed = true
+          break
         }
 
         const responsesEvents = translateAnthropicStreamEventToResponses(parsed, streamState)
@@ -249,8 +270,13 @@ async function handleViaAnthropic(
             data: JSON.stringify(evt),
           })
         }
+        if (parsed.type === 'error') {
+          await result.cancel?.('Anthropic upstream stream emitted an error event').catch(() => {})
+          translationFailed = true
+          break
+        }
       }
-      if (!stream.aborted) {
+      if (!stream.aborted && !translationFailed) {
         const finalEvents = finalizeAnthropicToResponsesStreamState(streamState)
         for (const evt of finalEvents) {
           await stream.writeSSE({
@@ -258,8 +284,8 @@ async function handleViaAnthropic(
             data: JSON.stringify(evt),
           })
         }
-        completed = true
       }
+      completed = !stream.aborted
     }
     catch (error) {
       await writeOpenAIStreamError(stream, error, {
@@ -273,4 +299,53 @@ async function handleViaAnthropic(
       }
     }
   })
+}
+
+function summarizeResponsesResponse(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== 'object') {
+    return { kind: typeof body }
+  }
+
+  const response = body as Record<string, unknown>
+  return {
+    type: typeof response.object === 'string' ? response.object : typeof response.type === 'string' ? response.type : 'unknown',
+    status: typeof response.status === 'string' ? response.status : undefined,
+    model: typeof response.model === 'string' ? response.model : undefined,
+    outputItems: Array.isArray(response.output) ? response.output.length : undefined,
+    hasError: response.error != null,
+  }
+}
+
+function summarizeSSEMessage(message: SSEMessage): Record<string, unknown> {
+  return {
+    event: message.event ?? 'message',
+    dataChars: typeof message.data === 'string' ? message.data.length : 0,
+  }
+}
+
+function summarizeAnthropicPayload(
+  payload: ReturnType<typeof translateResponsesRequestToAnthropic>,
+): Record<string, unknown> {
+  return {
+    model: payload.model,
+    stream: Boolean(payload.stream),
+    messages: payload.messages.length,
+    systemChars: typeof payload.system === 'string'
+      ? payload.system.length
+      : Array.isArray(payload.system)
+        ? payload.system.reduce((sum, block) => sum + block.text.length, 0)
+        : 0,
+    tools: payload.tools?.length ?? 0,
+    maxTokens: payload.max_tokens,
+    thinkingType: payload.thinking?.type,
+    outputFormatType: payload.output_config?.format?.type,
+  }
+}
+
+function summarizeAnthropicResponse(body: { model?: string, content?: Array<unknown>, stop_reason?: string | null }): Record<string, unknown> {
+  return {
+    model: body.model,
+    contentBlocks: body.content?.length ?? 0,
+    stopReason: body.stop_reason,
+  }
 }

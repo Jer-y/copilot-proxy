@@ -1,7 +1,7 @@
 import type { DaemonConfig } from '../src/daemon/config'
 
 import { describe, expect, test } from 'bun:test'
-import { buildServiceStartArgs } from '../src/daemon/enable'
+import { buildServiceStartArgs, isEphemeralPackageRunnerPath } from '../src/daemon/enable'
 
 const baseConfig: DaemonConfig = {
   port: 4399,
@@ -73,5 +73,20 @@ describe('buildServiceStartArgs', () => {
     expect(args).not.toContain(config.githubToken!)
     expect(args).not.toContain('--show-token')
     expect(args).not.toContain('--_supervisor')
+  })
+})
+
+describe('isEphemeralPackageRunnerPath', () => {
+  test('detects common npx and dlx cache paths', () => {
+    expect(isEphemeralPackageRunnerPath('/home/alice/.npm/_npx/abc/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
+    expect(isEphemeralPackageRunnerPath('/home/alice/.cache/pnpm/dlx/abc/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
+    expect(isEphemeralPackageRunnerPath('/tmp/xfs-123/dlx-456/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
+    expect(isEphemeralPackageRunnerPath('/tmp/bunx-123/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
+    expect(isEphemeralPackageRunnerPath('/home/alice/.bun/install/cache/@jer-y/copilot-proxy@latest/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
+  })
+
+  test('allows stable global and source-checkout paths', () => {
+    expect(isEphemeralPackageRunnerPath('/usr/local/lib/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(false)
+    expect(isEphemeralPackageRunnerPath('/home/alice/src/copilot-proxy/src/main.ts')).toBe(false)
   })
 })

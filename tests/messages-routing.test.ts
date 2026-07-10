@@ -191,7 +191,7 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
   })
 
-  test('Claude json_schema requests are routed natively so unsupported output_config.format is not falsely treated as supported', async () => {
+  test('Claude json_schema requests strip Responses-only metadata before native routing', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -232,8 +232,6 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.output_config).toEqual({
       format: {
         type: 'json_schema',
-        name: 'sample',
-        strict: true,
         schema: {
           type: 'object',
           properties: { answer: { type: 'string' } },
@@ -1298,20 +1296,7 @@ describe('messages route upstream adaptation', () => {
     expect(url).toBe('https://api.githubcopilot.com/v1/messages')
   })
 
-  test('/v1/responses Claude json_object requests are translated to /v1/messages and surface upstream rejection', async () => {
-    fetchMock.mockImplementationOnce(async (url: string) => {
-      if (!url.endsWith('/v1/messages')) {
-        throw new Error(`Unexpected upstream URL: ${url}`)
-      }
-      return new Response(JSON.stringify({
-        type: 'error',
-        error: {
-          type: 'invalid_request_error',
-          message: 'output_config.format json_object: not supported',
-        },
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } })
-    })
-
+  test('/v1/responses Claude json_object requests are rejected before lossy Anthropic translation', async () => {
     const res = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1326,13 +1311,11 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
-    // Claude does not advertise /responses, so /v1/responses requests are
-    // translated to /v1/messages. The proxy no longer falls back to
-    // chat-completions when v1/messages cannot honor json_object.
     expect(res.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+    const body = await res.json() as { error: { message: string, type: string } }
+    expect(body.error.type).toBe('invalid_request_error')
+    expect(body.error.message).toContain('json_object')
   })
 
   test('count_tokens with document blocks is forwarded natively without local expansion', async () => {

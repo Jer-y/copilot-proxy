@@ -1,3 +1,4 @@
+import type { DocumentResolvedAddress } from '~/lib/translation/anthropic-documents'
 import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 
 import { Buffer } from 'node:buffer'
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import {
   DOCUMENT_URL_FETCH_ENV,
   expandDocumentBlocks,
+  setDocumentUrlFetcherForTesting,
   setDocumentUrlResolverForTesting,
 } from '../src/lib/translation/anthropic-documents'
 import { MINIMAL_PDF_BASE64 } from './fixtures'
@@ -19,9 +21,9 @@ function makePayload(messages: AnthropicMessagesPayload['messages']): AnthropicM
   }
 }
 
-const originalFetch = globalThis.fetch
 const originalDocumentUrlFetchEnv = process.env[DOCUMENT_URL_FETCH_ENV]
 let restoreDocumentResolver: (() => void) | undefined
+let restoreDocumentFetcher: (() => void) | undefined
 
 function restoreDocumentUrlFetchEnv() {
   if (originalDocumentUrlFetchEnv === undefined) {
@@ -51,10 +53,12 @@ function mockDocumentResolver(addressesByHostname: Record<string, string[]>) {
   })
 }
 
-function mockDocumentFetch(implementation: (url: string) => Promise<Response>) {
+function mockDocumentFetch(
+  implementation: (url: string, addresses: ReadonlyArray<DocumentResolvedAddress>) => Promise<Response>,
+) {
   const fetchMock = mock(implementation)
-  // @ts-expect-error test mock only needs callable fetch shape
-  globalThis.fetch = fetchMock
+  restoreDocumentFetcher?.()
+  restoreDocumentFetcher = setDocumentUrlFetcherForTesting(fetchMock)
   return fetchMock
 }
 
@@ -62,7 +66,8 @@ afterEach(() => {
   restoreDocumentUrlFetchEnv()
   restoreDocumentResolver?.()
   restoreDocumentResolver = undefined
-  globalThis.fetch = originalFetch
+  restoreDocumentFetcher?.()
+  restoreDocumentFetcher = undefined
 })
 
 describe('expandDocumentBlocks', () => {
@@ -683,6 +688,70 @@ describe('expandDocumentBlocks', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  test('binds the fetch to the single validated DNS result instead of resolving again', async () => {
+    enableDocumentUrlFetch()
+    let resolverCalls = 0
+    restoreDocumentResolver = setDocumentUrlResolverForTesting(async () => {
+      resolverCalls++
+      return resolverCalls === 1
+        ? [{ address: '93.184.216.34', family: 4 }]
+        : [{ address: '127.0.0.1', family: 4 }]
+    })
+    const fetchMock = mockDocumentFetch(async (_url, addresses) => {
+      expect(addresses).toEqual([{ address: '93.184.216.34', family: 4 }])
+      return new Response('Pinned DNS text', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      })
+    })
+
+    const payload = makePayload([{
+      role: 'user',
+      content: [{
+        type: 'document',
+        source: { type: 'url', url: 'https://public.example/doc.txt' },
+      }],
+    }])
+
+    await expandDocumentBlocks(payload)
+
+    expect(resolverCalls).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const content = payload.messages[0].content as Array<{ type: string, text?: string }>
+    expect(content[0].text).toBe('Pinned DNS text')
+  })
+
+  test('cancels an oversized URL response body before rejecting it', async () => {
+    enableDocumentUrlFetch()
+    mockDocumentResolver({ 'example.com': ['93.184.216.34'] })
+    let bodyCancelled = false
+    mockDocumentFetch(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          bodyCancelled = true
+        },
+      })
+      return new Response(body, {
+        status: 200,
+        headers: {
+          'Content-Length': String(32 * 1024 * 1024 + 1),
+          'Content-Type': 'text/plain',
+        },
+      })
+    })
+
+    const payload = makePayload([{
+      role: 'user',
+      content: [{
+        type: 'document',
+        source: { type: 'url', url: 'https://example.com/oversized.txt' },
+      }],
+    }])
+
+    await expect(expandDocumentBlocks(payload)).rejects.toThrow('exceeds maximum size of 32MB')
+    expect(bodyCancelled).toBe(true)
+  })
+
   test('rejects URL hostnames that resolve to private addresses before fetch', async () => {
     enableDocumentUrlFetch()
     mockDocumentResolver({ 'public.example': ['127.0.0.1'] })
@@ -715,9 +784,15 @@ describe('expandDocumentBlocks', () => {
       'public.example': ['93.184.216.34'],
       'private.example': ['10.0.0.5'],
     })
+    let redirectBodyCancelled = false
     const fetchMock = mockDocumentFetch(async (url) => {
       expect(url).toBe('https://public.example/doc.txt')
-      return new Response(null, {
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          redirectBodyCancelled = true
+        },
+      })
+      return new Response(body, {
         status: 302,
         headers: { Location: 'https://private.example/secret.txt' },
       })
@@ -740,6 +815,7 @@ describe('expandDocumentBlocks', () => {
 
     await expect(expandDocumentBlocks(payload)).rejects.toThrow('redirected to a hostname that resolves to a blocked address')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(redirectBodyCancelled).toBe(true)
   })
 
   test('blocks URLs targeting localhost and private networks', async () => {

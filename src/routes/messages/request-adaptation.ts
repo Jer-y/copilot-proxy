@@ -44,7 +44,14 @@ export async function createAnthropicMessagesWithThinkingSignatureRetry(
     )
 
     if (consola.level >= 4) {
-      consola.debug('Native Anthropic self-heal payload:', JSON.stringify(stripped.payload))
+      consola.debug('Native Anthropic self-heal summary:', {
+        model: stripped.payload.model,
+        messages: stripped.payload.messages.length,
+        tools: stripped.payload.tools?.length ?? 0,
+        stream: Boolean(stripped.payload.stream),
+        strippedBlocks: stripped.strippedBlocks,
+        droppedAssistantMessages: stripped.droppedAssistantMessages,
+      })
     }
 
     return await createAnthropicMessages(stripped.payload, options)
@@ -106,6 +113,19 @@ export function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): vo
   if ('json_schema' in formatRecord) {
     consola.debug('Flattening legacy output_config.format.json_schema to output_config.format.schema')
     delete formatRecord.json_schema
+  }
+
+  // OpenAI-compatible structured-output metadata sometimes leaks into
+  // Anthropic-shaped requests. Copilot's native Messages endpoint accepts the
+  // schema itself but rejects these Responses-only fields.
+  for (const field of ['name', 'strict'] as const) {
+    if (field in formatRecord) {
+      logLossyAnthropicCompatibility(
+        `output_config.format.${field}`,
+        `Copilot native Anthropic json_schema does not accept ${field}; the schema constraint is preserved without it.`,
+      )
+      delete formatRecord[field]
+    }
   }
 }
 

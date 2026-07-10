@@ -9,6 +9,23 @@ import {
 } from '../src/lib/translation/anthropic-reasoning'
 
 describe('Anthropic reasoning helpers', () => {
+  test('explicit disabled thinking maps to Responses effort none when supported', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'future-model',
+      max_tokens: 128,
+      messages: [{ role: 'user', content: 'Hi' }],
+      thinking: { type: 'disabled' },
+    }
+    const modelConfig: ModelConfig = {
+      supportedApis: ['responses'],
+      supportedReasoningEfforts: ['none', 'low', 'medium', 'high'],
+    }
+
+    const effort = resolveAnthropicReasoningEffort(payload, modelConfig)
+    expect(effort).toBe('none')
+    expect(mapAnthropicReasoningToResponses(effort, modelConfig)).toEqual({ effort: 'none' })
+  })
+
   test('adaptive thinking preserves xhigh model defaults for Anthropic-compatible effort', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'future-model',

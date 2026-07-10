@@ -99,9 +99,11 @@ describe('getModelConfig', () => {
     expect(config.supportsParallelToolCalls).toBe(true)
   })
 
-  test('should configure gpt-5.4 as responses-only', () => {
+  test('should configure gpt-5.4 for current chat and responses surfaces', () => {
     const config = getModelConfig('gpt-5.4')
-    expect(config.supportedApis).toEqual(['responses'])
+    expect(config.supportedApis).toEqual(['chat-completions', 'responses'])
+    expect(config.preferredApi).toBe('responses')
+    expect(config.chatCompletionTokenParameter).toBe('max_completion_tokens')
     expect(config.reasoningMode).toBe('thinking')
     expect(config.defaultReasoningEffort).toBe('high')
     expect(config.supportedReasoningEfforts).toEqual(['none', 'low', 'medium', 'high', 'xhigh'])

@@ -57,8 +57,18 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
     return false
   }
 
-  fs.mkdirSync(SERVICE_DIR, { recursive: true })
-  fs.writeFileSync(SERVICE_PATH, unit)
+  const previousUnit = readExistingServiceFile()
+  const rollback = () => rollbackServiceFile(previousUnit)
+
+  try {
+    fs.mkdirSync(SERVICE_DIR, { recursive: true })
+    fs.writeFileSync(SERVICE_PATH, unit)
+  }
+  catch (error) {
+    consola.error('Failed to write systemd service file:', error instanceof Error ? error.message : error)
+    rollback()
+    return false
+  }
 
   try {
     execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
@@ -66,12 +76,15 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   catch {
     consola.error('Failed to reload systemd. Is systemd running in user mode?')
     consola.info('On WSL2, you may need to enable systemd: https://learn.microsoft.com/en-us/windows/wsl/systemd')
+    rollback()
     return false
   }
 
   const username = os.userInfo().username
-  if (!ensureUserLingerEnabled(username))
+  if (!ensureUserLingerEnabled(username)) {
+    rollback()
     return false
+  }
 
   try {
     execSync(`systemctl --user enable ${SERVICE_NAME}`, { stdio: 'pipe' })
@@ -80,11 +93,58 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
     consola.error('Failed to enable service:', error instanceof Error ? error.message : error)
     consola.info(`Service file written to: ${SERVICE_PATH}`)
     consola.info('You can try manually: systemctl --user enable copilot-proxy')
+    rollback()
     return false
   }
 
   consola.success('Auto-start enabled via systemd')
   return true
+}
+
+interface ExistingServiceFile {
+  content: Uint8Array
+  mode: number
+}
+
+function readExistingServiceFile(): ExistingServiceFile | undefined {
+  try {
+    const stat = fs.statSync(SERVICE_PATH)
+    return {
+      content: fs.readFileSync(SERVICE_PATH),
+      mode: stat.mode & 0o777,
+    }
+  }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      return undefined
+    throw error
+  }
+}
+
+function rollbackServiceFile(previous: ExistingServiceFile | undefined): void {
+  try {
+    if (previous) {
+      fs.mkdirSync(SERVICE_DIR, { recursive: true })
+      fs.writeFileSync(SERVICE_PATH, previous.content, { mode: previous.mode })
+      fs.chmodSync(SERVICE_PATH, previous.mode)
+    }
+    else {
+      // `systemctl enable` may create the wants/ symlink before returning a
+      // non-zero exit. Disable first so a failed fresh install cannot leave a
+      // ghost auto-start reference to the unit we are about to remove.
+      try {
+        execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME], { stdio: 'pipe' })
+      }
+      catch {
+        // No symlink is the expected case for failures before the enable step.
+      }
+      fs.rmSync(SERVICE_PATH, { force: true })
+    }
+    execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
+  }
+  catch (error) {
+    consola.error('Failed to roll back systemd service installation:', error instanceof Error ? error.message : error)
+  }
 }
 
 function ensureUserLingerEnabled(username: string): boolean {

@@ -55,6 +55,18 @@ export async function createChatCompletions(
   }
 
   if (payload.stream) {
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+    if (contentType.includes('application/json')) {
+      const errorBody = await response.text()
+      throw new HTTPError(
+        'Copilot returned JSON instead of a chat completion event stream',
+        new Response(errorBody, {
+          status: 502,
+          headers: copyErrorResponseHeaders(response.headers),
+        }),
+      )
+    }
+
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/chat/completions',
       requestStartedAt,
@@ -66,12 +78,41 @@ export async function createChatCompletions(
     }
   }
 
-  const json = (await response.json()) as ChatCompletionResponse
+  const json = await response.json() as unknown
+  if (!isChatCompletionResponse(json)) {
+    // Copilot has occasionally returned an OpenAI-shaped error object with a
+    // 200 status. Treating that object as an SSE iterator hides the real error
+    // behind an "undefined is not a function" exception. A successful HTTP
+    // response without a chat completion is an invalid upstream response.
+    throw new HTTPError(
+      'Copilot returned an invalid non-streaming chat completion response',
+      new Response(JSON.stringify(json), {
+        status: 502,
+        headers: copyErrorResponseHeaders(response.headers),
+      }),
+    )
+  }
   logUpstreamRequestCompleted({
     endpoint: '/chat/completions',
     requestStartedAt,
   })
   return { body: json, headers: response.headers }
+}
+
+function isChatCompletionResponse(value: unknown): value is ChatCompletionResponse {
+  return typeof value === 'object'
+    && value !== null
+    && Array.isArray((value as { choices?: unknown }).choices)
+}
+
+function copyErrorResponseHeaders(headers: Headers): Headers {
+  const copied = new Headers({ 'Content-Type': 'application/json' })
+  for (const name of ['retry-after', 'x-request-id']) {
+    const value = headers.get(name)
+    if (value)
+      copied.set(name, value)
+  }
+  return copied
 }
 
 // Non-streaming types
@@ -119,6 +160,7 @@ export interface ChatCompletionsPayload {
   temperature?: number | null
   top_p?: number | null
   max_tokens?: number | null
+  max_completion_tokens?: number | null
   stop?: string | Array<string> | null
   n?: number | null
   stream?: boolean | null

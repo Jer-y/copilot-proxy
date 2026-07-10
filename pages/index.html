@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'sha256-Xtkpg2g63lrqzrsNufA2mh76N32nytV3lO6Uzbw584s='; style-src 'unsafe-inline'; img-src data:; connect-src http: https:; base-uri 'none'; object-src 'none'; form-action 'self'"
+    />
     <title>Copilot API Usage Dashboard</title>
     <link rel="icon" href="data:," />
 
@@ -300,6 +304,9 @@
         transition-duration: 150ms;
         transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
       }
+      footer a:hover {
+        color: var(--color-fg-light) !important;
+      }
       .transition-colors {
         transition-property:
           color, background-color, border-color, text-decoration-color, fill,
@@ -471,6 +478,89 @@
           error: null,
           data: null,
         };
+
+        function isRecord(value) {
+          return value !== null && typeof value === "object" && !Array.isArray(value);
+        }
+
+        function requireFiniteNumber(value, field, options = {}) {
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new Error(`Invalid usage response: ${field} must be a finite number.`);
+          }
+          if (options.min !== undefined && value < options.min) {
+            throw new Error(`Invalid usage response: ${field} is below its minimum.`);
+          }
+          if (options.max !== undefined && value > options.max) {
+            throw new Error(`Invalid usage response: ${field} is above its maximum.`);
+          }
+          return value;
+        }
+
+        function parseUsageData(value) {
+          if (!isRecord(value) || !isRecord(value.quota_snapshots)) {
+            throw new Error("Invalid usage response: quota_snapshots must be an object.");
+          }
+
+          const entries = Object.entries(value.quota_snapshots);
+          if (entries.length === 0 || entries.length > 100) {
+            throw new Error("Invalid usage response: quota_snapshots has an invalid size.");
+          }
+
+          const quotaSnapshots = Object.create(null);
+          for (const [name, details] of entries) {
+            if (!name || name.length > 100 || !isRecord(details)) {
+              throw new Error("Invalid usage response: malformed quota entry.");
+            }
+
+            const entitlement = requireFiniteNumber(
+              details.entitlement,
+              `${name}.entitlement`,
+              { min: 0 },
+            );
+            const remaining = requireFiniteNumber(
+              details.remaining,
+              `${name}.remaining`,
+              { min: 0 },
+            );
+            const percentRemaining = requireFiniteNumber(
+              details.percent_remaining,
+              `${name}.percent_remaining`,
+              { min: 0, max: 100 },
+            );
+            if (typeof details.unlimited !== "boolean") {
+              throw new Error(`Invalid usage response: ${name}.unlimited must be a boolean.`);
+            }
+            if (!details.unlimited && remaining > entitlement) {
+              throw new Error(`Invalid usage response: ${name}.remaining exceeds entitlement.`);
+            }
+
+            quotaSnapshots[name] = {
+              ...details,
+              entitlement,
+              percent_remaining: percentRemaining,
+              remaining,
+              unlimited: details.unlimited,
+            };
+          }
+
+          return { ...value, quota_snapshots: quotaSnapshots };
+        }
+
+        function parseEndpointUrl(value) {
+          let endpoint;
+          try {
+            endpoint = new URL(value);
+          } catch {
+            throw new Error("Endpoint URL must be a valid absolute URL.");
+          }
+          if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+            throw new Error("Endpoint URL must use HTTP or HTTPS.");
+          }
+          if (endpoint.username || endpoint.password) {
+            throw new Error("Endpoint URL must not contain credentials.");
+          }
+          return endpoint.href;
+        }
 
         // --- Rendering Logic ---
 
@@ -740,8 +830,8 @@
          * Fetches data from the specified API endpoint.
          */
         async function fetchData() {
-          const url = endpointUrlInput.value.trim();
-          if (!url) {
+          const inputUrl = endpointUrlInput.value.trim();
+          if (!inputUrl) {
             state.error = "Endpoint URL cannot be empty.";
             state.isLoading = false;
             render();
@@ -753,6 +843,7 @@
           render();
 
           try {
+            const url = parseEndpointUrl(inputUrl);
             const response = await fetch(url);
             if (!response.ok) {
               throw new Error(
@@ -760,11 +851,12 @@
               );
             }
             const jsonData = await response.json();
-            state.data = jsonData;
+            state.data = parseUsageData(jsonData);
           } catch (error) {
-            console.error("Fetch error:", error);
+            console.error("Usage fetch failed.");
             state.data = null;
-            state.error = error.message;
+            state.error =
+              error instanceof Error ? error.message : "Unknown fetch error.";
           } finally {
             state.isLoading = false;
             render();
@@ -829,8 +921,6 @@
           rel="noopener noreferrer"
           class="underline transition-colors"
           style="color: var(--color-fg-dark)"
-          onmouseover="this.style.color='var(--color-fg-light)'"
-          onmouseout="this.style.color='var(--color-fg-dark)'"
         >
           Gemini
         </a>
@@ -841,8 +931,6 @@
           rel="noopener noreferrer"
           class="underline transition-colors"
           style="color: var(--color-fg-dark)"
-          onmouseover="this.style.color='var(--color-fg-light)'"
-          onmouseout="this.style.color='var(--color-fg-dark)'"
         >
           copilot-usage-viewer</a
         >

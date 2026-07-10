@@ -3,6 +3,14 @@ node_modules/
 
 # local env
 *.local
+.env
+.env.*
+!.env.example
+.npmrc
+
+# authentication data
+copilot-data/
+github_token
 
 # aider
 .aider*
@@ -12,6 +20,10 @@ node_modules/
 
 # eslint cache
 .eslintcache
+
+# local test artifacts
+.playwright-cli/
+coverage/
 
 # build output
 dist/

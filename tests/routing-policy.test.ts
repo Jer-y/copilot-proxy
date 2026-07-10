@@ -1,3 +1,4 @@
+import type { ResponsesPayload } from '~/services/copilot/create-responses'
 import type { Model } from '~/services/copilot/get-models'
 
 import { describe, expect, test } from 'bun:test'
@@ -104,10 +105,11 @@ describe('resolveRoute — chat-completions client', () => {
     expect(route).toEqual({ backend: 'chat-completions', kind: 'direct' })
   })
 
-  test('Responses-only GPT-5.4 → 4xx (no translation into chat-completions)', () => {
-    expect(() => resolveRoute('chat-completions', 'gpt-5.4', (msg) => {
-      throw new Error(msg)
-    })).toThrow(/cannot be reached via \/chat\/completions/)
+  test('Current dual-stack GPT-5.4 → /chat/completions direct', () => {
+    expect(resolveRoute('chat-completions', 'gpt-5.4', fail)).toEqual({
+      backend: 'chat-completions',
+      kind: 'direct',
+    })
   })
 
   test('Codex model → 4xx', () => {
@@ -175,6 +177,95 @@ describe('assertResponsesPayloadTranslatable', () => {
             parameters: { type: 'object', properties: {}, additionalProperties: false },
           } as never,
         ],
+      },
+      (msg) => { throw new Error(msg) },
+    )).not.toThrow()
+  })
+
+  test('rejects Responses semantics that translation cannot preserve', () => {
+    const cases: Array<[string, Partial<ResponsesPayload>]> = [
+      ['store', { store: true }],
+      ['previous_response_id', { previous_response_id: 'resp_prior' }],
+      ['background', { background: true }],
+      ['conversation', { conversation: { id: 'conv_1' } }],
+      ['prompt', { prompt: { id: 'pmpt_1' } }],
+      ['max_tool_calls', { max_tool_calls: 2 }],
+      ['context_management', { context_management: [{ type: 'compaction' }] }],
+      ['truncation', { truncation: 'auto' }],
+      ['include', { include: ['reasoning.encrypted_content'] }],
+      ['stream_options', { stream_options: { include_obfuscation: true } }],
+      ['top_logprobs', { top_logprobs: 2 }],
+      ['text.verbosity', { text: { verbosity: 'high' } }],
+      ['reasoning summaries', { reasoning: { summary: 'detailed' } }],
+    ]
+
+    for (const [field, extra] of cases) {
+      expect(() => assertResponsesPayloadTranslatable(
+        {
+          model: 'claude-opus-4.6',
+          input: 'hi',
+          ...extra,
+        },
+        (msg) => { throw new Error(msg) },
+      )).toThrow(field)
+    }
+  })
+
+  test('rejects non-function Responses tool choices that Anthropic cannot represent', () => {
+    expect(() => assertResponsesPayloadTranslatable(
+      {
+        model: 'claude-opus-4.6',
+        input: 'hi',
+        tool_choice: {
+          type: 'allowed_tools',
+          mode: 'required',
+          tools: [{ type: 'function', name: 'echo' }],
+        },
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/tool_choice/)
+  })
+
+  test('rejects malformed compatibility fields instead of silently dropping them', () => {
+    const cases: Array<Partial<ResponsesPayload>> = [
+      { store: null as never },
+      { background: 'false' as never },
+      { context_management: {} as never },
+      { include: 'reasoning.encrypted_content' as never },
+      { stream_options: 'disabled' as never },
+      { text: 'plain' as never },
+      { reasoning: 'none' as never },
+      { tools: [null as never] },
+    ]
+
+    for (const extra of cases) {
+      expect(() => assertResponsesPayloadTranslatable(
+        {
+          model: 'claude-opus-4.6',
+          input: 'hi',
+          ...extra,
+        },
+        (msg) => { throw new Error(msg) },
+      )).toThrow()
+    }
+  })
+
+  test('allows explicit no-op Responses state settings', () => {
+    expect(() => assertResponsesPayloadTranslatable(
+      {
+        model: 'claude-opus-4.6',
+        input: 'hi',
+        store: false,
+        previous_response_id: null,
+        background: false,
+        conversation: null,
+        prompt: null,
+        max_tool_calls: null,
+        context_management: [],
+        truncation: 'disabled',
+        include: [],
+        stream_options: { include_obfuscation: false },
+        reasoning: { summary: 'none', generate_summary: null },
       },
       (msg) => { throw new Error(msg) },
     )).not.toThrow()

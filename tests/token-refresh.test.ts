@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 import { TOKEN_RETRY_DELAYS } from '~/lib/constants'
 import { state } from '~/lib/state'
-import { getCopilotTokenRefreshDelayMs, refreshTokenWithRetry } from '~/lib/token'
+import {
+  getCopilotTokenRefreshDelayMs,
+  isCopilotTokenRefreshScheduled,
+  refreshTokenWithRetry,
+  startCopilotTokenRefresh,
+  stopCopilotTokenRefresh,
+} from '~/lib/token'
 
 describe('refreshTokenWithRetry', () => {
   let originalCopilotToken: string | undefined
@@ -17,6 +23,7 @@ describe('refreshTokenWithRetry', () => {
   })
 
   afterEach(() => {
+    stopCopilotTokenRefresh()
     state.copilotToken = originalCopilotToken
     state.showToken = originalShowToken
   })
@@ -140,5 +147,26 @@ describe('refreshTokenWithRetry', () => {
     expect(getCopilotTokenRefreshDelayMs(3600)).toBe(3_540_000)
     expect(getCopilotTokenRefreshDelayMs(Number.NaN)).toBe(60_000)
     expect(getCopilotTokenRefreshDelayMs(48 * 60 * 60)).toBe(24 * 60 * 60 * 1000)
+  })
+
+  test('keeps a single refresh timer when startup is initialized repeatedly', () => {
+    const timers: Array<ReturnType<typeof setTimeout>> = []
+    const cleared: Array<ReturnType<typeof setTimeout>> = []
+    const setTimeoutFn = (_callback: () => void, _delayMs: number) => {
+      const timer = setTimeout(() => {}, 60_000)
+      timers.push(timer)
+      return timer
+    }
+    const clearTimeoutFn = (timer: ReturnType<typeof setTimeout>) => {
+      cleared.push(timer)
+      clearTimeout(timer)
+    }
+
+    startCopilotTokenRefresh(3600, { setTimeoutFn, clearTimeoutFn })
+    startCopilotTokenRefresh(1800, { setTimeoutFn, clearTimeoutFn })
+
+    expect(timers).toHaveLength(2)
+    expect(cleared).toEqual([timers[0]])
+    expect(isCopilotTokenRefreshScheduled()).toBe(true)
   })
 })

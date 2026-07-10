@@ -340,6 +340,10 @@ export const start = defineCommand({
         consola.error('Cannot use --show-token in supervisor mode because tokens would be written to daemon logs.')
         process.exit(1)
       }
+      if (mergedConfig.manual) {
+        consola.error('Cannot use manual approval in supervisor mode because no interactive TTY is available.')
+        process.exit(1)
+      }
 
       const { runAsSupervisor } = await import('~/daemon/supervisor')
       const options: RunServerOptions = {
@@ -358,6 +362,10 @@ export const start = defineCommand({
       }
       if (args['show-token']) {
         consola.error('Cannot use --show-token with --daemon because tokens would be written to daemon logs.')
+        process.exit(1)
+      }
+      if (args.manual) {
+        consola.error('Cannot use --manual with --daemon because manual approval requires an interactive foreground TTY.')
         process.exit(1)
       }
       const { loadInstalledNativeServiceCommands } = await import('~/daemon/native-service')

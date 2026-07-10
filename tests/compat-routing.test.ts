@@ -122,20 +122,7 @@ describe('compat routing fallback', () => {
     ])
   })
 
-  test('/v1/responses Claude json_object requests are translated natively and surface upstream rejection (no chat-completions fallback)', async () => {
-    fetchMock.mockImplementationOnce(async (url: string) => {
-      if (!url.endsWith('/v1/messages')) {
-        throw new Error(`Unexpected upstream URL: ${url}`)
-      }
-      return new Response(JSON.stringify({
-        type: 'error',
-        error: {
-          type: 'invalid_request_error',
-          message: 'output_config.format json_object: not supported',
-        },
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } })
-    })
-
+  test('/v1/responses rejects Claude json_object locally instead of dropping the format constraint', async () => {
     const response = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -151,13 +138,30 @@ describe('compat routing fallback', () => {
     })
 
     expect(response.status).toBe(400)
-    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
-    expect(calledUrls).toEqual([
-      'https://api.githubcopilot.com/v1/messages',
-    ])
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await response.json() as { error?: { message?: string } }
+    expect(body.error?.message).toContain('json_object')
   })
 
-  test('/v1/responses keeps Claude json_schema requests on native Anthropic so unsupported format is not falsely treated as supported', async () => {
+  test('/v1/responses translates Claude json_schema without the Responses-only schema name', async () => {
+    let forwardedPayload: Record<string, unknown> | undefined
+    fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith('/v1/messages'))
+        throw new Error(`Unexpected upstream URL: ${url}`)
+
+      forwardedPayload = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Response.json({
+        id: 'msg_schema',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4.6',
+        content: [{ type: 'text', text: '{"answer":"ok"}' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 2 },
+      })
+    })
+
     const response = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -184,6 +188,18 @@ describe('compat routing fallback', () => {
     expect(calledUrls).toEqual([
       'https://api.githubcopilot.com/v1/messages',
     ])
+    expect(forwardedPayload).toMatchObject({
+      output_config: {
+        format: {
+          type: 'json_schema',
+          schema: {
+            type: 'object',
+          },
+        },
+      },
+    })
+    const forwardedFormat = (forwardedPayload?.output_config as { format?: Record<string, unknown> } | undefined)?.format
+    expect(forwardedFormat).not.toHaveProperty('name')
   })
 
   test('/v1/responses does not retry Claude json_schema native rejection through chat-completions', async () => {

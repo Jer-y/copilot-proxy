@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 
-import { readLastLogLines, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
+import { ensureDaemonLogFile, readLastLogLines, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
 
 const tempDirs: string[] = []
 
@@ -23,6 +23,33 @@ describe('daemon log file helpers', () => {
 
     expect(fs.existsSync(logPath)).toBe(false)
     expect(fs.readFileSync(`${logPath}.1`, 'utf8')).toBe('abcdef')
+    if (process.platform !== 'win32')
+      expect(fs.statSync(`${logPath}.1`).mode & 0o777).toBe(0o600)
+  })
+
+  test('pre-creates the native-service log with owner-only permissions', () => {
+    const dir = makeTempDir()
+    const logPath = path.join(dir, 'nested', 'daemon.log')
+
+    ensureDaemonLogFile(logPath)
+
+    expect(fs.existsSync(logPath)).toBe(true)
+    if (process.platform !== 'win32')
+      expect(fs.statSync(logPath).mode & 0o777).toBe(0o600)
+  })
+
+  test('repairs an existing native-service log permission', () => {
+    if (process.platform === 'win32')
+      return
+
+    const dir = makeTempDir()
+    const logPath = path.join(dir, 'daemon.log')
+    fs.writeFileSync(logPath, 'existing', { mode: 0o644 })
+    fs.chmodSync(logPath, 0o644)
+
+    ensureDaemonLogFile(logPath)
+
+    expect(fs.statSync(logPath).mode & 0o777).toBe(0o600)
   })
 
   test('reads only the requested tail lines', () => {

@@ -80,6 +80,23 @@ describe('chat-completions error paths', () => {
     expect(json.error.type).toBe('invalid_request_error')
   })
 
+  test('invalid max_completion_tokens type is rejected before upstream', async () => {
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        messages: [{ role: 'user', content: 'hi' }],
+        max_completion_tokens: '16',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const json = await res.json() as { error: { message: string } }
+    expect(json.error.message).toContain('max_completion_tokens')
+  })
+
   test('external image URLs are rejected locally before forwarding upstream', async () => {
     const res = await server.request('/v1/chat/completions', {
       method: 'POST',
@@ -307,9 +324,48 @@ describe('chat-completions error paths', () => {
     ])
   })
 
-  test('chat-completions client cannot reach a responses-only model and gets a clean 4xx', async () => {
-    fetchMock.mockImplementation(async (url: string): Promise<Response> => {
-      throw new Error(`Unexpected upstream URL: ${url}`)
+  test('gpt-5.4 chat-completions uses max_completion_tokens without legacy max_tokens', async () => {
+    let forwardedBody: Record<string, unknown> | undefined
+    state.models = {
+      object: 'list',
+      data: [{
+        id: 'gpt-5.4',
+        name: 'GPT-5.4',
+        object: 'model',
+        model_picker_enabled: true,
+        preview: false,
+        vendor: 'OpenAI',
+        version: '5.4',
+        supported_endpoints: ['/responses', '/chat/completions'],
+        capabilities: {
+          family: 'gpt-5.4',
+          limits: { max_output_tokens: 32768 },
+          object: 'model_capabilities',
+          supports: {},
+          tokenizer: 'o200k_base',
+          type: 'chat',
+        },
+      }],
+    }
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+      if (!url.endsWith('/chat/completions'))
+        throw new Error(`Unexpected upstream URL: ${url}`)
+
+      forwardedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_gpt54',
+        created: 0,
+        model: 'gpt-5.4',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'ok' },
+          logprobs: null,
+          finish_reason: 'stop',
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     })
 
     const res = await server.request('/v1/chat/completions', {
@@ -321,9 +377,102 @@ describe('chat-completions error paths', () => {
       }),
     })
 
-    expect(res.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
-    const body = await res.json() as { error?: { message?: string } }
-    expect(body.error?.message).toContain('cannot be reached via /chat/completions')
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(forwardedBody?.max_completion_tokens).toBe(32768)
+    expect(forwardedBody).not.toHaveProperty('max_tokens')
+  })
+
+  test('gpt-5.4 converts a legacy max_tokens limit before forwarding', async () => {
+    let forwardedBody: Record<string, unknown> | undefined
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+      if (!url.endsWith('/chat/completions'))
+        throw new Error(`Unexpected upstream URL: ${url}`)
+
+      forwardedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Response.json({
+        id: 'chatcmpl_gpt54_limit',
+        created: 0,
+        model: 'gpt-5.4',
+        choices: [],
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(forwardedBody?.max_completion_tokens).toBe(16)
+    expect(forwardedBody).not.toHaveProperty('max_tokens')
+  })
+
+  test('200 error JSON from upstream becomes a structured 502 instead of entering SSE handling', async () => {
+    fetchMock.mockImplementation(async (url: string): Promise<Response> => {
+      if (!url.endsWith('/chat/completions'))
+        throw new Error(`Unexpected upstream URL: ${url}`)
+
+      return Response.json({
+        error: {
+          message: 'upstream rejected the request',
+          type: 'invalid_request_error',
+        },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(502)
+    expect(await res.json()).toEqual({
+      error: {
+        message: 'upstream rejected the request',
+        type: 'invalid_request_error',
+      },
+    })
+  })
+
+  test('streaming 200 JSON errors become a structured 502 instead of fake SSE', async () => {
+    fetchMock.mockImplementation(async (url: string): Promise<Response> => {
+      if (!url.endsWith('/chat/completions'))
+        throw new Error(`Unexpected upstream URL: ${url}`)
+
+      return Response.json({
+        error: {
+          message: 'streaming request was rejected',
+          type: 'invalid_request_error',
+        },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(502)
+    expect(await res.json()).toEqual({
+      error: {
+        message: 'streaming request was rejected',
+        type: 'invalid_request_error',
+      },
+    })
   })
 })

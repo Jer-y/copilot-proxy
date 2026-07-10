@@ -2,8 +2,10 @@
   "name": "@jer-y/copilot-proxy",
   "type": "module",
   "version": "0.7.16",
+  "packageManager": "bun@1.3.6",
   "description": "Turn GitHub Copilot into an OpenAI/Anthropic-compatible server with Claude Code and Codex support.",
   "author": "jer-y",
+  "license": "MIT",
   "homepage": "https://github.com/Jer-y/copilot-proxy",
   "repository": {
     "type": "git",
@@ -21,17 +23,23 @@
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=22.19.0",
+    "bun": ">=1.3.6"
+  },
   "scripts": {
     "audit": "bun audit",
     "build": "tsdown",
+    "changelog": "changelogithub",
     "dev": "bun run --watch ./src/main.ts start",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
     "prepack": "npm run build",
-    "prepare": "test -d .git && npx simple-git-hooks || true",
+    "prepare": "test -d .git && simple-git-hooks || true",
     "release": "bumpp",
     "start": "NODE_ENV=production bun run ./src/main.ts start",
+    "test:coverage": "bun test --coverage --coverage-reporter=text",
     "test:live:copilot": "bun test tests/live/copilot-capabilities.test.ts",
     "typecheck": "tsc"
   },
@@ -54,6 +62,7 @@
     "@types/bun": "^1.3.13",
     "@types/proxy-from-env": "^1.0.4",
     "bumpp": "^11.1.0",
+    "changelogithub": "14.0.0",
     "eslint": "^10.3.0",
     "knip": "^6.12.2",
     "lint-staged": "^17.0.3",
@@ -66,6 +75,7 @@
     "flatted": "^3.4.2",
     "picomatch": "^4.0.4",
     "postcss": "^8.5.14",
+    "tar": "7.5.19",
     "yaml": "^2.8.4"
   },
   "simple-git-hooks": {

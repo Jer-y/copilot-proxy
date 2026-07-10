@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 
+import { ensureOwnerOnlyFile } from '../src/lib/paths'
 import { writeGithubTokenFile } from '../src/lib/token'
 
 const tempDirs: string[] = []
@@ -24,6 +25,23 @@ describe('GitHub token file permissions', () => {
       return
     }
 
+    const stat = await fs.stat(tokenPath)
+    expect(stat.mode & 0o777).toBe(0o600)
+  })
+
+  test('startup corrects permissions on an existing token file', async () => {
+    if (process.platform === 'win32')
+      return
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'copilot-proxy-token-existing-'))
+    tempDirs.push(tempDir)
+    const tokenPath = path.join(tempDir, 'github_token')
+    await fs.writeFile(tokenPath, 'existing-secret', { mode: 0o644 })
+    await fs.chmod(tokenPath, 0o644)
+
+    await ensureOwnerOnlyFile(tokenPath)
+
+    expect(await fs.readFile(tokenPath, 'utf8')).toBe('existing-secret')
     const stat = await fs.stat(tokenPath)
     expect(stat.mode & 0o777).toBe(0o600)
   })

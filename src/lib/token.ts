@@ -48,6 +48,17 @@ interface RefreshTokenWithRetryDeps {
 }
 
 let refreshInFlight: Promise<GetCopilotTokenResponse | undefined> | undefined
+type RefreshTimer = ReturnType<typeof setTimeout>
+
+export interface TokenRefreshSchedulerDeps {
+  setTimeoutFn?: (callback: () => void, delayMs: number) => RefreshTimer
+  clearTimeoutFn?: (timer: RefreshTimer) => void
+  refreshFn?: typeof refreshTokenWithRetry
+}
+
+let copilotTokenRefreshTimer: RefreshTimer | undefined
+let clearCopilotTokenRefreshTimer: ((timer: RefreshTimer) => void) | undefined
+let copilotTokenRefreshGeneration = 0
 
 export async function refreshTokenWithRetry(deps: RefreshTokenWithRetryDeps = {}): Promise<GetCopilotTokenResponse | undefined> {
   const useLock = deps.useLock ?? (
@@ -108,8 +119,11 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
   return undefined
 }
 
-export async function setupCopilotToken() {
-  const { token, refresh_in } = await getCopilotToken()
+export async function setupCopilotToken(
+  options: { scheduleRefresh?: boolean } = {},
+): Promise<GetCopilotTokenResponse> {
+  const response = await getCopilotToken()
+  const { token, refresh_in } = response
   state.copilotToken = token
 
   // Display the Copilot token to the screen
@@ -118,7 +132,10 @@ export async function setupCopilotToken() {
     consola.info('Copilot token:', token)
   }
 
-  scheduleCopilotTokenRefresh(refresh_in)
+  if (options.scheduleRefresh ?? true)
+    startCopilotTokenRefresh(refresh_in)
+
+  return response
 }
 
 export function getCopilotTokenRefreshDelayMs(refreshInSeconds: number): number {
@@ -130,14 +147,46 @@ export function getCopilotTokenRefreshDelayMs(refreshInSeconds: number): number 
     : 60_000
 }
 
-function scheduleCopilotTokenRefresh(refreshInSeconds: number): void {
+export function startCopilotTokenRefresh(
+  refreshInSeconds: number,
+  deps: TokenRefreshSchedulerDeps = {},
+): void {
+  stopCopilotTokenRefresh()
+  const generation = copilotTokenRefreshGeneration
+
   const refreshDelay = getCopilotTokenRefreshDelayMs(refreshInSeconds)
-  const timer = setTimeout(async () => {
+  const setTimeoutFn = deps.setTimeoutFn ?? setTimeout
+  const clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout
+  const refreshFn = deps.refreshFn ?? refreshTokenWithRetry
+  clearCopilotTokenRefreshTimer = clearTimeoutFn
+  const timer = setTimeoutFn(() => {
+    copilotTokenRefreshTimer = undefined
     consola.debug('Refreshing Copilot token')
-    const refreshed = await refreshTokenWithRetry()
-    scheduleCopilotTokenRefresh(refreshed?.refresh_in ?? refreshInSeconds)
+    void refreshFn().then((refreshed) => {
+      if (generation === copilotTokenRefreshGeneration)
+        startCopilotTokenRefresh(refreshed?.refresh_in ?? refreshInSeconds, deps)
+    }).catch((error) => {
+      consola.error('Unexpected Copilot token refresh failure:', error)
+      if (generation === copilotTokenRefreshGeneration)
+        startCopilotTokenRefresh(refreshInSeconds, deps)
+    })
   }, refreshDelay)
+  copilotTokenRefreshTimer = timer
   timer.unref?.()
+}
+
+export function stopCopilotTokenRefresh(): void {
+  copilotTokenRefreshGeneration++
+  if (copilotTokenRefreshTimer !== undefined) {
+    const clearTimeoutFn = clearCopilotTokenRefreshTimer ?? clearTimeout
+    clearTimeoutFn(copilotTokenRefreshTimer)
+    copilotTokenRefreshTimer = undefined
+  }
+  clearCopilotTokenRefreshTimer = undefined
+}
+
+export function isCopilotTokenRefreshScheduled(): boolean {
+  return copilotTokenRefreshTimer !== undefined
 }
 
 interface SetupGitHubTokenOptions {

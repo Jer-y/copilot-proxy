@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import consola from 'consola'
-import { readLastLogLines, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
+import { ensureDaemonLogFile, readLastLogLines, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
 import { PATHS } from '~/lib/paths'
 
 const TASK_NAME = 'CopilotProxy'
@@ -144,10 +144,13 @@ export function buildTaskXml(execPath: string, args: string[], options: BuildTas
 
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
   rotateDaemonLogIfNeeded()
+  ensureDaemonLogFile()
   const taskXml = buildTaskXml(execPath, args)
 
   const tmpDir = os.tmpdir()
   const xmlPath = path.join(tmpDir, 'copilot-proxy-task.xml')
+  const wasInstalled = isAutoStartInstalled()
+  const previousTaskXml = wasInstalled ? readInstalledTaskXml() : undefined
 
   try {
     fs.writeFileSync(xmlPath, taskXml, { encoding: 'utf16le' })
@@ -163,6 +166,30 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   }
   catch (error) {
     consola.error('Failed to create scheduled task:', error instanceof Error ? error.message : error)
+    if (wasInstalled && previousTaskXml) {
+      try {
+        fs.writeFileSync(xmlPath, previousTaskXml, { encoding: 'utf16le' })
+        execFileSync('schtasks', [
+          '/create',
+          '/tn',
+          TASK_NAME,
+          '/xml',
+          xmlPath,
+          '/f',
+        ], { stdio: 'pipe' })
+      }
+      catch (rollbackError) {
+        consola.error('Failed to restore the previous scheduled task:', rollbackError instanceof Error ? rollbackError.message : rollbackError)
+      }
+    }
+    else if (!wasInstalled && isAutoStartInstalled()) {
+      try {
+        execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
+      }
+      catch (rollbackError) {
+        consola.error('Failed to roll back partially-created scheduled task:', rollbackError instanceof Error ? rollbackError.message : rollbackError)
+      }
+    }
     return false
   }
   finally {
@@ -174,6 +201,20 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
 
   consola.success('Auto-start enabled via Task Scheduler')
   return true
+}
+
+function readInstalledTaskXml(): string | undefined {
+  try {
+    return execFileSync(
+      'schtasks',
+      ['/query', '/tn', TASK_NAME, '/xml'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+  }
+  catch (error) {
+    consola.warn('Could not capture the existing scheduled task for rollback:', error instanceof Error ? error.message : error)
+    return undefined
+  }
 }
 
 export function isAutoStartInstalled(): boolean {
@@ -212,6 +253,7 @@ export function restartAutoStartService(): boolean {
   }
 
   rotateDaemonLogIfNeeded()
+  ensureDaemonLogFile()
 
   try {
     execFileSync('schtasks', ['/run', '/tn', TASK_NAME], { stdio: 'inherit' })
@@ -257,6 +299,11 @@ export function showAutoStartLogs(options: { follow: boolean, lines: number }): 
 }
 
 export async function uninstallAutoStart(): Promise<boolean> {
+  if (!isAutoStartInstalled()) {
+    consola.info('Auto-start service is not installed')
+    return true
+  }
+
   try {
     execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
   }
@@ -268,7 +315,13 @@ export async function uninstallAutoStart(): Promise<boolean> {
     execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
   }
   catch (error) {
-    consola.warn('Failed to delete scheduled task:', error instanceof Error ? error.message : error)
+    consola.error('Failed to delete scheduled task:', error instanceof Error ? error.message : error)
+    return false
+  }
+
+  if (isAutoStartInstalled()) {
+    consola.error('Failed to delete scheduled task: task still exists after deletion')
+    return false
   }
 
   consola.success('Auto-start disabled')

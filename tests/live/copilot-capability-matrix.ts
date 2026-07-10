@@ -2,6 +2,7 @@ import type { AnthropicMessagesPayload, AnthropicResponse } from '~/lib/translat
 import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 
+import { getModelConfig } from '~/lib/model-config'
 import { MINIMAL_PDF_BASE64 } from '../fixtures'
 
 export interface LiveCopilotProbeConfig {
@@ -291,30 +292,33 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     }),
   },
   {
-    id: 'baseline-responses-model-chat-completions-unsupported',
-    title: 'Responses-only model is rejected on /chat/completions',
+    id: 'baseline-responses-model-chat-completions',
+    title: 'Responses model chat-completions availability is explicit',
     tier: 'baseline',
     endpoint: 'chat-completions',
-    candidateFix: 'Keep the configured Responses-only model routed to Copilot /responses.',
-    candidateMapping: 'Responses-only model -> Copilot /chat/completions',
-    rationale: 'This catches accidental fallback of the configured Responses-only model to /chat/completions.',
-    expectation: 'must_be_unsupported',
+    candidateFix: 'Honor the current model inventory and use the token-limit field accepted by that chat-completions model.',
+    candidateMapping: 'Configured Responses model -> direct Copilot /chat/completions capability probe',
+    rationale: 'Some Responses models, including current gpt-5.4, also expose chat completions; other models remain Responses-only.',
+    expectation: 'support_or_clean_unsupported',
     isUnsupported: buildUnsupportedMatcher([
       'unsupported_api_for_model',
       'chat completions',
       'chat/completions',
     ]),
-    buildPayload: config => ({
-      model: config.responsesModel,
-      messages: [
-        {
-          role: 'user',
-          content: 'Reply with the single word OK.',
-        },
-      ],
-      max_tokens: 16,
-      temperature: 0,
-    }),
+    buildPayload: (config) => {
+      const tokenParameter = getModelConfig(config.responsesModel).chatCompletionTokenParameter ?? 'max_tokens'
+      return {
+        model: config.responsesModel,
+        messages: [
+          {
+            role: 'user',
+            content: 'Reply with the single word OK.',
+          },
+        ],
+        [tokenParameter]: 16,
+        temperature: 0,
+      }
+    },
   },
   {
     id: 'responses-streaming',
@@ -1556,7 +1560,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     endpoint: 'chat-completions',
     candidateFix: 'Do not route Anthropic json_schema structured-output requests through Copilot chat-completions unless upstream proves schema enforcement, not only parameter acceptance.',
     candidateMapping: 'Direct Copilot chat-completions response_format=json_schema probe only; no automatic Anthropic output_config.format=json_schema mapping.',
-    rationale: 'Copilot native /v1/messages rejects output_config.format, and Claude chat-completions can accept response_format=json_schema without reliably enforcing equivalent schema output.',
+    rationale: 'Copilot native /v1/messages accepts flat output_config.format.schema without Responses-only name/strict metadata; the chat-completions probe remains separate because parameter acceptance does not prove equivalent schema enforcement.',
     expectation: 'support_or_clean_unsupported',
     isUnsupported: buildUnsupportedMatcher([
       'response_format',

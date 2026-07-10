@@ -1,5 +1,14 @@
 node_modules
 
+# local credentials and runtime state
+.env
+.env.*
+.npmrc
+copilot-data/
+github_token
+.claude/
+.codex/
+
 .vscode/
 
 .git/
@@ -11,3 +20,5 @@ tests/
 *.md
 
 .eslintcache
+.playwright-cli/
+coverage/

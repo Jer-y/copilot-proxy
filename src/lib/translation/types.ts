@@ -360,6 +360,8 @@ export interface AnthropicToResponsesStreamState {
   currentThinkingText: string
   /** Accumulated completed output items for the final response.completed payload */
   completedOutputItems: Array<Record<string, unknown>>
+  /** Visible text or a completed tool call was emitted; reasoning alone is not recoverable output. */
+  hasAssistantOutput: boolean
   stopReason: string | undefined
   inputTokens: number
   outputTokens: number

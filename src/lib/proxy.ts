@@ -1,4 +1,5 @@
 import type { Dispatcher } from 'undici'
+import process from 'node:process'
 import consola from 'consola'
 import { getProxyForUrl } from 'proxy-from-env'
 import { Agent, ProxyAgent, setGlobalDispatcher } from 'undici'
@@ -7,6 +8,7 @@ import {
   DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
   DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
 } from './http-timeouts'
+import { configureCopilotFetchTimeouts } from './upstream-fetch'
 
 export {
   DEFAULT_COPILOT_BODY_TIMEOUT_MS,
@@ -19,6 +21,22 @@ export interface HttpClientConfig {
   headersTimeoutMs?: number
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
+}
+
+export const PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+] as const
+
+export function clearProxyEnvironment(env: NodeJS.ProcessEnv): void {
+  for (const key of PROXY_ENV_KEYS)
+    delete env[key]
 }
 
 type UndiciAgentOptions = NonNullable<ConstructorParameters<typeof Agent>[0]>
@@ -87,6 +105,10 @@ function formatTimeout(timeoutMs: number | undefined, configuredTimeoutMs: numbe
     return 'node-default'
   }
 
+  if (timeoutMs === 0) {
+    return 'disabled'
+  }
+
   if (configuredTimeoutMs !== undefined) {
     return `${timeoutMs}ms`
   }
@@ -94,9 +116,29 @@ function formatTimeout(timeoutMs: number | undefined, configuredTimeoutMs: numbe
   return `${timeoutMs}ms (default)`
 }
 
+export function throwProxyDispatchError(error: unknown): never {
+  throw error instanceof Error ? error : new Error(String(error))
+}
+
 export function initializeNodeHttpClient(config: HttpClientConfig): void {
+  configureCopilotFetchTimeouts({
+    headersTimeoutMs: config.headersTimeoutMs,
+    bodyTimeoutMs: config.bodyTimeoutMs,
+    connectTimeoutMs: config.connectTimeoutMs,
+  })
+
   if (typeof Bun !== 'undefined') {
-    consola.debug('Skipping Node HTTP client dispatcher setup under Bun runtime')
+    // Bun's native fetch implicitly reads HTTP(S)_PROXY. Explicitly remove all
+    // proxy variables when --proxy-env is off so the default cannot leak
+    // upstream prompts or bearer tokens through an ambient proxy.
+    if (!config.proxyEnv) {
+      clearProxyEnvironment(process.env)
+      consola.debug('HTTP proxy environment disabled for Bun fetch')
+    }
+    else {
+      consola.debug('HTTP proxy configured from environment for Bun fetch')
+    }
+    consola.debug('Configured Bun upstream timeout enforcement')
     return
   }
 
@@ -193,8 +235,11 @@ export function initializeNodeHttpClient(config: HttpClientConfig): void {
           }
           return (agent as unknown as Dispatcher).dispatch(options, handler)
         }
-        catch {
-          return (directAgent as unknown as Dispatcher).dispatch(options, handler)
+        catch (error) {
+          // --proxy-env is an explicit egress policy. If proxy resolution or
+          // ProxyAgent construction fails, silently going direct can disclose
+          // prompts and bearer tokens outside the required network path.
+          throwProxyDispatchError(error)
         }
       },
       async close() {

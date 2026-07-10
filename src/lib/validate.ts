@@ -3,6 +3,7 @@ import type { z } from 'zod'
 
 import process from 'node:process'
 
+import { setApprovalRequestModel } from './approval'
 import { HTTPError } from './error'
 
 export const JSON_BODY_SIZE_LIMIT_ENV = 'COPILOT_PROXY_MAX_JSON_BODY_BYTES'
@@ -49,10 +50,15 @@ export async function validateBody<T>(c: Context, schema: z.ZodType): Promise<T>
     )
   }
 
+  if (typeof result.data === 'object' && result.data !== null && 'model' in result.data)
+    setApprovalRequestModel(result.data.model)
+
   return result.data as T
 }
 
 export async function readJsonBodyText(c: Context): Promise<string> {
+  requireJsonContentType(c)
+
   const maxBytes = getMaxJsonBodyBytes()
   const declaredBytes = parseContentLength(c.req.header('content-length'))
   if (declaredBytes !== undefined && declaredBytes > maxBytes) {
@@ -92,6 +98,30 @@ export async function readJsonBodyText(c: Context): Promise<string> {
   }
 
   return decodeUtf8Chunks(chunks, bodyBytes)
+}
+
+function requireJsonContentType(c: Context): void {
+  if (!c.req.raw.body)
+    return
+
+  const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+  if (contentType === 'application/json' || (contentType?.startsWith('application/') && contentType.endsWith('+json')))
+    return
+
+  const message = 'Content-Type must be application/json for requests with a JSON body'
+  throw new HTTPError(
+    message,
+    Response.json(
+      {
+        error: {
+          message,
+          type: 'invalid_request_error',
+          code: 'unsupported_content_type',
+        },
+      },
+      { status: 415 },
+    ),
+  )
 }
 
 function getMaxJsonBodyBytes(): number {

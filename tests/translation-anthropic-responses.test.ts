@@ -235,6 +235,46 @@ describe('translateAnthropicRequestToResponses', () => {
     })
   })
 
+  test('assistant history preserves interleaved tool_use and text block order', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Before tool.' },
+          { type: 'tool_use', id: 'toolu_first', name: 'first', input: { n: 1 } },
+          { type: 'text', text: 'Between tools.' },
+          { type: 'tool_use', id: 'toolu_second', name: 'second', input: { n: 2 } },
+          { type: 'text', text: 'After tools.' },
+        ],
+      }],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      { role: 'assistant', content: [{ type: 'output_text', text: 'Before tool.' }] },
+      {
+        type: 'function_call',
+        id: 'fc_toolu_first',
+        call_id: 'toolu_first',
+        name: 'first',
+        arguments: '{"n":1}',
+        status: 'completed',
+      },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'Between tools.' }] },
+      {
+        type: 'function_call',
+        id: 'fc_toolu_second',
+        call_id: 'toolu_second',
+        name: 'second',
+        arguments: '{"n":2}',
+        status: 'completed',
+      },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'After tools.' }] },
+    ])
+  })
+
   test('assistant thinking blocks are not merged into visible assistant text', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -453,7 +493,7 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(result.reasoning).toEqual({ effort: 'xhigh' })
   })
 
-  test('disabled thinking omits reasoning hints', () => {
+  test('disabled thinking maps to Responses reasoning effort none', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
       max_tokens: 1024,
@@ -462,7 +502,7 @@ describe('translateAnthropicRequestToResponses', () => {
     }
 
     const result = translateAnthropicRequestToResponses(payload)
-    expect(result.reasoning).toBeUndefined()
+    expect(result.reasoning).toEqual({ effort: 'none' })
   })
 
   test('user message with mixed text and tool_result', () => {
@@ -485,6 +525,32 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(result.input).toEqual([
       { type: 'function_call_output', call_id: 'toolu_1', output: 'result1' },
       { role: 'user', content: [{ type: 'input_text', text: 'And also...' }] },
+    ])
+  })
+
+  test('user history preserves interleaved text and tool_result block order', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Before result.' },
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: 'first result' },
+          { type: 'text', text: 'Between results.' },
+          { type: 'tool_result', tool_use_id: 'toolu_2', content: 'second result' },
+          { type: 'text', text: 'After results.' },
+        ],
+      }],
+    }
+
+    const result = translateAnthropicRequestToResponses(payload)
+    expect(result.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'Before result.' }] },
+      { type: 'function_call_output', call_id: 'toolu_1', output: 'first result' },
+      { role: 'user', content: [{ type: 'input_text', text: 'Between results.' }] },
+      { type: 'function_call_output', call_id: 'toolu_2', output: 'second result' },
+      { role: 'user', content: [{ type: 'input_text', text: 'After results.' }] },
     ])
   })
 
@@ -599,7 +665,7 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
-  test('tool_result is_error is preserved in function_call_output metadata and output', () => {
+  test('tool_result is_error is preserved without an unsupported top-level Responses field', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
       max_tokens: 1024,
@@ -625,7 +691,6 @@ describe('translateAnthropicRequestToResponses', () => {
         call_id: 'toolu_error',
         output: JSON.stringify({ is_error: true, content: 'file not found' }),
         status: 'incomplete',
-        is_error: true,
       },
     ])
   })
@@ -745,7 +810,6 @@ describe('translateResponsesRequestToAnthropic', () => {
     expect(result.output_config).toEqual({
       format: {
         type: 'json_schema',
-        name: 'answer',
         schema: {
           type: 'object',
           properties: {
@@ -782,7 +846,6 @@ describe('translateResponsesRequestToAnthropic', () => {
     expect(result.output_config).toEqual({
       format: {
         type: 'json_schema',
-        name: 'answer',
         schema: {
           type: 'object',
           properties: {
@@ -838,7 +901,7 @@ describe('translateResponsesRequestToAnthropic', () => {
     )
   })
 
-  test('json_object structured output is not emitted on native Anthropic requests', () => {
+  test('json_object structured output is rejected instead of returning schema-unconstrained success', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
       input: 'Return JSON.',
@@ -849,11 +912,12 @@ describe('translateResponsesRequestToAnthropic', () => {
       },
     }
 
-    const result = translateResponsesRequestToAnthropic(payload)
-    expect(result.output_config).toBeUndefined()
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      'text.format.type="json_object" cannot be represented',
+    )
   })
 
-  test('reasoning.effort none is omitted on native Anthropic requests', () => {
+  test('reasoning.effort none disables thinking on native Anthropic requests', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
       input: 'Hi',
@@ -862,6 +926,7 @@ describe('translateResponsesRequestToAnthropic', () => {
 
     const result = translateResponsesRequestToAnthropic(payload)
     expect(result.output_config).toBeUndefined()
+    expect(result.thinking).toEqual({ type: 'disabled' })
   })
 
   test('reasoning.effort minimal is downgraded to low on native Anthropic requests', () => {

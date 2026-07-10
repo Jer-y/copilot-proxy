@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 
-import type { AnthropicMessagesPayload, AnthropicStreamEventData } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/translation/types'
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
@@ -15,7 +15,7 @@ import { assertCopilotCompatibleAnthropicRequest, throwAnthropicInvalidRequestEr
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
-import { createResponses } from '~/services/copilot/create-responses'
+import { createResponses, summarizeResponsesPayload } from '~/services/copilot/create-responses'
 import {
   normalizeAnthropicModelName,
   sanitizeAnthropicBetaHeader,
@@ -48,7 +48,7 @@ export async function handleCompletion(c: Context) {
   const anthropicBeta = c.req.header('anthropic-beta')
   let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
   if (consola.level >= 4) {
-    consola.debug('Anthropic request payload:', JSON.stringify(anthropicPayload))
+    consola.debug('Anthropic request summary:', summarizeAnthropicPayload(anthropicPayload))
   }
 
   await enforceManualApproval(state)
@@ -66,7 +66,7 @@ export async function handleCompletion(c: Context) {
       max_tokens: modelMaxOutputTokens,
     }
     if (consola.level >= 4) {
-      consola.debug('Set anthropic max_tokens to:', JSON.stringify(anthropicPayload.max_tokens))
+      consola.debug('Set Anthropic max_tokens:', anthropicPayload.max_tokens)
     }
   }
   else if (modelMaxOutputTokens && anthropicPayload.max_tokens > modelMaxOutputTokens) {
@@ -123,7 +123,7 @@ async function handleViaResponses(
 ) {
   const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, { model: effectiveModel })
   if (consola.level >= 4) {
-    consola.debug('Translated Anthropic→Responses payload:', JSON.stringify(responsesPayload).slice(-400))
+    consola.debug('Translated Anthropic→Responses payload summary:', summarizeResponsesPayload(responsesPayload))
   }
 
   const result = await createResponses(responsesPayload)
@@ -135,11 +135,11 @@ async function handleViaResponses(
       )
     }
     if (consola.level >= 4) {
-      consola.debug('Non-streaming responses (Anthropic path):', JSON.stringify(result.body))
+      consola.debug('Responses result summary (Anthropic path):', summarizeResponsesResult(result.body))
     }
     const anthropicResponse = translateResponsesResponseToAnthropic(result.body, { requestedModel })
     if (consola.level >= 4) {
-      consola.debug('Translated Responses→Anthropic response:', JSON.stringify(anthropicResponse))
+      consola.debug('Translated Responses→Anthropic response summary:', summarizeAnthropicResponse(anthropicResponse))
     }
     forwardUpstreamHeaders(c, result.headers)
     return c.json(anthropicResponse)
@@ -169,7 +169,10 @@ async function handleViaResponses(
           event = JSON.parse(rawEvent.data)
         }
         catch {
-          consola.error('Failed to parse Responses stream event:', rawEvent.data)
+          consola.error('Failed to parse Responses stream event:', {
+            event: rawEvent.event ?? 'message',
+            dataChars: rawEvent.data.length,
+          })
           await anthropicWriter.writeEvent(
             translateErrorToAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Responses upstream response.'),
           )
@@ -273,7 +276,7 @@ async function handleViaNativeAnthropic(
   await prepareAnthropicPayloadForNativeCopilotBackend(payload)
 
   if (consola.level >= 4) {
-    consola.debug('Native Anthropic passthrough payload:', JSON.stringify(payload))
+    consola.debug('Native Anthropic passthrough summary:', summarizeAnthropicPayload(payload))
   }
 
   const result = await createAnthropicMessagesWithThinkingSignatureRetry(payload, {
@@ -282,7 +285,7 @@ async function handleViaNativeAnthropic(
 
   if (!result.streaming) {
     if (consola.level >= 4) {
-      consola.debug('Native Anthropic non-streaming response:', JSON.stringify(result.body))
+      consola.debug('Native Anthropic response summary:', summarizeAnthropicResponse(result.body))
     }
     forwardUpstreamHeaders(c, result.headers)
     return c.json(overrideAnthropicResponseModel(result.body, requestedModel))
@@ -313,7 +316,10 @@ async function handleViaNativeAnthropic(
           event = JSON.parse(rawEvent.data) as AnthropicStreamEventData
         }
         catch {
-          consola.error('Failed to parse native Anthropic stream event:', rawEvent.data)
+          consola.error('Failed to parse native Anthropic stream event:', {
+            event: rawEvent.event ?? 'message',
+            dataChars: rawEvent.data.length,
+          })
           await anthropicWriter.writeEvent(
             translateErrorToAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Anthropic upstream response.'),
           )
@@ -369,4 +375,70 @@ async function handleViaNativeAnthropic(
       }
     }
   })
+}
+
+function summarizeAnthropicPayload(payload: AnthropicMessagesPayload): Record<string, unknown> {
+  let contentBlocks = 0
+  let documentBlocks = 0
+  let imageBlocks = 0
+  let toolResultBlocks = 0
+  let assistantToolUseBlocks = 0
+
+  for (const message of payload.messages) {
+    if (!Array.isArray(message.content))
+      continue
+    contentBlocks += message.content.length
+    for (const block of message.content) {
+      if (block.type === 'document')
+        documentBlocks++
+      else if (block.type === 'image')
+        imageBlocks++
+      else if (block.type === 'tool_result')
+        toolResultBlocks++
+      else if (block.type === 'tool_use')
+        assistantToolUseBlocks++
+    }
+  }
+
+  return {
+    model: payload.model,
+    stream: Boolean(payload.stream),
+    messages: payload.messages.length,
+    contentBlocks,
+    documentBlocks,
+    imageBlocks,
+    toolResultBlocks,
+    assistantToolUseBlocks,
+    tools: payload.tools?.length ?? 0,
+    maxTokens: payload.max_tokens,
+    thinkingType: payload.thinking?.type,
+    outputFormatType: payload.output_config?.format?.type,
+    systemBlocks: Array.isArray(payload.system) ? payload.system.length : payload.system ? 1 : 0,
+  }
+}
+
+function summarizeResponsesResult(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== 'object')
+    return { kind: typeof body }
+
+  const response = body as Record<string, unknown>
+  return {
+    object: typeof response.object === 'string' ? response.object : undefined,
+    status: typeof response.status === 'string' ? response.status : undefined,
+    model: typeof response.model === 'string' ? response.model : undefined,
+    outputItems: Array.isArray(response.output) ? response.output.length : undefined,
+    hasError: response.error != null,
+  }
+}
+
+function summarizeAnthropicResponse(response: AnthropicResponse): Record<string, unknown> {
+  return {
+    type: response.type,
+    model: response.model,
+    contentBlocks: response.content.length,
+    contentTypes: response.content.map(block => block.type),
+    stopReason: response.stop_reason,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  }
 }
