@@ -3,7 +3,7 @@ import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventD
 import consola from 'consola'
 import { HTTPError } from '~/lib/error'
 import { assertCopilotCompatibleAnthropicRequest, logLossyAnthropicCompatibility, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
-import { expandDocumentBlocks, normalizeLegacyDocumentTextSources } from '~/lib/translation/anthropic-documents'
+import { expandCopilotUnsupportedTextDocumentBlocks, expandDocumentBlocks, normalizeLegacyDocumentTextSources } from '~/lib/translation/anthropic-documents'
 import { isRecord } from '~/lib/type-guards'
 import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 
@@ -107,6 +107,13 @@ export function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): vo
     consola.debug('Flattening legacy output_config.format.json_schema to output_config.format.schema')
     delete formatRecord.json_schema
   }
+}
+
+export async function prepareAnthropicPayloadForNativeCopilotBackend(
+  payload: AnthropicMessagesPayload,
+): Promise<void> {
+  sanitizeForCopilotBackend(payload)
+  await expandCopilotUnsupportedTextDocumentBlocks(payload)
 }
 
 function stripAdvisorToolsForCopilot(payload: AnthropicMessagesPayload): void {

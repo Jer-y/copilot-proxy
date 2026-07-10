@@ -9,9 +9,7 @@ import {
   expandDocumentBlocks,
   setDocumentUrlResolverForTesting,
 } from '../src/lib/translation/anthropic-documents'
-
-// Minimal valid PDF with text "Hello World"
-const MINIMAL_PDF_BASE64 = 'JVBERi0xLjAKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlL01lZGlhQm94WzAgMCA2MTIgNzkyXS9QYXJlbnQgMiAwIFIvUmVzb3VyY2VzPDwvRm9udDw8L0YxIDQgMCBSPj4+Pi9Db250ZW50cyA1IDAgUj4+ZW5kb2JqCjQgMCBvYmo8PC9UeXBlL0ZvbnQvU3VidHlwZS9UeXBlMS9CYXNlRm9udC9IZWx2ZXRpY2E+PmVuZG9iago1IDAgb2JqCjw8L0xlbmd0aCA0ND4+CnN0cmVhbQpCVCAvRjEgMjQgVGYgMTAwIDcwMCBUZCAoSGVsbG8gV29ybGQpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjY2IDAwMDAwIG4gCjAwMDAwMDAzNDAgMDAwMDAgbiAKdHJhaWxlcjw8L1NpemUgNi9Sb290IDEgMCBSPj4Kc3RhcnR4cmVmCjQzNAolJUVPRg=='
+import { MINIMAL_PDF_BASE64 } from './fixtures'
 
 function makePayload(messages: AnthropicMessagesPayload['messages']): AnthropicMessagesPayload {
   return {
@@ -214,6 +212,29 @@ describe('expandDocumentBlocks', () => {
     const content = payload.messages[0].content as Array<{ type: string, text?: string }>
     expect(content[0].type).toBe('text')
     expect(content[0].text).toBe('Hello from text source')
+  })
+
+  test('preserves inline Unicode text without reinterpreting the declared charset', async () => {
+    const payload = makePayload([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain; charset=iso-8859-1',
+              data: 'café',
+            },
+          },
+        ],
+      },
+    ])
+
+    await expandDocumentBlocks(payload)
+
+    const content = payload.messages[0].content as Array<{ type: string, text?: string }>
+    expect(content[0]).toEqual({ type: 'text', text: 'café' })
   })
 
   test('accepts legacy text-based text-source document block for compatibility', async () => {

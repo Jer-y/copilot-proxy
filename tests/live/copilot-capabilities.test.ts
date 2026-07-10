@@ -243,7 +243,8 @@ async function runProbe(
   }
 
   if (probe.endpoint === 'anthropic-messages') {
-    const payload = (probe as AnthropicMessagesCapabilityProbe).buildPayload(config)
+    const anthropicProbe = probe as AnthropicMessagesCapabilityProbe
+    const payload = anthropicProbe.buildPayload(config)
 
     try {
       const result = await withLiveCopilotState(config, async () => {
@@ -259,6 +260,19 @@ async function runProbe(
           model: payload.model,
           durationMs: Date.now() - startedAt,
           message: `Expected Anthropic messages response, got ${describeObjectType(result.body)}`,
+        }
+      }
+
+      const validationError = anthropicProbe.validateResponse?.(result.body)
+      if (validationError) {
+        return {
+          id: probe.id,
+          endpoint: probe.endpoint,
+          title: probe.title,
+          status: 'unexpected_response',
+          model: payload.model,
+          durationMs: Date.now() - startedAt,
+          message: validationError,
         }
       }
 

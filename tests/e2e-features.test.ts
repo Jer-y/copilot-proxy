@@ -2,8 +2,8 @@
  * E2E feature tests for native Anthropic passthrough.
  *
  * These tests hit the REAL Copilot backend via the proxy's native
- * /v1/messages path. They verify which Claude features are supported
- * by the Copilot API when passed through without translation.
+ * /v1/messages path. They verify native Claude behavior together with the
+ * proxy's narrow compatibility adaptations.
  *
  * Run:
  *   COPILOT_LIVE_TEST=1 \
@@ -19,6 +19,7 @@ import { state } from '~/lib/state'
 import { setupCopilotToken, setupGitHubToken } from '~/lib/token'
 import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
 import { server } from '~/server'
+import { MINIMAL_PDF_BASE64 } from './fixtures'
 
 const TIMEOUT = 30_000
 const E2E_TEST_ENABLED = process.env.COPILOT_LIVE_TEST === '1'
@@ -101,6 +102,20 @@ function parseModelList(raw: string | undefined): string[] {
     .split(',')
     .map(model => model.trim())
     .filter(Boolean)
+}
+
+function responseHasCitations(body: Record<string, unknown>): boolean {
+  if (!Array.isArray(body.content)) {
+    return false
+  }
+
+  return body.content.some((block) => {
+    if (typeof block !== 'object' || block === null) {
+      return false
+    }
+    const citations = (block as Record<string, unknown>).citations
+    return Array.isArray(citations) && citations.length > 0
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +338,7 @@ describeE2E('Feature probes', () => {
 
   describe('Official Anthropic contract validation', () => {
     // Tests here MUST have expect() assertions proving official API correctness
-    // These are not Copilot-specific — they validate the native Claude API contract
+    // across the native Claude route and its explicit compatibility adaptations.
 
     test('thinking adaptive + budget_tokens → rejected (budget_tokens only for enabled)', async () => {
       // Official Claude docs/SDK split adaptive vs enabled thinking.
@@ -451,7 +466,7 @@ describeE2E('Feature probes', () => {
       expect(res.status).toBe(200)
     }, TIMEOUT)
 
-    test('document citations → 200 with citations in response', async () => {
+    test('text document citations → rejected instead of silently dropped', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 256,
@@ -467,11 +482,30 @@ describeE2E('Feature probes', () => {
           ],
         }],
       })
-      expect(res.status).toBe(200)
+      expect(res.status).toBe(400)
       const body = await parseResponse(res)
-      // At least one text block should have a citations array
-      const hasCitations = (body as any).content.some((b: any) => b.type === 'text' && Array.isArray(b.citations) && b.citations.length > 0)
-      expect(hasCitations).toBe(true)
+      const message = (body.error as Record<string, unknown> | undefined)?.message
+      expect(message).toContain('Document citations cannot be preserved')
+    }, TIMEOUT)
+
+    test('base64 PDF citations → 200 with citations in response', async () => {
+      const res = await sendRequest({
+        model,
+        max_tokens: 256,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: MINIMAL_PDF_BASE64 },
+              citations: { enabled: true },
+            },
+            { type: 'text', text: 'What text is in this PDF? Cite the document.' },
+          ],
+        }],
+      })
+      expect(res.status).toBe(200)
+      expect(responseHasCitations(await parseResponse(res))).toBe(true)
     }, TIMEOUT)
 
     test('top-level cache_control → 200', async () => {

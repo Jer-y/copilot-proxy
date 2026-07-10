@@ -375,6 +375,25 @@ async function readResponseWithSizeLimit(
 export async function expandDocumentBlocks(
   payload: AnthropicMessagesPayload,
 ): Promise<void> {
+  await expandDocumentBlocksMatching(payload, () => true)
+}
+
+/**
+ * GitHub Copilot's native `/v1/messages` backend accepts PDF document blocks,
+ * but currently rejects Anthropic inline text document sources. Expand only
+ * those unsupported text-like documents, leaving PDF/url/file blocks for the
+ * native backend to handle or reject with its own semantics.
+ */
+export async function expandCopilotUnsupportedTextDocumentBlocks(
+  payload: AnthropicMessagesPayload,
+): Promise<void> {
+  await expandDocumentBlocksMatching(payload, shouldExpandForCopilotNativePassthrough)
+}
+
+async function expandDocumentBlocksMatching(
+  payload: AnthropicMessagesPayload,
+  shouldExpand: (block: AnthropicDocumentBlock) => boolean,
+): Promise<void> {
   const tasks: Array<{
     array: Array<unknown>
     index: number
@@ -390,7 +409,8 @@ export async function expandDocumentBlocks(
       const block = message.content[i]
 
       // Top-level document block
-      if (block.type === 'document') {
+      if (block.type === 'document' && shouldExpand(block)) {
+        assertDocumentExpansionPreservesRequiredSemantics(block)
         tasks.push({
           array: message.content as Array<unknown>,
           index: i,
@@ -402,7 +422,8 @@ export async function expandDocumentBlocks(
       if (block.type === 'tool_result' && Array.isArray(block.content)) {
         for (let j = 0; j < block.content.length; j++) {
           const inner = block.content[j]
-          if (inner.type === 'document') {
+          if (inner.type === 'document' && shouldExpand(inner)) {
+            assertDocumentExpansionPreservesRequiredSemantics(inner)
             tasks.push({
               array: block.content as Array<unknown>,
               index: j,
@@ -428,6 +449,27 @@ export async function expandDocumentBlocks(
     for (let j = 0; j < batch.length; j++) {
       batch[j].array[batch[j].index] = results[j]
     }
+  }
+}
+
+function shouldExpandForCopilotNativePassthrough(block: AnthropicDocumentBlock): boolean {
+  const source = block.source
+  return source.type === 'text'
+    || source.type === 'content'
+    || (source.type === 'base64' && parseContentType(source.media_type).mediaType.startsWith('text/'))
+}
+
+function assertDocumentExpansionPreservesRequiredSemantics(block: AnthropicDocumentBlock): void {
+  if (block.citations?.enabled) {
+    throwAnthropicInvalidRequestError(
+      'Document citations cannot be preserved during local document expansion. Use a base64 PDF with a native Anthropic-backed model or set citations.enabled=false.',
+    )
+  }
+
+  if (block.source.type === 'content' && block.source.content.some(contentBlock => contentBlock.cache_control)) {
+    throwAnthropicInvalidRequestError(
+      'document.source.content cache_control cannot be preserved during local document expansion. Send the content as ordinary text blocks instead.',
+    )
   }
 }
 
@@ -491,16 +533,10 @@ function normalizeTextDocumentSource(
 async function documentToTextBlock(
   block: AnthropicDocumentBlock,
 ): Promise<AnthropicTextBlock> {
-  // Log dropped citations (field exists at runtime via .passthrough() but not in our TS type)
-  if ('citations' in block) {
-    logLossyAnthropicCompatibility(
-      'document.citations',
-      'citations not supported, dropped during document expansion',
-    )
-  }
-
-  const { buffer, mediaType, charset } = await resolveDocumentSource(block.source)
-  const rawText = await extractDocumentText(buffer, mediaType, charset)
+  const source = await resolveDocumentSource(block.source)
+  const rawText = source.kind === 'text'
+    ? source.text
+    : await extractDocumentText(source.buffer, source.mediaType, source.charset)
   const text = formatDocumentText(rawText, block.title, block.context)
 
   return {
@@ -510,9 +546,21 @@ async function documentToTextBlock(
   }
 }
 
+type ResolvedDocumentSource
+  = | {
+    kind: 'bytes'
+    buffer: Uint8Array
+    mediaType: string
+    charset?: string
+  }
+  | {
+    kind: 'text'
+    text: string
+  }
+
 async function resolveDocumentSource(
   source: AnthropicDocumentBlock['source'],
-): Promise<{ buffer: Uint8Array, mediaType: string, charset?: string }> {
+): Promise<ResolvedDocumentSource> {
   if (source.type === 'base64') {
     // Validate base64 format — Buffer.from is too permissive (silently ignores invalid chars)
     if (!isValidBase64(source.data)) {
@@ -559,31 +607,27 @@ async function resolveDocumentSource(
       }
     }
 
-    return { buffer: uint8, mediaType, charset }
+    return { kind: 'bytes', buffer: uint8, mediaType, charset }
   }
 
   if (source.type === 'text') {
-    const { mediaType, charset } = parseContentType(source.media_type)
+    const { mediaType } = parseContentType(source.media_type)
     if (!mediaType.startsWith('text/')) {
       throwAnthropicInvalidRequestError(
         `Unsupported document media_type '${mediaType}'. Supported: application/pdf, text/*`,
       )
     }
 
-    const inlineText = getTextDocumentSourceData(source)
-
     return {
-      buffer: new TextEncoder().encode(inlineText),
-      mediaType,
-      charset,
+      kind: 'text',
+      text: getTextDocumentSourceData(source),
     }
   }
 
   if (source.type === 'content') {
-    const text = source.content.map(block => block.text).join('\n\n')
     return {
-      buffer: new TextEncoder().encode(text),
-      mediaType: 'text/plain',
+      kind: 'text',
+      text: source.content.map(block => block.text).join('\n\n'),
     }
   }
 
@@ -668,7 +712,7 @@ async function resolveDocumentSource(
       }
     }
 
-    return { buffer, mediaType, charset }
+    return { kind: 'bytes', buffer, mediaType, charset }
   }
   catch (error) {
     // Re-throw already-wrapped Anthropic errors

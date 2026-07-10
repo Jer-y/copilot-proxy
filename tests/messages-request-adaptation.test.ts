@@ -1,9 +1,11 @@
 import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 
+import { Buffer } from 'node:buffer'
 import { describe, expect, test } from 'bun:test'
 
 import {
   normalizeAdaptiveThinkingForCopilot,
+  prepareAnthropicPayloadForNativeCopilotBackend,
   sanitizeForCopilotBackend,
   stripAssistantThinkingBlocks,
 } from '~/routes/messages/request-adaptation'
@@ -82,6 +84,198 @@ describe('sanitizeForCopilotBackend', () => {
 
     expect(() => sanitizeForCopilotBackend(payload)).toThrow(
       'requires an object "schema"',
+    )
+  })
+})
+
+describe('prepareAnthropicPayloadForNativeCopilotBackend', () => {
+  test('expands inline text documents for native Copilot passthrough', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain; charset=iso-8859-1',
+              data: 'Hello from document café.',
+            },
+            title: 'note.txt',
+            context: 'Probe context',
+            citations: { enabled: false },
+            cache_control: { type: 'ephemeral' },
+          },
+          { type: 'text', text: 'Summarize it.' },
+        ],
+      }],
+    })
+
+    await prepareAnthropicPayloadForNativeCopilotBackend(payload)
+
+    expect(payload.messages[0].content).toEqual([
+      {
+        type: 'text',
+        text: '[Document: note.txt]\nContext: Probe context\n\nHello from document café.',
+        cache_control: { type: 'ephemeral' },
+      },
+      { type: 'text', text: 'Summarize it.' },
+    ])
+  })
+
+  test('rejects citations on text documents that require local expansion', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'document',
+          source: {
+            type: 'text',
+            media_type: 'text/plain',
+            data: 'Citation source.',
+          },
+          citations: { enabled: true },
+        }],
+      }],
+    })
+
+    await expect(prepareAnthropicPayloadForNativeCopilotBackend(payload)).rejects.toThrow(
+      'Document citations cannot be preserved',
+    )
+  })
+
+  test('leaves PDF document blocks for native Copilot passthrough', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'JVBERi0xLjQK',
+            },
+            citations: { enabled: true },
+          },
+        ],
+      }],
+    })
+
+    await prepareAnthropicPayloadForNativeCopilotBackend(payload)
+
+    expect(payload.messages[0].content).toEqual([
+      {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: 'JVBERi0xLjQK',
+        },
+        citations: { enabled: true },
+      },
+    ])
+  })
+
+  test('expands content document sources without cache breakpoints', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'document',
+          source: {
+            type: 'content',
+            content: [
+              { type: 'text', text: 'First paragraph.' },
+              { type: 'text', text: 'Second paragraph.' },
+            ],
+          },
+        }],
+      }],
+    })
+
+    await prepareAnthropicPayloadForNativeCopilotBackend(payload)
+
+    expect(payload.messages[0].content).toEqual([
+      { type: 'text', text: 'First paragraph.\n\nSecond paragraph.' },
+    ])
+  })
+
+  test('rejects inner cache breakpoints that content document fallback cannot preserve', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'document',
+          source: {
+            type: 'content',
+            content: [
+              { type: 'text', text: 'Cached paragraph.', cache_control: { type: 'ephemeral' } },
+            ],
+          },
+        }],
+      }],
+    })
+
+    await expect(prepareAnthropicPayloadForNativeCopilotBackend(payload)).rejects.toThrow(
+      'document.source.content cache_control cannot be preserved',
+    )
+  })
+
+  test('expands text documents nested in tool results for native Copilot passthrough', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'text/plain',
+                data: Buffer.from('Nested text document').toString('base64'),
+              },
+            },
+          ],
+        }],
+      }],
+    })
+
+    await prepareAnthropicPayloadForNativeCopilotBackend(payload)
+
+    expect(payload.messages[0].content).toEqual([{
+      type: 'tool_result',
+      tool_use_id: 'toolu_1',
+      content: [
+        { type: 'text', text: 'Nested text document' },
+      ],
+    }])
+  })
+
+  test('rejects citations on nested base64 text documents', async () => {
+    const payload = makePayload({
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: [{
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'text/markdown',
+              data: Buffer.from('# Citation source').toString('base64'),
+            },
+            citations: { enabled: true },
+          }],
+        }],
+      }],
+    })
+
+    await expect(prepareAnthropicPayloadForNativeCopilotBackend(payload)).rejects.toThrow(
+      'Document citations cannot be preserved',
     )
   })
 })

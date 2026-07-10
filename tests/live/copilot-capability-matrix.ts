@@ -1,6 +1,8 @@
-import type { AnthropicMessagesPayload } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicResponse } from '~/lib/translation/types'
 import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
+
+import { MINIMAL_PDF_BASE64 } from '../fixtures'
 
 export interface LiveCopilotProbeConfig {
   claudeModel: string
@@ -61,6 +63,7 @@ export interface RawResponsesCapabilityProbe extends CapabilityProbeBase {
 export interface AnthropicMessagesCapabilityProbe extends CapabilityProbeBase {
   endpoint: 'anthropic-messages'
   buildPayload: (config: LiveCopilotProbeConfig) => AnthropicMessagesPayload
+  validateResponse?: (response: AnthropicResponse) => string | undefined
 }
 
 export interface RawAnthropicProbeRequest {
@@ -183,6 +186,17 @@ function buildAnthropicBasicPayload(config: LiveCopilotProbeConfig, model = conf
     max_tokens: 32,
     messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
   }
+}
+
+function validateAnthropicCitations(response: AnthropicResponse): string | undefined {
+  const hasCitations = response.content.some(block =>
+    block.type === 'text'
+    && Array.isArray(block.citations)
+    && block.citations.length > 0,
+  )
+  return hasCitations
+    ? undefined
+    : 'Expected at least one non-empty content[].citations array'
 }
 
 function toAnthropicHyphenAlias(model: string): string {
@@ -2395,10 +2409,16 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     title: 'Native Anthropic document source=data',
     tier: 'optional',
     endpoint: 'anthropic-messages',
-    expectation: 'must_support',
-    candidateFix: 'N/A',
-    candidateMapping: 'N/A',
-    rationale: 'Official inline plain-text document source uses source.type=text with a data field.',
+    expectation: 'support_or_clean_unsupported',
+    candidateFix: 'Expand inline text document sources into text blocks before native passthrough when Copilot rejects them.',
+    candidateMapping: 'Anthropic document source=text -> Copilot /v1/messages document source=text, or local document expansion when unsupported',
+    rationale: 'Official inline plain-text document source uses source.type=text with a data field, but Copilot native support is model-dependent.',
+    isUnsupported: buildUnsupportedMatcher([
+      'document',
+      'source type',
+      'text',
+      'invalid_pdf_request',
+    ]),
     buildPayload: config => ({
       model: config.claudeModel,
       max_tokens: 64,
@@ -2467,24 +2487,25 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
   },
   {
     id: 'native-anthropic-document-citations',
-    title: 'Native Anthropic document citations',
+    title: 'Native Anthropic base64 PDF citations',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'must_support',
     candidateFix: 'N/A',
     candidateMapping: 'N/A',
-    rationale: 'Official citations feature for document inputs.',
+    rationale: 'Current Copilot Claude models support native base64 PDF citations; successful responses must contain citation metadata.',
     buildPayload: config => ({
       model: config.claudeModel,
-      max_tokens: 128,
+      max_tokens: 256,
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'The capital of France is Paris.' }, citations: { enabled: true } },
-          { type: 'text', text: 'What is the capital?' },
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: MINIMAL_PDF_BASE64 }, citations: { enabled: true } },
+          { type: 'text', text: 'What text is in this PDF? Cite the document in your answer.' },
         ],
       }],
     }),
+    validateResponse: validateAnthropicCitations,
   },
   {
     id: 'native-anthropic-cache-control',

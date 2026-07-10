@@ -1031,7 +1031,7 @@ describe('messages route upstream adaptation', () => {
     ])
   })
 
-  test('Claude native passthrough accepts official text-source documents with source.data', async () => {
+  test('Claude native passthrough expands official text-source documents with source.data', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1067,16 +1067,106 @@ describe('messages route upstream adaptation', () => {
     }
 
     expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
-      type: 'document',
-      source: {
-        type: 'text',
-        media_type: 'text/plain',
-        data: 'Hello from source.data',
-      },
+      type: 'text',
+      text: 'Hello from source.data',
     })
   })
 
-  test('Claude native passthrough normalizes legacy source.text to source.data', async () => {
+  test('Claude native passthrough rejects citations on text documents before upstream', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain',
+              data: 'Citation source.',
+            },
+            citations: { enabled: true },
+          }],
+        }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const body = await res.json() as {
+      type?: string
+      error?: { type?: string, message?: string }
+    }
+    expect(body.type).toBe('error')
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('Document citations cannot be preserved')
+  })
+
+  test('Claude native passthrough rejects inner content cache breakpoints before upstream', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'document',
+            source: {
+              type: 'content',
+              content: [{
+                type: 'text',
+                text: 'Cached paragraph.',
+                cache_control: { type: 'ephemeral' },
+              }],
+            },
+          }],
+        }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('document.source.content cache_control cannot be preserved')
+  })
+
+  test('Responses-backed document translation rejects citations before upstream', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain',
+              data: 'Citation source.',
+            },
+            citations: { enabled: true },
+          }],
+        }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('Document citations cannot be preserved')
+  })
+
+  test('Claude native passthrough expands legacy source.text documents', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1112,12 +1202,8 @@ describe('messages route upstream adaptation', () => {
     }
 
     expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
-      type: 'document',
-      source: {
-        type: 'text',
-        media_type: 'text/plain',
-        data: 'Hello from legacy source.text',
-      },
+      type: 'text',
+      text: 'Hello from legacy source.text',
     })
   })
 

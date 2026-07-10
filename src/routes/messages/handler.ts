@@ -25,8 +25,8 @@ import {
   normalizeAdaptiveThinkingForCopilot,
   overrideAnthropicResponseModel,
   overrideAnthropicStreamEventModel,
+  prepareAnthropicPayloadForNativeCopilotBackend,
   prepareAnthropicPayloadForTranslatedBackends,
-  sanitizeForCopilotBackend,
 } from './request-adaptation'
 import { createAnthropicSSEWriter } from './sse-writer'
 import {
@@ -248,9 +248,9 @@ function extractUnexpectedResponsesBodyMessage(
 /**
  * Native Anthropic passthrough: Anthropic → /v1/messages → Anthropic
  *
- * No translation needed. The Copilot backend natively supports the
- * Anthropic Messages API format, so we forward the payload as-is
- * (after minimal sanitization and max_tokens clamping).
+ * The Copilot backend natively supports the Anthropic Messages API format.
+ * Request preparation stays narrow: normalize known Copilot incompatibilities
+ * and expand only text-like documents that the native backend rejects.
  *
  * For streaming, upstream SSE events are already in Anthropic format,
  * so we pipe them directly with keep-alive pings.
@@ -269,9 +269,8 @@ async function handleViaNativeAnthropic(
     model: effectiveModel,
   }
 
-  // Minimal sanitization for fields the Copilot backend rejects.
-  // Unlike the CC translation path this is surgical; everything else passes through.
-  sanitizeForCopilotBackend(payload)
+  // Apply only the known native-backend compatibility adaptations.
+  await prepareAnthropicPayloadForNativeCopilotBackend(payload)
 
   if (consola.level >= 4) {
     consola.debug('Native Anthropic passthrough payload:', JSON.stringify(payload))
