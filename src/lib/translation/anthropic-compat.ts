@@ -42,7 +42,7 @@ export function assertCopilotCompatibleAnthropicRequest(
 }
 
 export function mapAnthropicCacheControl(
-  cacheControl: AnthropicCacheControl | undefined,
+  cacheControl: AnthropicCacheControl | null | undefined,
   context: string,
 ): CopilotCacheControl | undefined {
   if (!cacheControl) {

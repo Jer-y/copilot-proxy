@@ -191,7 +191,7 @@ describe('review-confirmed real route regressions', () => {
     expect(upstreamCalls[0]?.body?.model).toBe('claude-sonnet-4.5')
   })
 
-  test('Anthropic to Responses streaming finalizes upstream EOF after visible text', async () => {
+  test('Anthropic to Responses streaming reports upstream EOF after visible text as failed', async () => {
     const response = await post('/v1/responses', {
       model: 'claude-opus-4.6',
       store: false,
@@ -202,8 +202,8 @@ describe('review-confirmed real route regressions', () => {
     expect(response.status).toBe(200)
     const text = await response.text()
     expect(text).toContain('event: response.output_text.delta')
-    expect(text).toContain('event: response.completed')
-    expect(text).not.toContain('event: response.failed')
+    expect(text).toContain('event: response.failed')
+    expect(text).not.toContain('event: response.completed')
   })
 
   test('direct Responses streaming aborts upstream when the client disconnects', async () => {

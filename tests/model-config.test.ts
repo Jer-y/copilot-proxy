@@ -1,6 +1,9 @@
+import type { Model } from '~/services/copilot/get-models'
+
 import { describe, expect, test } from 'bun:test'
 
 import { getModelConfig } from '../src/lib/model-config'
+import { state } from '../src/lib/state'
 
 describe('getModelConfig', () => {
   test('should return config with enableCacheControl and defaultReasoningEffort for claude-opus-4.6', () => {
@@ -165,5 +168,47 @@ describe('getModelConfig', () => {
   test('should match gemini models via prefix', () => {
     const config = getModelConfig('gemini-3.1-pro-preview')
     expect(config.supportedApis).toEqual(['chat-completions'])
+  })
+
+  test('uses live capabilities for a current Responses model missing from static config', () => {
+    const previousModels = state.models
+    state.models = {
+      object: 'list',
+      data: [{
+        id: 'mai-code-1-flash-picker',
+        capabilities: {
+          family: 'mai-code',
+          limits: {},
+          object: 'model_capabilities',
+          supports: {
+            tool_calls: true,
+            parallel_tool_calls: true,
+            reasoning_effort: ['low', 'medium', 'high'],
+          },
+          tokenizer: 'o200k_base',
+          type: 'chat',
+        },
+        model_picker_enabled: true,
+        name: 'MAI Code Flash',
+        object: 'model',
+        preview: true,
+        supported_endpoints: ['/responses', 'ws:/responses'],
+        vendor: 'github-copilot',
+        version: '1',
+      } satisfies Model],
+    }
+
+    try {
+      const config = getModelConfig('mai-code-1-flash-picker')
+      expect(config.supportedApis).toEqual(['responses'])
+      expect(config.preferredApi).toBe('responses')
+      expect(config.reasoningMode).toBe('thinking')
+      expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high'])
+      expect(config.supportsToolChoice).toBe(true)
+      expect(config.supportsParallelToolCalls).toBe(true)
+    }
+    finally {
+      state.models = previousModels
+    }
   })
 })

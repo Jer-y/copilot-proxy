@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { afterEach, describe, expect, test } from 'bun:test'
 
-import { isCurrentDaemonProcess, isProcessRunning, readPid, removePidFile, writePid } from '../src/daemon/pid'
+import { buildWindowsCimProcessScript, isCurrentDaemonProcess, isProcessRunning, readPid, removePidFile, writePid } from '../src/daemon/pid'
 import { PATHS } from '../src/lib/paths'
 
 afterEach(() => {
@@ -87,5 +87,28 @@ describe('isCurrentDaemonProcess', () => {
     writePid(process.pid)
 
     expect(isCurrentDaemonProcess(process.pid)).toBe(false)
+  })
+})
+
+describe('Windows process CIM queries', () => {
+  test('queries command lines without WMIC or cmd interpolation', () => {
+    const script = buildWindowsCimProcessScript(12345, 'CommandLine')
+
+    expect(script).toContain('Get-CimInstance -ClassName Win32_Process')
+    expect(script).toContain('-Filter \'ProcessId = 12345\'')
+    expect(script).toContain('$process.CommandLine')
+    expect(script.toLowerCase()).not.toContain('wmic')
+  })
+
+  test('converts CIM creation time directly to epoch milliseconds', () => {
+    const script = buildWindowsCimProcessScript(12345, 'CreationDate')
+
+    expect(script).toContain('$process.CreationDate')
+    expect(script).toContain('ToUnixTimeMilliseconds()')
+  })
+
+  test('rejects invalid PIDs before constructing PowerShell source', () => {
+    expect(() => buildWindowsCimProcessScript(Number.NaN, 'CommandLine')).toThrow()
+    expect(() => buildWindowsCimProcessScript(0, 'CreationDate')).toThrow()
   })
 })

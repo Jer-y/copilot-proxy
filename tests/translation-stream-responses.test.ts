@@ -8,11 +8,50 @@ import {
 } from '../src/lib/translation'
 
 describe('Responses stream failure handling', () => {
+  test('official top-level Responses error events become Anthropic errors', () => {
+    const state = createAnthropicFromResponsesStreamState()
+
+    const events = translateResponsesStreamEventToAnthropic({
+      type: 'error',
+      code: 'server_error',
+      message: 'official stream failure',
+      param: null,
+      sequence_number: 0,
+    }, state)
+
+    expect(events).toEqual([{
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message: 'official stream failure',
+      },
+    }])
+  })
+
+  test('legacy nested Responses error events remain compatible', () => {
+    const state = createAnthropicFromResponsesStreamState()
+
+    const events = translateResponsesStreamEventToAnthropic({
+      type: 'error',
+      error: { type: 'server_error', message: 'legacy stream failure' },
+      sequence_number: 0,
+    }, state)
+
+    expect(events).toEqual([{
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message: 'legacy stream failure',
+      },
+    }])
+  })
+
   test('translateResponsesStreamEventToAnthropic emits error event on response.failed', () => {
     const state = createAnthropicFromResponsesStreamState()
 
     const events = translateResponsesStreamEventToAnthropic({
       type: 'response.failed',
+      sequence_number: 0,
       response: {
         id: 'resp_1',
         object: 'response',
@@ -35,6 +74,7 @@ describe('Responses stream failure handling', () => {
 
     const lateCompletion = translateResponsesStreamEventToAnthropic({
       type: 'response.completed',
+      sequence_number: 1,
       response: {
         id: 'resp_1',
         object: 'response',
@@ -51,6 +91,7 @@ describe('Responses stream failure handling', () => {
 
     const events = translateResponsesStreamEventToAnthropic({
       type: 'response.incomplete',
+      sequence_number: 0,
       response: {
         id: 'resp_1',
         object: 'response',
@@ -92,6 +133,7 @@ describe('Responses stream failure handling', () => {
 
     const events = translateResponsesStreamEventToAnthropic({
       type: 'response.incomplete',
+      sequence_number: 0,
       response: {
         id: 'resp_pause',
         object: 'response',
@@ -137,12 +179,16 @@ describe('Responses stream failure handling', () => {
       content_index: 0,
       item_id: 'msg_1',
       text: 'done',
+      logprobs: [],
+      sequence_number: 0,
     }
     const functionCallDoneEvent: ResponsesStreamEvent = {
       type: 'response.function_call_arguments.done',
       output_index: 1,
       item_id: 'fc_1',
       arguments: '{"ok":true}',
+      name: 'lookup',
+      sequence_number: 1,
       item: {
         type: 'function_call',
         id: 'fc_1',
@@ -166,6 +212,8 @@ describe('Responses stream failure handling', () => {
       content_index: 0,
       item_id: 'msg_1',
       delta: 'hello',
+      logprobs: [],
+      sequence_number: 0,
     }, state)
 
     expect(events).toEqual([
@@ -200,6 +248,7 @@ describe('Responses stream failure handling', () => {
 
     const events = translateResponsesStreamEventToAnthropic({
       type: 'response.completed',
+      sequence_number: 0,
       response: {
         id: 'resp_usage',
         object: 'response',

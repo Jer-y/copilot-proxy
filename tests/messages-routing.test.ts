@@ -561,7 +561,7 @@ describe('messages route upstream adaptation', () => {
     expect(url).toBe('https://api.githubcopilot.com/v1/messages')
   })
 
-  test('Claude native passthrough synthesizes message_stop when upstream stream terminates after visible text', async () => {
+  test('Claude native passthrough emits an error when upstream EOF arrives after visible text', async () => {
     fetchMock.mockImplementationOnce(async (url: string) => {
       if (!url.endsWith('/v1/messages')) {
         throw new Error(`Unexpected upstream URL: ${url}`)
@@ -596,8 +596,10 @@ describe('messages route upstream adaptation', () => {
     const body = await res.text()
     expect(body).toContain('event: content_block_delta')
     expect(body).toContain('\"text\":\"partial\"')
-    expect(body).toContain('event: content_block_stop')
-    expect(body).toContain('event: message_stop')
+    expect(body).toContain('event: error')
+    expect(body).toContain('Upstream Copilot connection terminated before the response completed.')
+    expect(body).not.toContain('event: message_stop')
+    expect(body).not.toContain('\"stop_reason\":\"end_turn\"')
     expect(body).toContain('\"model\":\"claude-opus-4-6-20250514\"')
   })
 

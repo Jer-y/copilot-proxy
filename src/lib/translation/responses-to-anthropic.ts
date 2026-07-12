@@ -49,6 +49,17 @@ export function translateResponsesResponseToAnthropic(
   response: ResponsesResponse,
   options?: { requestedModel?: string },
 ): AnthropicResponse {
+  if (response.status === 'queued' || response.status === 'in_progress' || response.status === 'cancelled') {
+    const message = `Responses status "${response.status}" cannot be represented as a completed Anthropic message.`
+    throw new JSONResponseError(message, 502, {
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message,
+      },
+    })
+  }
+
   if (response.status === 'failed') {
     throwAnthropicErrorFromFailedResponses(response)
   }
@@ -108,7 +119,11 @@ function extractAnthropicContent(
 
       case 'function_call': {
         if (item.call_id && item.name) {
-          const parsedInput = parseToolArguments(item.arguments, 'response.output[].function_call.arguments')
+          const parsedInput = parseToolArguments(
+            item.arguments,
+            'response.output[].function_call.arguments',
+            throwInvalidUpstreamToolArguments,
+          )
 
           content.push({
             type: 'tool_use',
@@ -174,7 +189,10 @@ export function translateResponsesRequestToAnthropic(
 
   const model = options?.model ?? payload.model
   const { messages, prefixSystemParts } = translateResponsesInputToAnthropicMessages(payload.input)
-  const system = buildSystemString(payload.instructions, prefixSystemParts)
+  const system = buildSystemString(
+    payload.instructions,
+    prefixSystemParts,
+  )
   const tools = translateResponsesToolsToAnthropic(payload.tools)
   const toolChoice = translateResponsesToAnthropicToolChoice(
     payload.tool_choice,
@@ -189,7 +207,7 @@ export function translateResponsesRequestToAnthropic(
     model,
     messages,
     ...(system !== undefined && { system }),
-    stream: payload.stream,
+    ...(payload.stream != null && { stream: payload.stream }),
     ...(payload.temperature != null && { temperature: payload.temperature }),
     ...(payload.top_p != null && { top_p: payload.top_p }),
     ...(payload.max_output_tokens != null && { max_tokens: payload.max_output_tokens }),
@@ -236,7 +254,11 @@ function translateResponsesInputToAnthropicMessages(
       conversationStarted = true
       // tool_use → assistant side
       flushUser()
-      const parsedInput = parseToolArguments(item.arguments, 'input[].function_call.arguments')
+      const parsedInput = parseToolArguments(
+        item.arguments,
+        'input[].function_call.arguments',
+        throwInvalidRequestError,
+      )
       pendingAssistantBlocks.push({
         type: 'tool_use',
         id: item.call_id,
@@ -253,7 +275,7 @@ function translateResponsesInputToAnthropicMessages(
       pendingUserBlocks.push({
         type: 'tool_result',
         tool_use_id: item.call_id,
-        content: rehydrateToolResultContent(item.output),
+        content: translateFunctionCallOutputContent(item.output as unknown),
         ...(isFunctionCallOutputError(item) && { is_error: true }),
       })
       continue
@@ -368,29 +390,24 @@ function flattenToString(content: ResponsesMessageInputItem['content']): string 
 function parseToolArguments(
   value: string | undefined,
   context: string,
+  onInvalid: (message: string) => never,
 ): Record<string, unknown> {
   if (!value) {
-    return {}
+    return onInvalid(`${context} must contain a JSON object; received an empty value.`)
   }
 
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(value) as unknown
-    if (isRecord(parsed)) {
-      return parsed
-    }
-    logLossyAnthropicCompatibility(
-      context,
-      'Tool arguments JSON did not parse to an object; forwarding an empty object for Anthropic compatibility.',
-    )
+    parsed = JSON.parse(value) as unknown
   }
   catch {
-    logLossyAnthropicCompatibility(
-      context,
-      'Tool arguments were not valid JSON; forwarding an empty object for Anthropic compatibility.',
-    )
+    return onInvalid(`${context} must be valid JSON encoding an object.`)
   }
 
-  return {}
+  if (isRecord(parsed)) {
+    return parsed
+  }
+  return onInvalid(`${context} must decode to a JSON object.`)
 }
 
 function stringifyUnknownContentPart(part: Record<string, unknown>): string {
@@ -403,7 +420,7 @@ function stringifyUnknownContentPart(part: Record<string, unknown>): string {
 }
 
 function buildSystemString(
-  instructions: string | undefined,
+  instructions: string | null | undefined,
   prefixSystemParts: string[],
 ): string | undefined {
   const parts = [instructions, ...prefixSystemParts].filter(Boolean) as string[]
@@ -549,7 +566,7 @@ function isResponsesFunctionTool(tool: ResponsesTool): tool is ResponsesTool & {
 
 function translateResponsesToAnthropicToolChoice(
   toolChoice: ResponsesPayload['tool_choice'],
-  parallelToolCalls: boolean | undefined,
+  parallelToolCalls: boolean | null | undefined,
 ): AnthropicMessagesPayload['tool_choice'] | undefined {
   const disableParallel = parallelToolCalls === false
 
@@ -726,6 +743,56 @@ function isMessageInputItem(item: ResponsesInputItem): item is ResponsesMessageI
  * (text, image). Returns string as-is for unknown structures to avoid sending
  * arbitrary JSON as Anthropic blocks.
  */
+function translateFunctionCallOutputContent(
+  output: unknown,
+): string | Array<AnthropicTextBlock | AnthropicImageBlock> {
+  if (typeof output === 'string') {
+    return rehydrateToolResultContent(output)
+  }
+
+  if (!Array.isArray(output)) {
+    return throwInvalidRequestError(
+      'Responses function_call_output.output must be a string or an array of input_text/input_image/input_file content parts.',
+    )
+  }
+
+  return output.map((part, index) => {
+    if (!isRecord(part) || typeof part.type !== 'string') {
+      return throwInvalidRequestError(
+        `Responses function_call_output.output[${index}] must be a typed content part.`,
+      )
+    }
+
+    switch (part.type) {
+      case 'input_text':
+        if (typeof part.text !== 'string') {
+          return throwInvalidRequestError(
+            `Responses function_call_output.output[${index}].text must be a string.`,
+          )
+        }
+        return { type: 'text' as const, text: part.text }
+
+      case 'input_image':
+        if (typeof part.file_id === 'string') {
+          return throwInvalidRequestError(
+            'Responses input_image file_id content cannot be represented on the Anthropic Messages translation path. Provide a base64 data URL instead.',
+          )
+        }
+        return translateImagePartToAnthropicBlock(part)
+
+      case 'input_file':
+        return throwInvalidRequestError(
+          'Responses input_file content cannot be represented losslessly on the Anthropic Messages translation path. Use a model routed directly through /responses.',
+        )
+
+      default:
+        return throwInvalidRequestError(
+          `Unsupported Responses function_call_output content part type "${part.type}" for anthropic-messages translation.`,
+        )
+    }
+  })
+}
+
 function rehydrateToolResultContent(output: string): string | Array<AnthropicTextBlock | AnthropicImageBlock> {
   try {
     const parsed = JSON.parse(output)
@@ -765,8 +832,13 @@ function isFunctionCallOutputError(item: ResponsesFunctionCallOutputItem): boole
     return true
   }
 
+  const output: unknown = item.output
+  if (typeof output !== 'string') {
+    return false
+  }
+
   try {
-    const parsed = JSON.parse(item.output) as unknown
+    const parsed = JSON.parse(output) as unknown
     return isRecord(parsed) && parsed.is_error === true
   }
   catch {
@@ -779,6 +851,16 @@ function throwInvalidRequestError(message: string): never {
     error: {
       message,
       type: 'invalid_request_error',
+    },
+  })
+}
+
+function throwInvalidUpstreamToolArguments(message: string): never {
+  throw new JSONResponseError(message, 502, {
+    type: 'error',
+    error: {
+      type: 'api_error',
+      message,
     },
   })
 }
@@ -902,6 +984,13 @@ export function translateResponsesStreamEventToAnthropic(
     }
 
     case 'response.output_item.done': {
+      if (event.item.type === 'function_call') {
+        parseToolArguments(
+          event.item.arguments,
+          'response.output_item.done.item.arguments',
+          throwInvalidUpstreamToolArguments,
+        )
+      }
       if (state.contentBlockOpen) {
         closeOpenAnthropicBlock(events, state)
       }
@@ -962,7 +1051,9 @@ export function translateResponsesStreamEventToAnthropic(
       closeOpenAnthropicBlock(events, state)
       events.push({
         type: 'error',
-        error: createAnthropicErrorPayloadFromResponses(event.error).error,
+        error: createAnthropicErrorPayloadFromResponses(
+          normalizeResponsesStreamError(event),
+        ).error,
       })
       state.messageStopSent = true
       break
@@ -975,6 +1066,23 @@ export function translateResponsesStreamEventToAnthropic(
   }
 
   return events
+}
+
+function normalizeResponsesStreamError(event: unknown): {
+  message: string
+  code?: string
+  type?: string
+} {
+  const eventRecord = isRecord(event) ? event : {}
+  const source = isRecord(eventRecord.error) ? eventRecord.error : eventRecord
+
+  return {
+    message: typeof source.message === 'string'
+      ? source.message
+      : 'Responses request failed',
+    ...(typeof source.code === 'string' && { code: source.code }),
+    ...(typeof source.type === 'string' && source.type !== 'error' && { type: source.type }),
+  }
 }
 
 function ensureMessageStarted(

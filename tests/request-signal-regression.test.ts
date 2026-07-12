@@ -85,6 +85,24 @@ const fetchMock = mock(async (url: string, init?: RequestInit): Promise<Response
     })
   }
 
+  if (url.endsWith('/v1/messages/count_tokens')) {
+    return new Response(JSON.stringify({ input_tokens: 8 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  if (
+    url.endsWith('/responses/input_tokens')
+    || url.endsWith('/responses/compact')
+    || url.includes('/responses/')
+  ) {
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   if (url.endsWith('/embeddings')) {
     return new Response(JSON.stringify({
       object: 'list',
@@ -261,4 +279,90 @@ describe('route request-signal regression', () => {
     expect(json.data[0]?.embedding).toEqual([0.1, 0.2])
     expectSingleUpstreamRequestIsolatedFromInboundAbort('/embeddings', inboundController)
   })
+
+  test('count_tokens does not forward the inbound request signal upstream', async () => {
+    const inboundController = new AbortController()
+    const response = await server.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: inboundController.signal,
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ input_tokens: 8 })
+    expectSingleUpstreamRequestIsolatedFromInboundAbort('/v1/messages/count_tokens', inboundController)
+  })
+
+  test('Responses input_tokens passthrough does not forward the inbound request signal upstream', async () => {
+    await expectResponsesPassthroughIsolatedFromInboundAbort(
+      '/v1/responses/input_tokens',
+      '/responses/input_tokens',
+      'POST',
+      { model: 'gpt-5.4', input: 'hi' },
+    )
+  })
+
+  test('Responses compact passthrough does not forward the inbound request signal upstream', async () => {
+    await expectResponsesPassthroughIsolatedFromInboundAbort(
+      '/v1/responses/compact',
+      '/responses/compact',
+      'POST',
+      { model: 'gpt-5.4', input: 'hi' },
+    )
+  })
+
+  test('Responses cancel passthrough does not forward the inbound request signal upstream', async () => {
+    await expectResponsesPassthroughIsolatedFromInboundAbort(
+      '/v1/responses/resp_signal/cancel',
+      '/responses/resp_signal/cancel',
+      'POST',
+    )
+  })
+
+  test('Responses input_items passthrough does not forward the inbound request signal upstream', async () => {
+    await expectResponsesPassthroughIsolatedFromInboundAbort(
+      '/v1/responses/resp_signal/input_items',
+      '/responses/resp_signal/input_items',
+      'GET',
+    )
+  })
+
+  test('Responses retrieval passthrough does not forward the inbound request signal upstream', async () => {
+    await expectResponsesPassthroughIsolatedFromInboundAbort(
+      '/v1/responses/resp_signal',
+      '/responses/resp_signal',
+      'GET',
+    )
+  })
+
+  test('Responses deletion passthrough does not forward the inbound request signal upstream', async () => {
+    await expectResponsesPassthroughIsolatedFromInboundAbort(
+      '/v1/responses/resp_signal',
+      '/responses/resp_signal',
+      'DELETE',
+    )
+  })
 })
+
+async function expectResponsesPassthroughIsolatedFromInboundAbort(
+  localPath: string,
+  upstreamPath: string,
+  method: 'GET' | 'POST' | 'DELETE',
+  body?: unknown,
+): Promise<void> {
+  const inboundController = new AbortController()
+  const response = await server.request(localPath, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    signal: inboundController.signal,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ ok: true })
+  expectSingleUpstreamRequestIsolatedFromInboundAbort(upstreamPath, inboundController)
+}

@@ -336,16 +336,8 @@ async function handleViaNativeAnthropic(
         }
       }
 
-      const finalEvents = finalizeNativeAnthropicPassthroughState(passthroughState)
-      if (finalEvents.length > 0) {
-        consola.warn('Native Anthropic stream terminated without a completion event; synthesizing Anthropic message_stop.')
-        await writeAnthropicEvents(anthropicWriter, finalEvents)
-        completed = true
-        return
-      }
-
       if (shouldEmitNativeAnthropicTerminationError(passthroughState)) {
-        consola.warn('Native Anthropic stream terminated without recoverable assistant output; returning Anthropic error event.')
+        consola.warn('Native Anthropic stream terminated without message_stop; returning an Anthropic error event.')
         await anthropicWriter.writeEvent(
           translateErrorToAnthropicErrorEvent(
             getUpstreamTerminationErrorMessage(passthroughState),
@@ -364,6 +356,7 @@ async function handleViaNativeAnthropic(
         unexpectedErrorMessage: 'An unexpected error occurred during native Anthropic stream passthrough.',
         writer: anthropicWriter,
         finalizeRecoveredEvents: () => finalizeNativeAnthropicPassthroughState(passthroughState),
+        canRecoverTermination: () => false,
         shouldEmitTerminationError: () => shouldEmitNativeAnthropicTerminationError(passthroughState),
       })
       return

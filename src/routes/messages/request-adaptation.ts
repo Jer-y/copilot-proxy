@@ -69,16 +69,6 @@ export async function createAnthropicMessagesWithThinkingSignatureRetry(
  * Mutates the payload in place.
  */
 export function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
-  const payloadWithContextManagement = payload as AnthropicMessagesPayload & {
-    context_management?: unknown
-  }
-
-  // 1. context_management - Copilot does not support this field (with or without beta flag)
-  if ('context_management' in payloadWithContextManagement) {
-    consola.debug('Stripping context_management (unsupported by Copilot backend)')
-    delete payloadWithContextManagement.context_management
-  }
-
   stripAdvisorToolsForCopilot(payload)
   normalizeLegacyDocumentTextSources(payload)
 

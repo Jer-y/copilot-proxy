@@ -7,6 +7,7 @@ import { isAnthropicServerTool } from './anthropic-tools'
 import { formatBackendApi } from './backend-api'
 import { getModelConfig } from './model-config'
 import { findModelWithFallback } from './model-utils'
+import { mapAnthropicReasoningToResponses, resolveAnthropicReasoningEffort } from './translation/anthropic-reasoning'
 import { isRecord } from './type-guards'
 
 /**
@@ -30,6 +31,18 @@ const RESPONSES_HOSTED_TOOL_REJECTION_MESSAGE
   = 'Hosted Responses tools are only supported when routing this model directly through /responses. Use a Responses-backed model or replace hosted tools with function tools.'
 const ANTHROPIC_SERVER_TOOL_REJECTION_MESSAGE
   = 'Anthropic server-side tools are only supported when routing this model directly through /v1/messages. Use a Claude model with native /v1/messages support, or replace server-side tools with custom tools that can be translated.'
+
+const ANTHROPIC_TRANSLATION_REJECTIONS = {
+  context_management: 'Anthropic context_management cannot be represented on the Responses translation path without changing conversation state. Use a model routed directly through /v1/messages.',
+  mcp_servers: 'Anthropic MCP servers cannot be represented on the Responses translation path. Use a model routed directly through /v1/messages.',
+  parallel_tool_calls: 'Anthropic disable_parallel_tool_use cannot be preserved because the selected Responses model does not support parallel_tool_calls.',
+  reasoning: 'The requested Anthropic thinking/output_config.effort cannot be preserved by the selected Responses model.',
+  server_tool_history: 'Anthropic server-tool history cannot be represented on the Responses translation path without dropping conversation state. Use a model routed directly through /v1/messages.',
+  stop_sequences: 'Anthropic stop_sequences cannot be enforced by the Responses translation path. Use a model routed directly through /v1/messages.',
+  task_budget: 'Anthropic output_config.task_budget cannot be represented on the Responses translation path. Use a model routed directly through /v1/messages.',
+  tool_choice: 'Anthropic tool_choice cannot be preserved because the selected Responses model does not support tool_choice.',
+  top_k: 'Anthropic top_k cannot be represented on the Responses translation path.',
+} as const
 
 const RESPONSES_TRANSLATION_REJECTIONS = {
   background: 'Responses background execution cannot be represented on the Anthropic Messages translation path. Use a model routed directly through /responses.',
@@ -145,7 +158,7 @@ export function assertResponsesPayloadTranslatable(
   if (payload.previous_response_id != null) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.previous_response_id)
   }
-  if (payload.background !== undefined && payload.background !== false) {
+  if (payload.background != null && payload.background !== false) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.background)
   }
   if (payload.conversation != null) {
@@ -161,7 +174,7 @@ export function assertResponsesPayloadTranslatable(
     && (!Array.isArray(payload.context_management) || payload.context_management.length > 0)) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.context_management)
   }
-  if (payload.truncation !== undefined && payload.truncation !== 'disabled') {
+  if (payload.truncation != null && payload.truncation !== 'disabled') {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.truncation)
   }
   if (payload.include != null && (!Array.isArray(payload.include) || payload.include.length > 0)) {
@@ -179,14 +192,14 @@ export function assertResponsesPayloadTranslatable(
   if (payload.text != null && !isRecord(payload.text)) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.text_config)
   }
-  if (isRecord(payload.text) && payload.text.verbosity !== undefined) {
+  if (isRecord(payload.text) && payload.text.verbosity != null) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.text_verbosity)
   }
   if (payload.reasoning != null && !isRecord(payload.reasoning)) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.reasoning_config)
   }
   if (isRecord(payload.reasoning)
-    && ((payload.reasoning.summary !== undefined && payload.reasoning.summary !== 'none')
+    && ((payload.reasoning.summary != null && payload.reasoning.summary !== 'none')
       || payload.reasoning.generate_summary != null)) {
     onLocalError(RESPONSES_TRANSLATION_REJECTIONS.reasoning_summary)
   }
@@ -206,6 +219,52 @@ export function assertMessagesPayloadTranslatable(
 ): void {
   if (payloadHasAnthropicServerTools(payload)) {
     onLocalError(ANTHROPIC_SERVER_TOOL_REJECTION_MESSAGE)
+  }
+
+  if (payload.stop_sequences && payload.stop_sequences.length > 0) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.stop_sequences)
+  }
+
+  if (payload.top_k !== undefined) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.top_k)
+  }
+
+  const payloadRecord = payload as unknown as Record<string, unknown>
+  const outputConfig = isRecord(payload.output_config)
+    ? payload.output_config as Record<string, unknown>
+    : undefined
+  if (outputConfig?.task_budget != null) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.task_budget)
+  }
+
+  const mcpServers = payloadRecord.mcp_servers
+  if (mcpServers != null && (!Array.isArray(mcpServers) || mcpServers.length > 0)) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.mcp_servers)
+  }
+
+  if (hasMeaningfulAnthropicContextManagement(payloadRecord.context_management)) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.context_management)
+  }
+
+  if (payloadHasAnthropicServerToolHistory(payload)) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.server_tool_history)
+  }
+
+  const modelConfig = getModelConfig(payload.model)
+  if (payload.tool_choice !== undefined && modelConfig.supportsToolChoice !== true) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.tool_choice)
+  }
+
+  if (payload.tool_choice?.disable_parallel_tool_use === true
+    && modelConfig.supportsParallelToolCalls !== true) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.parallel_tool_calls)
+  }
+
+  if (payload.thinking !== undefined || payload.output_config?.effort != null) {
+    const effort = resolveAnthropicReasoningEffort(payload, modelConfig)
+    if (!effort || !mapAnthropicReasoningToResponses(effort, modelConfig)) {
+      onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.reasoning)
+    }
   }
 }
 
@@ -243,6 +302,13 @@ function payloadHasInputFileParts(payload: ResponsesPayload): boolean {
       return true
     }
 
+    if (isRecord(item)
+      && item.type === 'function_call_output'
+      && Array.isArray(item.output)
+      && item.output.some(part => isRecord(part) && part.type === 'input_file')) {
+      return true
+    }
+
     if (!isRecord(item) || !Array.isArray(item.content)) {
       continue
     }
@@ -274,4 +340,37 @@ function isTranslatableResponsesToolChoice(toolChoice: ResponsesPayload['tool_ch
 
 function payloadHasAnthropicServerTools(payload: AnthropicMessagesPayload): boolean {
   return Boolean(payload.tools?.some(isAnthropicServerTool))
+}
+
+function payloadHasAnthropicServerToolHistory(payload: AnthropicMessagesPayload): boolean {
+  for (const message of payload.messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    for (const block of message.content) {
+      if (block.type === 'server_tool_use' || block.type.endsWith('_tool_result')) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+function hasMeaningfulAnthropicContextManagement(value: unknown): boolean {
+  if (value == null) {
+    return false
+  }
+
+  if (!isRecord(value)) {
+    return true
+  }
+
+  const entries = Object.entries(value)
+  if (entries.length === 0) {
+    return false
+  }
+
+  return entries.some(([key, entryValue]) => key !== 'edits' || !Array.isArray(entryValue) || entryValue.length > 0)
 }

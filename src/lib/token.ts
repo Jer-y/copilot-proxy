@@ -3,6 +3,7 @@ import type { DeviceCodeResponse } from '~/services/github/get-device-code'
 import fs from 'node:fs/promises'
 import consola from 'consola'
 
+import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { PATHS } from '~/lib/paths'
 import { getCopilotToken } from '~/services/github/get-copilot-token'
 import { getDeviceCode } from '~/services/github/get-device-code'
@@ -14,11 +15,14 @@ import { HTTPError } from './error'
 import { state } from './state'
 import { sleep } from './utils'
 
-const readGithubToken = () => fs.readFile(PATHS.GITHUB_TOKEN_PATH, 'utf8')
+const readGithubToken = async () => (await fs.readFile(PATHS.GITHUB_TOKEN_PATH, 'utf8')).trim()
 
-export async function writeGithubTokenFile(filePath: string, token: string) {
-  await fs.writeFile(filePath, token, { mode: 0o600 })
-  await fs.chmod(filePath, 0o600)
+export function writeGithubTokenFile(filePath: string, token: string): Promise<void> {
+  const normalizedToken = token.trim()
+  if (!normalizedToken)
+    throw new Error('GitHub token cannot be empty')
+  writeOwnerOnlyFileAtomically(filePath, normalizedToken)
+  return Promise.resolve()
 }
 
 function writeGithubToken(token: string) {

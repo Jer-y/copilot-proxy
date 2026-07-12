@@ -24,6 +24,8 @@ export function chatCompletionsHasExternalImageUrls(
     }
 
     for (const part of message.content) {
+      if (!part || typeof part !== 'object')
+        continue
       if (part.type !== 'image_url') {
         continue
       }
@@ -58,11 +60,13 @@ export function responsesHasExternalImageUrls(
       }
     }
 
-    if (!('content' in item) || !Array.isArray(item.content)) {
+    if (!item || typeof item !== 'object' || !('content' in item) || !Array.isArray(item.content)) {
       continue
     }
 
     for (const part of item.content) {
+      if (!part || typeof part !== 'object')
+        continue
       if (part.type !== 'input_image' && part.type !== 'image_url') {
         continue
       }

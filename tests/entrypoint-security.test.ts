@@ -10,6 +10,7 @@ describe('container entrypoint security', () => {
 
     expect(entrypoint).not.toContain('-g "$GH_TOKEN"')
     expect(entrypoint).not.toContain('--github-token')
+    expect(entrypoint).toContain('token_dir=$' + '{COPILOT_PROXY_DATA_DIR:-"$data_home/copilot-proxy"}')
     expect(entrypoint).toContain('printf \'%s\' "$github_token" > "$token_dir/github_token"')
     expect(entrypoint).toContain('chmod 600 "$token_dir/github_token"')
     expect(entrypoint).toContain('unset github_token data_home token_dir GH_TOKEN GITHUB_TOKEN')

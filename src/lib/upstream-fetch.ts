@@ -1,9 +1,12 @@
+import process from 'node:process'
+
 import { UpstreamTimeoutError } from './error'
 import {
   DEFAULT_COPILOT_BODY_TIMEOUT_MS,
   DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
   DEFAULT_GITHUB_FETCH_TIMEOUT_MS,
 } from './http-timeouts'
+import { PROXY_ENV_KEYS, resolveProxyForUrlFromEnvironment } from './proxy-environment'
 
 type FetchInput = Parameters<typeof fetch>[0]
 
@@ -20,9 +23,30 @@ export interface CopilotFetchTimeoutConfig {
 }
 
 let copilotFetchTimeoutConfig: CopilotFetchTimeoutConfig = {}
+let runtimeProxyEnvironment: NodeJS.ProcessEnv | undefined
 
 export function configureCopilotFetchTimeouts(config: CopilotFetchTimeoutConfig): void {
   copilotFetchTimeoutConfig = { ...config }
+  runtimeProxyEnvironment = config.proxyEnv
+    ? Object.fromEntries(
+        PROXY_ENV_KEYS
+          .map(key => [key, process.env[key]] as const)
+          .filter((entry): entry is [typeof PROXY_ENV_KEYS[number], string] => entry[1] !== undefined),
+      )
+    : undefined
+}
+
+export function isRuntimeProxyEnvironmentEnabled(): boolean {
+  return copilotFetchTimeoutConfig.proxyEnv === true
+}
+
+export function assertRuntimeProxyRoute(input: FetchInput): void {
+  if (!runtimeProxyEnvironment)
+    return
+  const target = describeRequest(input)
+  if (!resolveProxyForUrlFromEnvironment(target, runtimeProxyEnvironment)) {
+    throw new Error(`--proxy-env resolved a direct route for ${target}; refusing to send upstream data outside the required proxy.`)
+  }
 }
 
 export function fetchCopilot(
@@ -163,6 +187,7 @@ function fetchWithRuntimeProxy(
   input: FetchInput,
   init: RequestInit = {},
 ): Promise<Response> {
+  assertRuntimeProxyRoute(input)
   if (typeof Bun === 'undefined')
     return fetch(input, init)
 

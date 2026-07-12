@@ -1,4 +1,4 @@
-import type { AnthropicMessagesPayload } from '../src/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicResponse } from '../src/lib/translation/types'
 import type { ResponsesPayload, ResponsesResponse } from '../src/services/copilot/create-responses'
 
 import { describe, expect, test } from 'bun:test'
@@ -483,16 +483,16 @@ describe('translateAnthropicRequestToResponses', () => {
     expect(result.reasoning).toEqual({ effort: 'high' })
   })
 
-  test('Anthropic max effort is adapted to Responses xhigh', () => {
+  test('Anthropic max effort is preserved for GPT-5.6 Responses', () => {
     const payload: AnthropicMessagesPayload = {
-      model: 'gpt-5.4',
+      model: 'gpt-5.6-sol',
       max_tokens: 1024,
       messages: [{ role: 'user', content: 'Hi' }],
       output_config: { effort: 'max' },
     }
 
     const result = translateAnthropicRequestToResponses(payload)
-    expect(result.reasoning).toEqual({ effort: 'xhigh' })
+    expect(result.reasoning).toEqual({ effort: 'max' })
   })
 
   test('disabled thinking maps to Responses reasoning effort none', () => {
@@ -619,6 +619,23 @@ describe('translateAnthropicRequestToResponses', () => {
         output: 'Part one\n\nPart two',
       },
     ])
+  })
+
+  test('omitted tool_result content becomes an empty function_call_output', () => {
+    const result = translateAnthropicRequestToResponses({
+      model: 'gpt-5.4',
+      max_tokens: 64,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_empty' }],
+      }],
+    })
+
+    expect(result.input).toEqual([{
+      type: 'function_call_output',
+      call_id: 'toolu_empty',
+      output: '',
+    }])
   })
 
   test('mixed tool_result content falls back to JSON for function_call_output', () => {
@@ -1074,6 +1091,90 @@ describe('translateResponsesRequestToAnthropic', () => {
     ])
   })
 
+  test('invalid replayed function arguments are rejected instead of becoming an empty tool input', () => {
+    expect(() => translateResponsesRequestToAnthropic({
+      model: 'claude-opus-4.8',
+      store: false,
+      input: [{
+        type: 'function_call',
+        call_id: 'call_invalid',
+        name: 'noop',
+        arguments: '{not-json',
+      }],
+    })).toThrow(/must be valid JSON encoding an object/)
+  })
+
+  test('rich function_call_output text and base64 image parts become native Anthropic blocks', () => {
+    const payload = {
+      model: 'claude-opus-4.8',
+      store: false,
+      stream: null,
+      instructions: null,
+      input: [{
+        type: 'function_call_output',
+        call_id: 'toolu_rich',
+        output: [
+          { type: 'input_text', text: 'visual result' },
+          { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=' },
+        ],
+      }],
+    } as unknown as ResponsesPayload
+
+    const result = translateResponsesRequestToAnthropic(payload)
+    expect(result).not.toHaveProperty('system')
+    expect(result).not.toHaveProperty('stream')
+    expect(result.messages).toEqual([{
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'toolu_rich',
+        content: [
+          { type: 'text', text: 'visual result' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'aGVsbG8=',
+            },
+          },
+        ],
+      }],
+    }])
+  })
+
+  test('rich function_call_output input_file is rejected instead of producing an invalid Anthropic block', () => {
+    const payload = {
+      model: 'claude-opus-4.8',
+      store: false,
+      input: [{
+        type: 'function_call_output',
+        call_id: 'toolu_file',
+        output: [{ type: 'input_file', file_id: 'file_1' }],
+      }],
+    } as unknown as ResponsesPayload
+
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      /input_file/,
+    )
+  })
+
+  test('rich function_call_output image file_id is rejected with a base64 remediation', () => {
+    const payload = {
+      model: 'claude-opus-4.8',
+      store: false,
+      input: [{
+        type: 'function_call_output',
+        call_id: 'toolu_image_file',
+        output: [{ type: 'input_image', file_id: 'file_1' }],
+      }],
+    } as unknown as ResponsesPayload
+
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      /Provide a base64 data URL/,
+    )
+  })
+
   test('tool strict is forwarded to native Anthropic tools', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
@@ -1287,6 +1388,18 @@ describe('translateResponsesResponseToAnthropic', () => {
     expect(result.stop_reason).toBe('pause_turn')
   })
 
+  for (const status of ['queued', 'in_progress', 'cancelled'] as const) {
+    test(`does not report Responses status ${status} as a completed Anthropic turn`, () => {
+      expect(() => translateResponsesResponseToAnthropic({
+        id: `resp_${status}`,
+        object: 'response',
+        model: 'gpt-5.4',
+        output: [],
+        status,
+      })).toThrow(`Responses status "${status}" cannot be represented`)
+    })
+  }
+
   test('mixed text and function_call output', () => {
     const response: ResponsesResponse = {
       id: 'resp_mix',
@@ -1313,6 +1426,21 @@ describe('translateResponsesResponseToAnthropic', () => {
     expect(result.content[0]).toEqual({ type: 'text', text: 'Let me check...' })
     expect(result.content[1]).toMatchObject({ type: 'tool_use', name: 'search' })
     expect(result.stop_reason).toBe('tool_use')
+  })
+
+  test('invalid upstream function arguments fail instead of producing tool_use input={}', () => {
+    expect(() => translateResponsesResponseToAnthropic({
+      id: 'resp_invalid_args',
+      object: 'response',
+      model: 'gpt-5.4',
+      output: [{
+        type: 'function_call',
+        call_id: 'call_invalid',
+        name: 'noop',
+        arguments: '[]',
+      }],
+      status: 'completed',
+    })).toThrow(/must decode to a JSON object/)
   })
 
   test('reasoning summaries are omitted instead of replaying unsigned Anthropic thinking blocks', () => {
@@ -1363,6 +1491,31 @@ describe('translateResponsesResponseToAnthropic', () => {
 })
 
 describe('additional Anthropic ↔ Responses coverage', () => {
+  test('Anthropic thinking stays in a reasoning output item, not top-level reasoning.summary', () => {
+    const response: AnthropicResponse = {
+      id: 'msg_reasoning_contract',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4.8',
+      content: [
+        { type: 'thinking', thinking: 'Reasoning summary', signature: 'sig' },
+        { type: 'text', text: 'Final answer' },
+      ],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 4, output_tokens: 6 },
+    }
+
+    const translated = translateAnthropicResponseToResponses(response)
+
+    expect(translated.reasoning).toEqual({ effort: null, summary: null })
+    expect(translated.output).toContainEqual({
+      type: 'reasoning',
+      id: expect.stringMatching(/^rs_/),
+      summary: [{ type: 'summary_text', text: 'Reasoning summary' }],
+    })
+  })
+
   test('model override is respected for routing-aligned payloads', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -1406,6 +1559,7 @@ describe('additional Anthropic ↔ Responses coverage', () => {
     expect(result.output[0]?.content?.[0]).toEqual({
       type: 'output_text',
       text: 'Paris',
+      annotations: [],
       citations: [{ type: 'char_location', start_char_index: 0, end_char_index: 5 }],
     })
   })
@@ -1434,6 +1588,13 @@ describe('additional Anthropic ↔ Responses coverage', () => {
       total_tokens: 135,
     })
     expect(result.store).toBe(false)
+    expect(result).toMatchObject({
+      temperature: 1,
+      top_p: 1,
+      parallel_tool_calls: true,
+      tool_choice: 'auto',
+      tools: [],
+    })
   })
 
   test('streamed Anthropic cache usage is converted to inclusive Responses input tokens', () => {
@@ -1524,6 +1685,118 @@ describe('additional Anthropic ↔ Responses coverage', () => {
       output_index: 0,
       content_index: 0,
       delta: 'Paris',
+      logprobs: [],
+      sequence_number: 4,
     })
+  })
+
+  test('generated Responses stream events follow the official sequence and output contracts', () => {
+    const state = createAnthropicToResponsesStreamState()
+    const events = [
+      ...translateAnthropicStreamEventToResponses({
+        type: 'message_start',
+        message: {
+          id: 'msg_contract',
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          model: 'claude-opus-4.8',
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hello' },
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'content_block_stop',
+        index: 0,
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'content_block_start',
+        index: 1,
+        content_block: {
+          type: 'tool_use',
+          id: 'toolu_contract',
+          name: 'lookup',
+          input: {},
+        },
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'input_json_delta', partial_json: '{"id":1}' },
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'content_block_stop',
+        index: 1,
+      }, state),
+      ...translateAnthropicStreamEventToResponses({
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use', stop_sequence: null },
+        usage: { output_tokens: 8 },
+      }, state),
+      ...translateAnthropicStreamEventToResponses({ type: 'message_stop' }, state),
+    ]
+
+    expect(events.map(event => event.sequence_number)).toEqual(
+      events.map((_, index) => index),
+    )
+
+    const textEvents = events.filter(event =>
+      event.type === 'response.output_text.delta' || event.type === 'response.output_text.done')
+    expect(textEvents).toHaveLength(2)
+    expect(textEvents.every(event => event.logprobs.length === 0)).toBe(true)
+
+    const functionDone = events.find(event => event.type === 'response.function_call_arguments.done')
+    expect(functionDone).toMatchObject({
+      name: 'lookup',
+      arguments: '{"id":1}',
+    })
+
+    const completed = events.find(event => event.type === 'response.completed')
+    expect(completed).toMatchObject({
+      response: {
+        temperature: 1,
+        top_p: 1,
+        parallel_tool_calls: true,
+        tool_choice: 'auto',
+        tools: [],
+        output: [
+          {
+            type: 'message',
+            content: [{ type: 'output_text', text: 'hello', annotations: [] }],
+          },
+          {
+            type: 'function_call',
+            name: 'lookup',
+          },
+        ],
+      },
+    })
+  })
+
+  test('pre-start Anthropic errors use the official top-level Responses error event shape', () => {
+    const state = createAnthropicToResponsesStreamState()
+    const events = translateAnthropicStreamEventToResponses({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'try again later' },
+    }, state)
+
+    expect(JSON.parse(JSON.stringify(events))).toEqual([{
+      type: 'error',
+      code: 'overloaded_error',
+      message: 'try again later',
+      param: null,
+      sequence_number: 0,
+    }])
   })
 })

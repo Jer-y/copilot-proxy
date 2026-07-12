@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
-import { buildTaskXml, commitAutoStartInstall, rollbackAutoStartInstall } from '../src/daemon/platform/win32'
+import { buildTaskXml, commitAutoStartInstall, restartAutoStartService, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/win32'
+
+const WIN32_SOURCE = new URL('../src/daemon/platform/win32.ts', import.meta.url)
 
 describe('buildTaskXml', () => {
   const execPath = 'C:\\Program Files\\nodejs\\node.exe'
@@ -124,4 +127,123 @@ describe('buildTaskXml', () => {
 test('Task Scheduler install transaction helpers are safe when no install is pending', () => {
   commitAutoStartInstall()
   expect(rollbackAutoStartInstall()).toBe(true)
+})
+
+test('Task Scheduler install records rollback state before its first mutation', () => {
+  const source = readFileSync(WIN32_SOURCE, 'utf8')
+  const transactionStart = source.indexOf('pendingInstall = { previousTaskXml }')
+  const firstMutation = source.indexOf('fs.writeFileSync(xmlPath, taskXml')
+  const handledFailureClear = source.indexOf('pendingInstall = undefined', transactionStart)
+
+  expect(transactionStart).toBeGreaterThanOrEqual(0)
+  expect(transactionStart).toBeLessThan(firstMutation)
+  expect(handledFailureClear).toBeGreaterThan(firstMutation)
+})
+
+describe('uninstallAutoStart stop safety', () => {
+  test('never deletes the task when schtasks /end fails', async () => {
+    let deleteCalls = 0
+    let waitCalls = 0
+
+    const result = await uninstallAutoStart({
+      isInstalled: () => true,
+      isRunning: () => true,
+      requestGracefulStop: () => false,
+      endTask: () => { throw new Error('access denied') },
+      waitForStop: () => {
+        waitCalls++
+        return true
+      },
+      deleteTask: () => { deleteCalls++ },
+    })
+
+    expect(result).toBe(false)
+    expect(waitCalls).toBe(0)
+    expect(deleteCalls).toBe(0)
+  })
+
+  test('never deletes the task until its stopped state is confirmed', async () => {
+    let deleteCalls = 0
+
+    const result = await uninstallAutoStart({
+      isInstalled: () => true,
+      isRunning: () => true,
+      requestGracefulStop: () => false,
+      endTask: () => {},
+      waitForStop: () => false,
+      deleteTask: () => { deleteCalls++ },
+    })
+
+    expect(result).toBe(false)
+    expect(deleteCalls).toBe(0)
+  })
+
+  test('deletes only after forced stop is confirmed', async () => {
+    let installed = true
+    let endCalls = 0
+    let deleteCalls = 0
+
+    const result = await uninstallAutoStart({
+      isInstalled: () => installed,
+      isRunning: () => true,
+      requestGracefulStop: () => false,
+      endTask: () => { endCalls++ },
+      waitForStop: () => true,
+      deleteTask: () => {
+        deleteCalls++
+        installed = false
+      },
+    })
+
+    expect(result).toBe(true)
+    expect(endCalls).toBe(1)
+    expect(deleteCalls).toBe(1)
+  })
+})
+
+describe('Task Scheduler restart stop safety', () => {
+  test('does not run a replacement when forced stop fails', () => {
+    let runCalls = 0
+    const result = restartAutoStartService({
+      isInstalled: () => true,
+      isRunning: () => true,
+      requestGracefulStop: () => false,
+      endTask: () => { throw new Error('access denied') },
+      waitForStop: () => true,
+      runTask: () => { runCalls++ },
+    })
+
+    expect(result).toBe(false)
+    expect(runCalls).toBe(0)
+  })
+
+  test('does not run a replacement until stopped state is confirmed', () => {
+    let runCalls = 0
+    const result = restartAutoStartService({
+      isInstalled: () => true,
+      isRunning: () => true,
+      requestGracefulStop: () => false,
+      endTask: () => {},
+      waitForStop: () => false,
+      runTask: () => { runCalls++ },
+    })
+
+    expect(result).toBe(false)
+    expect(runCalls).toBe(0)
+  })
+
+  test('runs exactly once after forced stop is confirmed', () => {
+    let runCalls = 0
+    const result = restartAutoStartService({
+      isInstalled: () => true,
+      isRunning: () => true,
+      requestGracefulStop: () => false,
+      endTask: () => {},
+      waitForStop: () => true,
+      runTask: () => { runCalls++ },
+    })
+
+    expect(result).toBe(true)
+    expect(runCalls).toBe(1)
+  })
 })

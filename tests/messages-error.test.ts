@@ -174,6 +174,181 @@ describe('messages error paths', () => {
     expect(result.success).toBe(true)
   })
 
+  test('official rich and omitted tool_result content is accepted for native passthrough', () => {
+    const result = AnthropicMessagesPayloadSchema.parse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_empty',
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_rich',
+            content: [
+              { type: 'text', text: 'plain text' },
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+              },
+              {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+              },
+              {
+                type: 'search_result',
+                source: 'https://example.com',
+                title: 'Example',
+                content: [{ type: 'text', text: 'Search excerpt' }],
+                citations: { enabled: true },
+              },
+              { type: 'tool_reference', tool_name: 'deferred_tool' },
+            ],
+          },
+        ],
+      }],
+    })
+
+    const message = result.messages[0] as unknown as {
+      role: string
+      content: Array<Record<string, unknown>>
+    }
+    expect(message.role).toBe('user')
+    expect(message.content[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'toolu_empty',
+    })
+    expect(message.content[1]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_rich',
+    })
+    const richContent = message.content[1].content as Array<Record<string, unknown>>
+    expect(richContent).toContainEqual({
+      type: 'search_result',
+      source: 'https://example.com',
+      title: 'Example',
+      content: [{ type: 'text', text: 'Search excerpt' }],
+      citations: { enabled: true },
+    })
+    expect(richContent).toContainEqual({
+      type: 'tool_reference',
+      tool_name: 'deferred_tool',
+    })
+  })
+
+  test('official nullable Anthropic request fields pass native schema validation', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      cache_control: null,
+      metadata: { user_id: null },
+      system: [{ type: 'text', text: 'policy', cache_control: null }],
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_nullable',
+          cache_control: null,
+          content: [{
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+            title: null,
+            context: null,
+            citations: null,
+            cache_control: null,
+          }],
+        }],
+      }],
+      tools: [{
+        name: 'noop',
+        input_schema: { type: 'object' },
+        cache_control: null,
+      }],
+      output_config: {
+        effort: null,
+        format: null,
+        task_budget: null,
+      },
+    })
+
+    expect(result.success).toBe(true)
+  })
+
+  test('official mcp_toolset and task_budget shapes are accepted for native upstream validation', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Use the configured MCP tools.' }],
+      tools: [{
+        type: 'mcp_toolset',
+        mcp_server_name: 'internal-tools',
+        default_config: { enabled: true, defer_loading: true },
+        configs: { lookup: { enabled: false } },
+      }],
+      output_config: {
+        task_budget: { type: 'tokens', total: 20_000, remaining: 18_000 },
+      },
+    })
+
+    expect(result.success).toBe(true)
+  })
+
+  test('mcp_toolset still requires the official mcp_server_name field', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Use MCP.' }],
+      tools: [{ type: 'mcp_toolset' }],
+    })
+
+    expect(result.success).toBe(false)
+  })
+
+  test('native passthrough forwards context_management and mcp_toolset for upstream capability truth', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'compact-2026-01-12,mcp-client-2025-11-20',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4.8',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'Use MCP.' }],
+        context_management: {
+          edits: [{ type: 'compact_20260112', pause_after_compaction: true }],
+        },
+        tools: [{
+          type: 'mcp_toolset',
+          mcp_server_name: 'internal-tools',
+          default_config: { enabled: true },
+        }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(forwarded.context_management).toEqual({
+      edits: [{ type: 'compact_20260112', pause_after_compaction: true }],
+    })
+    expect(forwarded.tools).toEqual([{
+      type: 'mcp_toolset',
+      mcp_server_name: 'internal-tools',
+      default_config: { enabled: true },
+    }])
+  })
+
   test('server block fallback does not accept malformed standard assistant blocks', () => {
     const result = AnthropicMessagesPayloadSchema.safeParse({
       model: 'claude-opus-4.8',

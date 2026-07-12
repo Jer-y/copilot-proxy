@@ -778,6 +778,52 @@ describe('expandDocumentBlocks', () => {
     expect(fetchMock).toHaveBeenCalledTimes(0)
   })
 
+  test('rejects IPv6 transition addresses that can encapsulate IPv4 targets', async () => {
+    enableDocumentUrlFetch()
+    const fetchMock = mockDocumentFetch(async () => new Response('should not fetch'))
+
+    for (const address of [
+      '64:ff9b::7f00:1',
+      '64:ff9b:1::7f00:1',
+      '2002:7f00:1::',
+      '2001:0000:4136:e378:8000:63bf:80ff:fffe',
+      'fec0::1',
+    ]) {
+      restoreDocumentResolver?.()
+      restoreDocumentResolver = setDocumentUrlResolverForTesting(async () => [{
+        address,
+        family: 6,
+      }])
+      const payload = makePayload([{
+        role: 'user',
+        content: [{
+          type: 'document',
+          source: { type: 'url', url: 'https://public.example/doc.txt' },
+        }],
+      }])
+
+      await expect(expandDocumentBlocks(payload)).rejects.toThrow('resolves to a blocked address')
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+  })
+
+  test('limits the number of locally expanded documents per request', async () => {
+    const payload = makePayload([{
+      role: 'user',
+      content: Array.from({ length: 17 }, (_, index) => ({
+        type: 'document' as const,
+        source: {
+          type: 'text' as const,
+          media_type: 'text/plain',
+          data: `document-${index}`,
+        },
+      })),
+    }])
+
+    await expect(expandDocumentBlocks(payload)).rejects.toThrow('at most 16 document blocks')
+  })
+
   test('re-checks redirect targets before following private resolved addresses', async () => {
     enableDocumentUrlFetch()
     mockDocumentResolver({

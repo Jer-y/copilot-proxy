@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import consola from 'consola'
+import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { PATHS } from '~/lib/paths'
 import { DEFAULT_HOST } from '~/lib/security'
 
@@ -82,15 +83,12 @@ export function mergeDaemonConfigWithExplicitFlags(
   return merged
 }
 
-export function saveDaemonConfig(config: DaemonConfig): void {
+export function saveDaemonConfig(
+  config: DaemonConfig,
+  filePath: string = PATHS.DAEMON_JSON,
+): void {
   const { githubToken: _removed, ...safeConfig } = config
-  fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
-  fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify(safeConfig, null, 2), { mode: 0o600 })
-  // Ensure permissions are correct even if file already existed with wider perms
-  try {
-    fs.chmodSync(PATHS.DAEMON_JSON, 0o600)
-  }
-  catch {}
+  writeOwnerOnlyFileAtomically(filePath, JSON.stringify(safeConfig, null, 2))
 }
 
 export function loadDaemonConfig(): DaemonConfig | null {

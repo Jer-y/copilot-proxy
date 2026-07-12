@@ -140,6 +140,8 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
     let completed = false
+    let terminalSeen = false
+    let nextSequenceNumber = 0
     stream.onAbort(() => result.cancel?.('responses client disconnected before upstream stream completed'))
     try {
       for await (const chunk of streamBody) {
@@ -148,14 +150,21 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
         if (consola.level >= 4) {
           consola.debug('Responses streaming chunk summary:', summarizeSSEMessage(chunk as SSEMessage))
         }
-        await stream.writeSSE(chunk as SSEMessage)
+        const message = chunk as SSEMessage
+        nextSequenceNumber = getNextResponsesSequenceNumber(message, nextSequenceNumber)
+        terminalSeen ||= isTerminalResponsesSSEMessage(message)
+        await stream.writeSSE(message)
       }
-      completed = !stream.aborted
+      if (!stream.aborted && !terminalSeen) {
+        throw new Error('Copilot Responses stream terminated before a terminal response event.')
+      }
+      completed = terminalSeen && !stream.aborted
     }
     catch (error) {
       await writeOpenAIStreamError(stream, error, {
         fallbackMessage: 'An unexpected error occurred while streaming the Copilot Responses response.',
         label: 'Responses stream passthrough',
+        responsesSequenceNumber: nextSequenceNumber,
       })
     }
     finally {
@@ -291,6 +300,7 @@ async function handleViaAnthropic(
       await writeOpenAIStreamError(stream, error, {
         fallbackMessage: 'An unexpected error occurred while translating the Copilot Anthropic stream.',
         label: 'Anthropic to Responses stream translation',
+        responsesSequenceNumber: streamState.nextSequenceNumber,
       })
     }
     finally {
@@ -320,6 +330,46 @@ function summarizeSSEMessage(message: SSEMessage): Record<string, unknown> {
   return {
     event: message.event ?? 'message',
     dataChars: typeof message.data === 'string' ? message.data.length : 0,
+  }
+}
+
+function isTerminalResponsesSSEMessage(message: SSEMessage): boolean {
+  const terminalTypes = new Set([
+    'error',
+    'response.completed',
+    'response.failed',
+    'response.incomplete',
+  ])
+  if (message.event && terminalTypes.has(message.event))
+    return true
+
+  if (typeof message.data !== 'string' || message.data === '[DONE]')
+    return message.data === '[DONE]'
+
+  try {
+    const payload = JSON.parse(message.data) as { type?: unknown }
+    return typeof payload.type === 'string' && terminalTypes.has(payload.type)
+  }
+  catch {
+    return false
+  }
+}
+
+function getNextResponsesSequenceNumber(message: SSEMessage, current: number): number {
+  if (typeof message.data !== 'string' || message.data === '[DONE]') {
+    return current
+  }
+
+  try {
+    const payload = JSON.parse(message.data) as { sequence_number?: unknown }
+    return typeof payload.sequence_number === 'number'
+      && Number.isSafeInteger(payload.sequence_number)
+      && payload.sequence_number >= current
+      ? payload.sequence_number + 1
+      : current
+  }
+  catch {
+    return current
   }
 }
 

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   normalizeAnthropicModelName,
   sanitizeAnthropicBetaHeader,
+  toAnthropicClientModelName,
 } from '../src/routes/messages/model-normalization'
 
 describe('Anthropic model normalization', () => {
@@ -24,6 +25,12 @@ describe('Anthropic model normalization', () => {
   test('leaves unknown and non-Claude models unchanged', () => {
     expect(normalizeAnthropicModelName('some-unknown-model')).toBe('some-unknown-model')
     expect(normalizeAnthropicModelName('gpt-5.3-codex')).toBe('gpt-5.3-codex')
+  })
+
+  test('uses official hyphenated Claude IDs for generated client configuration', () => {
+    expect(toAnthropicClientModelName('claude-opus-4.8')).toBe('claude-opus-4-8')
+    expect(toAnthropicClientModelName('claude-sonnet-5')).toBe('claude-sonnet-5')
+    expect(toAnthropicClientModelName('gpt-5.6-sol')).toBe('gpt-5.6-sol')
   })
 })
 

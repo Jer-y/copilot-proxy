@@ -3,7 +3,9 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 
 import consola from 'consola'
+import { assertProxyEndpointAvailable } from './daemon/service-env'
 import { ensurePaths } from './lib/paths'
+import { initializeNodeHttpClient } from './lib/proxy'
 import { setupGitHubToken } from './lib/token'
 import {
   getCopilotUsage,
@@ -15,7 +17,17 @@ export const checkUsage = defineCommand({
     name: 'check-usage',
     description: 'Show current GitHub Copilot usage/quota information',
   },
-  async run() {
+  args: {
+    'proxy-env': {
+      type: 'boolean',
+      default: false,
+      description: 'Use HTTP(S)_PROXY/NO_PROXY environment variables for GitHub requests',
+    },
+  },
+  async run({ args }) {
+    if (args['proxy-env'])
+      assertProxyEndpointAvailable(process.env, ['https://api.github.com'])
+    initializeNodeHttpClient({ proxyEnv: args['proxy-env'] })
     await ensurePaths()
     await setupGitHubToken()
     try {

@@ -251,7 +251,7 @@ Copilot API now uses a subcommand structure with these main commands:
 - `logs`: View native service logs where supported, or fall back to legacy daemon logs. Use `-f` to follow in real time.
 - `enable`: Register the proxy as a native auto-start service (systemd/launchd/Task Scheduler) that runs foreground `start`. Linux requires systemd user lingering for logged-out startup.
 - `disable`: Remove the auto-start service registration.
-- `auth`: Run GitHub authentication flow without starting the server. This is typically used if you need to generate a token for use with the `--github-token` option, especially in non-interactive environments.
+- `auth`: Run GitHub authentication flow without starting the server. In non-interactive environments, `--github-token` can persist an existing token once; it intentionally exits, after which you start again without the secret argument.
 - `check-usage`: Show your current GitHub Copilot usage and quota information directly in the terminal (no server required).
 - `debug`: Display diagnostic information including version, runtime details, file paths, and authentication status. Useful for troubleshooting and support.
 
@@ -273,7 +273,7 @@ The following command line options are available for the `start` command:
 | --headers-timeout-ms | Upstream HTTP response headers timeout in milliseconds (`0` disables timeout) | auto*  | none  |
 | --body-timeout-ms | Upstream HTTP response body timeout in milliseconds (`0` disables timeout) | auto*      | none  |
 | --connect-timeout-ms | Upstream HTTP connect timeout in milliseconds (`0` disables timeout) | auto*      | none  |
-| --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none       | -g    |
+| --github-token | Persist a GitHub token to the owner-only token file, then exit; rerun `start` without this flag | none       | -g    |
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
@@ -387,8 +387,9 @@ npx @jer-y/copilot-proxy@latest start --rate-limit 30
 # Wait instead of error when rate limit is hit
 npx @jer-y/copilot-proxy@latest start --rate-limit 30 --wait
 
-# Provide GitHub token directly
+# Persist a GitHub token, then start without the secret argument
 npx @jer-y/copilot-proxy@latest start --github-token ghp_YOUR_TOKEN_HERE
+npx @jer-y/copilot-proxy@latest start
 
 # Run only the auth flow
 npx @jer-y/copilot-proxy@latest auth

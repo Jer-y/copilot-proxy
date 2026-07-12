@@ -22,15 +22,19 @@ function makePayload(
 }
 
 describe('sanitizeForCopilotBackend', () => {
-  test('strips unsupported native passthrough context_management', () => {
+  test('preserves native context_management for Copilot upstream capability truth', () => {
     const payload = makePayload() as AnthropicMessagesPayload & {
-      context_management?: { clear_function_results?: boolean }
+      context_management?: { edits?: Array<{ type: string }> }
     }
-    payload.context_management = { clear_function_results: true }
+    payload.context_management = {
+      edits: [{ type: 'clear_tool_uses_20250919' }],
+    }
 
     sanitizeForCopilotBackend(payload)
 
-    expect('context_management' in payload).toBe(false)
+    expect(payload.context_management).toEqual({
+      edits: [{ type: 'clear_tool_uses_20250919' }],
+    })
   })
 
   test('flattens legacy json_schema.schema and strips Responses-only metadata', () => {

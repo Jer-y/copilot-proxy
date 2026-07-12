@@ -250,7 +250,7 @@ Copilot API 使用子命令结构，主要命令如下：
 - `logs`：查看原生服务日志；如果当前平台不支持或没有原生服务，则回退查看旧守护进程日志。使用 `-f` 实时跟踪。
 - `enable`：注册为原生系统自启动服务（systemd / launchd / 任务计划程序），服务中运行前台 `start`。Linux 需要 systemd user lingering 才能在未登录时启动。
 - `disable`：移除自启动服务注册。
-- `auth`：仅进行 GitHub 认证，不启动服务，常用于生成 `--github-token`（CI/CD 场景）。
+- `auth`：仅进行 GitHub 认证，不启动服务。非交互环境可用 `--github-token` 一次性安全写入现有 token；该命令会主动退出，随后需不带敏感参数再次启动。
 - `check-usage`：直接查看 Copilot 使用量/配额（无需启动服务）。
 - `debug`：输出诊断信息，包括版本、运行环境、路径与认证状态。
 
@@ -270,7 +270,7 @@ Copilot API 使用子命令结构，主要命令如下：
 | --headers-timeout-ms | upstream 响应头超时（毫秒，`0` 表示禁用）                         | 自动*       | 无   |
 | --body-timeout-ms | upstream 响应体超时（毫秒，`0` 表示禁用）                           | 自动*       | 无   |
 | --connect-timeout-ms | upstream 建连超时（毫秒，`0` 表示禁用）                           | 自动*       | 无   |
-| --github-token | 直接传入 GitHub token（需通过 `auth` 命令生成）                         | 无          | -g   |
+| --github-token | 将 GitHub token 写入仅属主可读的 token 文件后退出；随后不带此参数重新运行 `start` | 无          | -g   |
 | --claude-code  | 生成 Claude Code 配置命令                                               | false       | -c   |
 | --show-token   | 在获取/刷新时显示 GitHub/Copilot token                                 | false       | 无   |
 | --proxy-env    | 从环境变量初始化代理（HTTP_PROXY/HTTPS_PROXY 等）                      | false       | 无   |
@@ -380,8 +380,9 @@ npx @jer-y/copilot-proxy@latest start --rate-limit 30
 # 触发限流时等待
 npx @jer-y/copilot-proxy@latest start --rate-limit 30 --wait
 
-# 直接传入 GitHub token
+# 一次性写入 GitHub token，然后不带敏感参数启动
 npx @jer-y/copilot-proxy@latest start --github-token ghp_YOUR_TOKEN_HERE
+npx @jer-y/copilot-proxy@latest start
 
 # 仅认证
 npx @jer-y/copilot-proxy@latest auth

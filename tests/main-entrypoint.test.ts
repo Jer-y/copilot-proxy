@@ -58,4 +58,43 @@ describe('CLI entrypoint', () => {
       fs.rmSync(dataDir, { force: true, recursive: true })
     }
   })
+
+  test('persists --github-token and exits promptly before any long-lived start', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-main-token-'))
+    const token = 'ghu_main_argv_secret'
+
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.resolve('src/main.ts'),
+          'start',
+          '--github-token',
+          token,
+          '--help',
+          '--_data-dir',
+          dataDir,
+        ],
+        {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 10_000,
+        },
+      )
+
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(1)
+      expect(result.stdout).not.toContain(token)
+      expect(result.stderr).not.toContain(token)
+      expect(result.stderr).toContain('Rerun `copilot-proxy start` without --github-token')
+      const tokenPath = path.join(dataDir, 'github_token')
+      expect(fs.readFileSync(tokenPath, 'utf8')).toBe(token)
+      if (process.platform !== 'win32')
+        expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o600)
+    }
+    finally {
+      fs.rmSync(dataDir, { force: true, recursive: true })
+    }
+  })
 })

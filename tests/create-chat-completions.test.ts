@@ -12,11 +12,11 @@ state.accountType = 'individual'
 
 // Helper to mock fetch
 const fetchMock = mock(
-  (_url: string, opts: { headers: Record<string, string> }) => {
+  (_url: string, _opts: { headers: Record<string, string> }) => {
     return {
       ok: true,
-      json: () => ({ id: '123', object: 'chat.completion', choices: [] }),
-      headers: opts.headers,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: () => JSON.stringify({ id: '123', object: 'chat.completion', model: 'gpt-test', choices: [] }),
     }
   },
 )

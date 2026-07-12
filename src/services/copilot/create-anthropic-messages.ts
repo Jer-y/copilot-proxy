@@ -175,6 +175,11 @@ function isAnthropicResponse(value: unknown): value is AnthropicResponse {
     && typeof response.id === 'string'
     && typeof response.model === 'string'
     && Array.isArray(response.content)
+    && response.content.every(block => Boolean(
+      block
+      && typeof block === 'object'
+      && typeof (block as { type?: unknown }).type === 'string',
+    ))
     && typeof usage === 'object'
     && usage !== null
     && typeof usage.input_tokens === 'number'

@@ -1,13 +1,16 @@
+import type { ChildProcess } from 'node:child_process'
 import type { DaemonConfig } from '~/daemon/config'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import process from 'node:process'
 
 import consola from 'consola'
+import { readFileSnapshot, restoreFileSnapshot, writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { saveDaemonConfig } from '~/daemon/config'
 import { ensureDaemonLogFile, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
-import { isDaemonRunning, removePidFile, writePid } from '~/daemon/pid'
-import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
+import { probeCopilotProxyServer } from '~/daemon/native-service'
+import { isDaemonRunning, readPid, removePidFile } from '~/daemon/pid'
+import { buildNativeServiceEnvironment, loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
 import { PATHS } from '~/lib/paths'
 import { checkPortAvailable, isPortInUseError } from '~/lib/port'
 
@@ -161,7 +164,10 @@ function ensureLock(): void {
 
 export async function daemonStart(
   config: DaemonConfig,
-  options: { usePersistedEnvironment?: boolean } = {},
+  options: {
+    usePersistedEnvironment?: boolean
+    preparedEnvironment?: NodeJS.ProcessEnv
+  } = {},
 ): Promise<void> {
   // Acquire lock to prevent concurrent starts.
   // ensureLock() calls process.exit() before lock is held,
@@ -180,41 +186,20 @@ export async function daemonStart(
     exitWithLock(1)
   }
 
-  const daemonEnv: NodeJS.ProcessEnv = { ...process.env }
+  let daemonEnv: NodeJS.ProcessEnv
   try {
-    if (options.usePersistedEnvironment) {
-      try {
-        loadNativeServiceEnvironment({
-          proxyEnv: config.proxyEnv,
-          targetEnv: daemonEnv,
-          filePath: PATHS.DAEMON_ENV,
+    daemonEnv = options.preparedEnvironment
+      ? { ...options.preparedEnvironment }
+      : prepareDaemonEnvironment(config, {
+          usePersistedEnvironment: options.usePersistedEnvironment,
         })
-      }
-      catch (error) {
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
-          throw error
-
-        // Upgrade path for daemon.json files created before service-env.json
-        // existed. Explicit proxy mode still fails closed if the current shell
-        // cannot supply a proxy endpoint.
-        saveNativeServiceEnvironment({
-          proxyEnv: config.proxyEnv,
-          sourceEnv: daemonEnv,
-          filePath: PATHS.DAEMON_ENV,
-        })
-      }
-    }
-    else {
-      saveNativeServiceEnvironment({
-        proxyEnv: config.proxyEnv,
-        sourceEnv: daemonEnv,
-        filePath: PATHS.DAEMON_ENV,
-      })
-    }
+    // Validate a caller-provided snapshot too. This is intentionally
+    // side-effect free; persistence happens only after all preflight checks.
+    buildNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: daemonEnv })
   }
   catch (error) {
     consola.error('Cannot prepare daemon environment:', error instanceof Error ? error.message : error)
-    exitWithLock(1)
+    return exitWithLock(1)
   }
 
   // Check if already running
@@ -233,21 +218,16 @@ export async function daemonStart(
       consola.error(`Port ${config.port} is already in use`)
       exitWithLock(1)
     }
-    throw error
+    consola.error('Cannot verify daemon port availability:', error instanceof Error ? error.message : error)
+    exitWithLock(1)
   }
 
-  // Save config for restart/enable
-  saveDaemonConfig(config)
-
-  // If a github token was provided, persist it to the token file
-  // so the supervisor can use it (we don't store tokens in daemon.json)
-  if (config.githubToken) {
-    fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
-    fs.writeFileSync(PATHS.GITHUB_TOKEN_PATH, config.githubToken, { mode: 0o600 })
-    try {
-      fs.chmodSync(PATHS.GITHUB_TOKEN_PATH, 0o600)
-    }
-    catch {}
+  try {
+    persistLegacyDaemonState(config, daemonEnv)
+  }
+  catch (error) {
+    consola.error('Cannot persist daemon configuration:', error instanceof Error ? error.message : error)
+    exitWithLock(1)
   }
 
   // Resolve the executable path
@@ -257,7 +237,6 @@ export async function daemonStart(
   }
   catch (error) {
     consola.error('Failed to start daemon process:', error)
-    removePidFile()
     return exitWithLock(1)
   }
 
@@ -284,22 +263,178 @@ export async function spawnLegacySupervisor(
   if (child.pid === undefined)
     throw new Error('Supervisor process did not return a PID')
 
-  await waitForSupervisorPid(child.pid, 2_000)
-  child.unref()
-  return child.pid
+  let spawnError: Error | undefined
+  const onSpawnError = (error: Error) => {
+    spawnError = error
+  }
+  child.on('error', onSpawnError)
+
+  try {
+    await waitForSupervisorReadiness(
+      child,
+      child.pid,
+      () => isSupervisorReady(config, child.pid!),
+      { getSpawnError: () => spawnError },
+    )
+    child.unref()
+    return child.pid
+  }
+  catch (error) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGTERM')
+      }
+      catch {}
+    }
+    removePidFileIfOwned(child.pid)
+    child.unref()
+    throw error
+  }
+  finally {
+    child.off('error', onSpawnError)
+  }
 }
 
-async function waitForSupervisorPid(pid: number, timeoutMs: number): Promise<void> {
+export async function waitForSupervisorReadiness(
+  child: Pick<ChildProcess, 'exitCode' | 'signalCode'>,
+  pid: number,
+  isReady: () => boolean | Promise<boolean>,
+  options: {
+    timeoutMs?: number
+    pollIntervalMs?: number
+    requiredReadyChecks?: number
+    getSpawnError?: () => Error | undefined
+    delay?: (milliseconds: number) => Promise<void>
+  } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 30_000
+  const pollIntervalMs = options.pollIntervalMs ?? 50
+  const requiredReadyChecks = options.requiredReadyChecks ?? 2
+  const delay = options.delay ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)))
   const deadline = Date.now() + timeoutMs
+  let consecutiveReadyChecks = 0
+
   while (Date.now() < deadline) {
-    const daemon = isDaemonRunning()
-    if (daemon.running && daemon.pid === pid) {
-      return
+    const spawnError = options.getSpawnError?.()
+    if (spawnError)
+      throw spawnError
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`Supervisor process ${pid} exited before becoming ready`)
     }
-    await new Promise(resolve => setTimeout(resolve, 50))
+
+    if (await isReady()) {
+      consecutiveReadyChecks++
+      if (consecutiveReadyChecks >= requiredReadyChecks)
+        return
+    }
+    else {
+      consecutiveReadyChecks = 0
+    }
+
+    await delay(pollIntervalMs)
   }
 
-  // Fallback for very slow starts; the supervisor will rewrite this with its
-  // own stable timestamp as soon as it enters runAsSupervisor().
-  writePid(pid)
+  const spawnError = options.getSpawnError?.()
+  if (spawnError)
+    throw spawnError
+  if (child.exitCode !== null || child.signalCode !== null)
+    throw new Error(`Supervisor process ${pid} exited before becoming ready`)
+  throw new Error(`Supervisor process ${pid} did not become ready within ${timeoutMs}ms`)
+}
+
+export function prepareDaemonEnvironment(
+  config: Pick<DaemonConfig, 'proxyEnv'>,
+  options: { usePersistedEnvironment?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const daemonEnv: NodeJS.ProcessEnv = { ...process.env }
+  if (!options.usePersistedEnvironment) {
+    buildNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: daemonEnv })
+    return daemonEnv
+  }
+
+  try {
+    loadNativeServiceEnvironment({
+      proxyEnv: config.proxyEnv,
+      targetEnv: daemonEnv,
+      filePath: PATHS.DAEMON_ENV,
+    })
+  }
+  catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+      throw error
+
+    // Upgrade path for daemon.json files created before daemon-env.json.
+    // Validate the current shell snapshot now, but persist it only after
+    // daemon/port preflight succeeds.
+    buildNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: daemonEnv })
+  }
+  return daemonEnv
+}
+
+export function persistLegacyDaemonState(
+  config: DaemonConfig,
+  daemonEnv: NodeJS.ProcessEnv,
+  operations: {
+    saveEnvironment?: () => void
+    saveConfig?: () => void
+    saveToken?: (token: string) => void
+  } = {},
+): void {
+  const configSnapshot = readFileSnapshot(PATHS.DAEMON_JSON)
+  const environmentSnapshot = readFileSnapshot(PATHS.DAEMON_ENV)
+  const tokenSnapshot = config.githubToken
+    ? readFileSnapshot(PATHS.GITHUB_TOKEN_PATH)
+    : undefined
+
+  try {
+    const saveEnvironment = operations.saveEnvironment ?? (() => {
+      saveNativeServiceEnvironment({
+        proxyEnv: config.proxyEnv,
+        sourceEnv: daemonEnv,
+        filePath: PATHS.DAEMON_ENV,
+      })
+    })
+    const saveConfig = operations.saveConfig ?? (() => saveDaemonConfig(config))
+    const saveToken = operations.saveToken
+      ?? (token => writeOwnerOnlyFileAtomically(PATHS.GITHUB_TOKEN_PATH, token))
+    saveEnvironment()
+    saveConfig()
+    if (config.githubToken)
+      saveToken(config.githubToken)
+  }
+  catch (error) {
+    const restoreErrors: unknown[] = []
+    for (const [filePath, snapshot] of [
+      [PATHS.DAEMON_ENV, environmentSnapshot],
+      [PATHS.DAEMON_JSON, configSnapshot],
+      ...(config.githubToken ? [[PATHS.GITHUB_TOKEN_PATH, tokenSnapshot] as const] : []),
+    ] as const) {
+      try {
+        restoreFileSnapshot(filePath, snapshot)
+      }
+      catch (restoreError) {
+        restoreErrors.push(restoreError)
+      }
+    }
+    if (restoreErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...restoreErrors],
+        'Failed to persist daemon state and could not fully restore the previous files',
+      )
+    }
+    throw error
+  }
+}
+
+async function isSupervisorReady(config: DaemonConfig, pid: number): Promise<boolean> {
+  const daemon = isDaemonRunning()
+  if (!daemon.running || daemon.pid !== pid)
+    return false
+
+  return await probeCopilotProxyServer(config.host, config.port)
+}
+
+function removePidFileIfOwned(pid: number): void {
+  if (readPid()?.pid === pid)
+    removePidFile()
 }

@@ -44,4 +44,31 @@ describe('Anthropic reasoning helpers', () => {
     expect(effort).toBe('xhigh')
     expect(mapAnthropicReasoningToResponses(effort, modelConfig)).toEqual({ effort: 'xhigh' })
   })
+
+  test('max is preserved exactly when the Responses model advertises max', () => {
+    const modelConfig: ModelConfig = {
+      supportedApis: ['responses'],
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    }
+
+    expect(mapAnthropicReasoningToResponses('max', modelConfig)).toEqual({ effort: 'max' })
+  })
+
+  test('an exact effort is forwarded when capability metadata is unavailable', () => {
+    const modelConfig: ModelConfig = {
+      supportedApis: ['responses'],
+    }
+
+    expect(mapAnthropicReasoningToResponses('none', modelConfig)).toEqual({ effort: 'none' })
+    expect(mapAnthropicReasoningToResponses('max', modelConfig)).toEqual({ effort: 'max' })
+  })
+
+  test('an explicitly unsupported effort is not silently downgraded', () => {
+    const modelConfig: ModelConfig = {
+      supportedApis: ['responses'],
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    }
+
+    expect(mapAnthropicReasoningToResponses('max', modelConfig)).toBeUndefined()
+  })
 })

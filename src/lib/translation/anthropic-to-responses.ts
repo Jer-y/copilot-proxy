@@ -42,6 +42,16 @@ import { mapAnthropicReasoningToResponses, resolveAnthropicReasoningEffort } fro
 
 const streamCreatedAtByState = new WeakMap<AnthropicToResponsesStreamState, number>()
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, Extract<keyof T, K>> : never
+type UnsequencedResponsesStreamEvent
+  = | DistributiveOmit<Exclude<ResponsesStreamEvent, { type: 'error' }>, 'sequence_number'>
+    | {
+      type: 'error'
+      code: string | null
+      message: string
+      param: string | null
+    }
+
 function nowUnixSeconds(): number {
   return Math.floor(Date.now() / 1000)
 }
@@ -395,6 +405,9 @@ function serializeToolResultContent(
   isError: boolean,
 ): string {
   const serialize = (value: AnthropicToolResultBlock['content']): string => {
+    if (value === undefined) {
+      return ''
+    }
     if (typeof value === 'string') {
       return value
     }
@@ -502,6 +515,7 @@ export function translateAnthropicResponseToResponses(
         currentMessageParts.push({
           type: 'output_text',
           text: block.text,
+          annotations: [],
           ...(block.citations && { citations: block.citations }),
         })
         break
@@ -557,7 +571,7 @@ export function translateAnthropicResponseToResponses(
     status,
     error: null,
     incomplete_details: incomplete_details ?? null,
-    ...buildResponsesEnvelopeDefaults(output),
+    ...buildResponsesEnvelopeDefaults(),
     usage,
   }
 }
@@ -609,17 +623,21 @@ function mapAnthropicStopReasonToResponsesStatus(
   }
 }
 
-function buildResponsesEnvelopeDefaults(
-  output: Array<ResponsesOutputItem>,
-): Pick<
+function buildResponsesEnvelopeDefaults(): Pick<
   ResponsesResponse,
-  'instructions' | 'max_output_tokens' | 'previous_response_id' | 'store' | 'text' | 'reasoning' | 'metadata'
+  | 'instructions'
+  | 'max_output_tokens'
+  | 'previous_response_id'
+  | 'store'
+  | 'text'
+  | 'reasoning'
+  | 'metadata'
+  | 'temperature'
+  | 'top_p'
+  | 'parallel_tool_calls'
+  | 'tool_choice'
+  | 'tools'
 > {
-  const reasoningSummary = output
-    .filter((item): item is ResponsesOutputItem & { type: 'reasoning', summary: Array<{ type: 'summary_text', text: string }> } =>
-      item.type === 'reasoning' && Array.isArray(item.summary) && item.summary.length > 0)
-    .flatMap(item => item.summary)
-
   return {
     // Anthropic responses do not provide equivalent request-echo fields.
     // Keep a stable Responses envelope with explicit null/default values.
@@ -630,9 +648,14 @@ function buildResponsesEnvelopeDefaults(
     text: { format: { type: 'text' } },
     reasoning: {
       effort: null,
-      summary: reasoningSummary.length > 0 ? reasoningSummary : null,
+      summary: null,
     },
     metadata: {},
+    temperature: 1,
+    top_p: 1,
+    parallel_tool_calls: true,
+    tool_choice: 'auto',
+    tools: [],
   }
 }
 
@@ -645,6 +668,7 @@ export function createAnthropicToResponsesStreamState(options?: { requestedModel
     requestedModel: options?.requestedModel,
     createdSent: false,
     messageStopSent: false,
+    nextSequenceNumber: 0,
     nextOutputIndex: 0,
     currentBlockType: null,
     currentBlockIndex: -1,
@@ -674,13 +698,13 @@ export function translateAnthropicStreamEventToResponses(
   event: AnthropicStreamEventData,
   state: AnthropicToResponsesStreamState,
 ): Array<ResponsesStreamEvent> {
-  const events: Array<ResponsesStreamEvent> = []
+  const events: Array<UnsequencedResponsesStreamEvent> = []
 
   // `messageStopSent` represents any terminal client event, including a
   // response.failed/error. Ignore late upstream events after a terminal so an
   // Anthropic error can never be followed by response.completed.
   if (state.messageStopSent) {
-    return events
+    return []
   }
 
   switch (event.type) {
@@ -714,7 +738,7 @@ export function translateAnthropicStreamEventToResponses(
           item_id: messageItemId,
           output_index: state.messageOutputIndex!,
           content_index: state.contentPartIndex,
-          part: { type: 'output_text', text: '' },
+          part: { type: 'output_text', text: '', annotations: [] },
         })
         if (block.text) {
           state.hasAssistantOutput = true
@@ -724,6 +748,7 @@ export function translateAnthropicStreamEventToResponses(
             output_index: state.messageOutputIndex!,
             content_index: state.contentPartIndex,
             delta: block.text,
+            logprobs: [],
           })
         }
       }
@@ -783,6 +808,7 @@ export function translateAnthropicStreamEventToResponses(
           output_index: state.messageOutputIndex!,
           content_index: state.contentPartIndex,
           delta: event.delta.text,
+          logprobs: [],
         })
       }
       else if (state.currentBlockType === 'tool_use' && event.delta.type === 'input_json_delta') {
@@ -828,7 +854,7 @@ export function translateAnthropicStreamEventToResponses(
             output_index: tc.outputIndex,
             item_id: `fc_${tc.callId}`,
             arguments: tc.arguments,
-            item: functionCallItem,
+            name: tc.name,
           })
           events.push({
             type: 'response.output_item.done',
@@ -924,11 +950,9 @@ export function translateAnthropicStreamEventToResponses(
       else {
         events.push({
           type: 'error',
-          error: {
-            message: event.error.message,
-            type: event.error.type,
-            code: event.error.type,
-          },
+          code: event.error.type,
+          message: event.error.message,
+          param: null,
         })
       }
       state.messageStopSent = true
@@ -939,80 +963,27 @@ export function translateAnthropicStreamEventToResponses(
       break
   }
 
-  return events
+  return addResponsesSequenceNumbers(events, state)
 }
 
 export function finalizeAnthropicToResponsesStreamState(
   state: AnthropicToResponsesStreamState,
 ): Array<ResponsesStreamEvent> {
-  const events: Array<ResponsesStreamEvent> = []
+  const events: Array<UnsequencedResponsesStreamEvent> = []
   if (!state.createdSent || state.messageStopSent) {
-    return events
+    return []
   }
 
-  if (state.currentBlockType === 'tool_use') {
-    events.push(buildAnthropicStreamFailureEvent(
-      state,
-      'Copilot Anthropic upstream stream terminated before completing a tool_use block.',
-    ))
-    state.messageStopSent = true
-    return events
-  }
-
-  if (state.currentBlockType === 'thinking' && state.currentThinkingText) {
-    events.push(buildAnthropicStreamFailureEvent(
-      state,
-      'Copilot Anthropic upstream stream terminated before completing assistant output.',
-    ))
-    state.messageStopSent = true
-    return events
-  }
-
-  if (state.currentBlockType === 'text' && !state.hasAssistantOutput && state.currentPartText.length === 0) {
-    events.push(buildAnthropicStreamFailureEvent(
-      state,
-      'Copilot Anthropic upstream stream terminated before emitting assistant output.',
-    ))
-    state.messageStopSent = true
-    return events
-  }
-
-  if (state.currentBlockType === 'text') {
-    closeCurrentTextBlock(events, state)
-  }
-
-  closeMessageIfOpen(events, state)
-
-  if (!state.hasAssistantOutput) {
-    events.push(buildAnthropicStreamFailureEvent(
-      state,
-      'Copilot Anthropic upstream stream terminated before emitting assistant output.',
-    ))
-    state.messageStopSent = true
-    return events
-  }
-
-  const { status, incomplete_details } = mapAnthropicStopReasonToResponsesStatus(
-    (state.stopReason as AnthropicResponse['stop_reason']) ?? null,
-  )
-  const terminalEventType = status === 'completed'
-    ? 'response.completed'
-    : 'response.incomplete'
-  events.push({
-    type: terminalEventType,
-    response: {
-      ...buildAnthropicPartialResponse(state, status),
-      completed_at: status === 'completed' ? nowUnixSeconds() : null,
-      incomplete_details: incomplete_details ?? null,
-      usage: buildResponsesStreamUsage(state),
-    },
-  })
+  events.push(buildAnthropicStreamFailureEvent(
+    state,
+    'Copilot Anthropic upstream stream terminated before the message_stop event.',
+  ))
   state.messageStopSent = true
-  return events
+  return addResponsesSequenceNumbers(events, state)
 }
 
 function openMessageIfNeeded(
-  events: Array<ResponsesStreamEvent>,
+  events: Array<UnsequencedResponsesStreamEvent>,
   state: AnthropicToResponsesStreamState,
 ): void {
   if (state.messageItemOpen)
@@ -1037,7 +1008,7 @@ function openMessageIfNeeded(
 }
 
 function closeCurrentTextBlock(
-  events: Array<ResponsesStreamEvent>,
+  events: Array<UnsequencedResponsesStreamEvent>,
   state: AnthropicToResponsesStreamState,
 ): void {
   if (state.currentBlockType !== 'text') {
@@ -1046,20 +1017,21 @@ function closeCurrentTextBlock(
 
   const messageItemId = getCurrentMessageItemId(state)
   const text = state.currentPartText
-  state.messageParts.push({ type: 'output_text', text })
+  state.messageParts.push({ type: 'output_text', text, annotations: [] })
   events.push({
     type: 'response.output_text.done',
     item_id: messageItemId,
     output_index: state.messageOutputIndex!,
     content_index: state.contentPartIndex,
     text,
+    logprobs: [],
   })
   events.push({
     type: 'response.content_part.done',
     item_id: messageItemId,
     output_index: state.messageOutputIndex!,
     content_index: state.contentPartIndex,
-    part: { type: 'output_text', text },
+    part: { type: 'output_text', text, annotations: [] },
   })
   state.contentPartIndex++
   state.currentPartText = ''
@@ -1067,7 +1039,7 @@ function closeCurrentTextBlock(
 }
 
 function closeMessageIfOpen(
-  events: Array<ResponsesStreamEvent>,
+  events: Array<UnsequencedResponsesStreamEvent>,
   state: AnthropicToResponsesStreamState,
 ): void {
   if (!state.messageItemOpen)
@@ -1108,7 +1080,7 @@ function buildAnthropicPartialResponse(
     const currentParts = [...state.messageParts]
     // Include the current in-flight text part that hasn't been flushed yet
     if (state.currentPartText) {
-      currentParts.push({ type: 'output_text', text: state.currentPartText })
+      currentParts.push({ type: 'output_text', text: state.currentPartText, annotations: [] })
     }
     output.push({
       type: 'message',
@@ -1146,14 +1118,14 @@ function buildAnthropicPartialResponse(
     status,
     error: null,
     incomplete_details: null,
-    ...buildResponsesEnvelopeDefaults(output),
+    ...buildResponsesEnvelopeDefaults(),
   }
 }
 
 function buildAnthropicStreamFailureEvent(
   state: AnthropicToResponsesStreamState,
   message: string,
-): ResponsesStreamEvent {
+): UnsequencedResponsesStreamEvent {
   return {
     type: 'response.failed',
     response: {
@@ -1167,6 +1139,16 @@ function buildAnthropicStreamFailureEvent(
       usage: buildResponsesStreamUsage(state),
     },
   }
+}
+
+function addResponsesSequenceNumbers(
+  events: Array<UnsequencedResponsesStreamEvent>,
+  state: AnthropicToResponsesStreamState,
+): Array<ResponsesStreamEvent> {
+  return events.map(event => ({
+    ...event,
+    sequence_number: state.nextSequenceNumber++,
+  }) as ResponsesStreamEvent)
 }
 
 function buildResponsesStreamUsage(state: AnthropicToResponsesStreamState): NonNullable<ResponsesResponse['usage']> {

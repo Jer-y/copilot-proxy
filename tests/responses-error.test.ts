@@ -1,6 +1,7 @@
 import { beforeEach, expect, mock, test } from 'bun:test'
 import consola from 'consola'
 
+import { ResponsesPayloadSchema } from '../src/lib/schemas'
 import { state } from '../src/lib/state'
 import { server } from '../src/server'
 
@@ -51,6 +52,101 @@ function createErroringSSE(chunks: string[], message: string): ReadableStream<Ui
     },
   })
 }
+
+function getSSEEventData(body: string, eventName: string): Record<string, unknown> {
+  const frame = body.split('\n\n').find(part => part.split('\n').includes(`event: ${eventName}`))
+  const data = frame?.split('\n').find(line => line.startsWith('data: '))?.slice(6)
+  if (!data) {
+    throw new Error(`Missing SSE event ${eventName}`)
+  }
+  return JSON.parse(data) as Record<string, unknown>
+}
+
+test('official nullable fields and rich function outputs pass Responses request validation', () => {
+  const parsed = ResponsesPayloadSchema.safeParse({
+    model: 'gpt-5.4',
+    instructions: null,
+    stream: null,
+    input: [{
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'noop',
+      arguments: '{}',
+      status: 'incomplete',
+    }, {
+      type: 'function_call_output',
+      call_id: 'call_1',
+      status: null,
+      output: [
+        { type: 'input_text', text: 'tool text' },
+        { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=' },
+        { type: 'input_image', image_url: null, file_id: 'file_1' },
+        { type: 'input_file', file_id: 'file_1' },
+      ],
+    }],
+  })
+
+  expect(parsed.success).toBe(true)
+})
+
+test('official nullable fields and rich function outputs are forwarded on a direct Responses route', async () => {
+  let upstreamBody: Record<string, unknown> | undefined
+  fetchMock.mockImplementation(async (_url, init) => {
+    upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return new Response(JSON.stringify({
+      id: 'resp_nullable',
+      object: 'response',
+      model: 'gpt-5.4',
+      output: [],
+      status: 'completed',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: [{
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'noop',
+        arguments: '{}',
+      }, {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: [
+          { type: 'input_text', text: 'tool text' },
+          { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=' },
+        ],
+      }],
+      instructions: null,
+      stream: null,
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  expect(upstreamBody).toMatchObject({
+    instructions: null,
+    stream: null,
+    input: [{
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'noop',
+      arguments: '{}',
+    }, {
+      type: 'function_call_output',
+      call_id: 'call_1',
+      output: [
+        { type: 'input_text', text: 'tool text' },
+        { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=' },
+      ],
+    }],
+  })
+})
 
 test('/v1/responses official subroutes are forwarded to the Copilot backend', async () => {
   fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
@@ -171,7 +267,7 @@ test('/v1/responses streaming surfaces upstream stream errors as SSE error event
     return new Response(createErroringSSE([
       [
         'event: response.created',
-        'data: {"type":"response.created","response":{"id":"resp_stream_error","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
+        'data: {"type":"response.created","sequence_number":7,"response":{"id":"resp_stream_error","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
         '',
         '',
       ].join('\n'),
@@ -199,7 +295,55 @@ test('/v1/responses streaming surfaces upstream stream errors as SSE error event
   expect(body).toContain('"type":"error"')
   expect(body).toContain('"message":"stream failed"')
   expect(body).toContain('"code":"stream_error"')
-  expect(body).toContain('data: [DONE]')
+  expect(body).not.toContain('data: [DONE]')
+  expect(getSSEEventData(body, 'error')).toEqual({
+    type: 'error',
+    code: 'stream_error',
+    message: 'stream failed',
+    param: null,
+    sequence_number: 8,
+  })
+})
+
+test('/v1/responses streaming emits an error when upstream closes before a terminal event', async () => {
+  fetchMock.mockImplementation(async (url: string) => {
+    if (!url.endsWith('/responses')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+
+    return new Response([
+      'event: response.created',
+      'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_truncated","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
+      '',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  const body = await response.text()
+  expect(response.status).toBe(200)
+  expect(body).toContain('event: response.created')
+  expect(body).toContain('event: error')
+  expect(body).toContain('terminated before a terminal response event')
+  expect(body).not.toContain('data: [DONE]')
+  expect(getSSEEventData(body, 'error')).toMatchObject({
+    type: 'error',
+    code: 'stream_error',
+    param: null,
+    sequence_number: 1,
+  })
 })
 
 test('/v1/responses turns HTTP 200 error-shaped payloads into a 502', async () => {
@@ -269,7 +413,56 @@ test('/v1/responses translated Anthropic streaming surfaces upstream stream erro
   expect(body).toContain('"type":"error"')
   expect(body).toContain('"message":"anthropic stream failed"')
   expect(body).toContain('"code":"stream_error"')
-  expect(body).toContain('data: [DONE]')
+  expect(body).not.toContain('data: [DONE]')
+  expect(getSSEEventData(body, 'error')).toEqual({
+    type: 'error',
+    code: 'stream_error',
+    message: 'anthropic stream failed',
+    param: null,
+    sequence_number: 0,
+  })
+})
+
+test('/v1/responses translated Anthropic clean EOF emits response.failed without message_stop', async () => {
+  fetchMock.mockImplementation(async (url: string) => {
+    if (!url.endsWith('/v1/messages')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+
+    return new Response([
+      'event: message_start',
+      'data: {"type":"message_start","message":{"id":"msg_truncated","type":"message","role":"assistant","content":[],"model":"claude-opus-4.8","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}',
+      '',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.8',
+      store: false,
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  const body = await response.text()
+  expect(response.status).toBe(200)
+  expect(body).toContain('event: response.output_text.delta')
+  expect(body).toContain('event: response.failed')
+  expect(body).toContain('upstream_stream_terminated')
+  expect(body).not.toContain('event: response.completed')
 })
 
 test('/v1/responses rejects external image URLs locally before forwarding upstream', async () => {

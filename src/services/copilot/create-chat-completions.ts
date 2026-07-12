@@ -7,6 +7,7 @@ import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
+import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
 
 export async function createChatCompletions(
   payload: ChatCompletionsPayload,
@@ -55,17 +56,11 @@ export async function createChatCompletions(
   }
 
   if (payload.stream) {
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (contentType.includes('application/json')) {
-      const errorBody = await response.text()
-      throw new HTTPError(
-        'Copilot returned JSON instead of a chat completion event stream',
-        new Response(errorBody, {
-          status: 502,
-          headers: copyErrorResponseHeaders(response.headers),
-        }),
-      )
-    }
+    await assertEventStreamResponse(
+      response,
+      'Invalid Copilot /chat/completions streaming response',
+      { preserveJsonErrorEnvelope: true },
+    )
 
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/chat/completions',
@@ -78,20 +73,12 @@ export async function createChatCompletions(
     }
   }
 
-  const json = await response.json() as unknown
-  if (!isChatCompletionResponse(json)) {
-    // Copilot has occasionally returned an OpenAI-shaped error object with a
-    // 200 status. Treating that object as an SSE iterator hides the real error
-    // behind an "undefined is not a function" exception. A successful HTTP
-    // response without a chat completion is an invalid upstream response.
-    throw new HTTPError(
-      'Copilot returned an invalid non-streaming chat completion response',
-      new Response(JSON.stringify(json), {
-        status: 502,
-        headers: copyErrorResponseHeaders(response.headers),
-      }),
-    )
-  }
+  const json = await readValidatedJsonResponse(
+    response,
+    'Invalid Copilot /chat/completions response',
+    isChatCompletionResponse,
+    { preserveErrorEnvelope: true },
+  )
   logUpstreamRequestCompleted({
     endpoint: '/chat/completions',
     requestStartedAt,
@@ -100,19 +87,18 @@ export async function createChatCompletions(
 }
 
 function isChatCompletionResponse(value: unknown): value is ChatCompletionResponse {
-  return typeof value === 'object'
-    && value !== null
-    && Array.isArray((value as { choices?: unknown }).choices)
-}
-
-function copyErrorResponseHeaders(headers: Headers): Headers {
-  const copied = new Headers({ 'Content-Type': 'application/json' })
-  for (const name of ['retry-after', 'x-request-id']) {
-    const value = headers.get(name)
-    if (value)
-      copied.set(name, value)
-  }
-  return copied
+  if (!value || typeof value !== 'object')
+    return false
+  const response = value as Partial<ChatCompletionResponse>
+  return typeof response.id === 'string'
+    && typeof response.model === 'string'
+    && Array.isArray(response.choices)
+    && response.choices.every(choice => Boolean(
+      choice
+      && typeof choice === 'object'
+      && choice.message
+      && typeof choice.message === 'object',
+    ))
 }
 
 // Non-streaming types

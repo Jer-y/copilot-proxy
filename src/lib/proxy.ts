@@ -218,10 +218,8 @@ export function initializeNodeHttpClient(config: HttpClientConfig): void {
           const raw = origin ? get(origin.toString()) : undefined
           const proxyUrl = raw && raw.length > 0 ? raw : undefined
           if (!proxyUrl) {
-            if (origin) {
-              consola.debug(`HTTP proxy bypass: ${origin.hostname}`)
-            }
-            return (directAgent as unknown as Dispatcher).dispatch(options, handler)
+            const target = origin?.toString() ?? 'the requested upstream origin'
+            throw new Error(`--proxy-env requires a proxy route for ${target}; refusing a direct connection.`)
           }
           const agent = getOrCreateProxyAgent(proxyAgentCache, proxyUrl, agentOptions)
           let label = proxyUrl

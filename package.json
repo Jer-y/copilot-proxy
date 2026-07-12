@@ -35,8 +35,9 @@
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
+    "lint-staged": "lint-staged",
     "prepack": "npm run build",
-    "prepare": "test -d .git && simple-git-hooks || true",
+    "prepare": "simple-git-hooks",
     "release": "bumpp",
     "start": "NODE_ENV=production bun run ./src/main.ts start",
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov && bun run ./scripts/check-critical-coverage.ts",
@@ -79,7 +80,7 @@
     "yaml": "^2.8.4"
   },
   "simple-git-hooks": {
-    "pre-commit": "npx lint-staged"
+    "pre-commit": "bun run lint-staged"
   },
   "lint-staged": {
     "*": "bun run lint --fix"

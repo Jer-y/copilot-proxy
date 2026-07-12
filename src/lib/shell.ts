@@ -1,26 +1,33 @@
-import { execSync } from 'node:child_process'
+import { Buffer } from 'node:buffer'
+import { execFileSync } from 'node:child_process'
 import process from 'node:process'
 
-type ShellName = 'bash' | 'zsh' | 'fish' | 'powershell' | 'cmd' | 'sh'
+export type ShellName = 'bash' | 'zsh' | 'fish' | 'powershell' | 'pwsh' | 'cmd' | 'sh'
 type EnvVars = Record<string, string | undefined>
+
+const SAFE_ENV_NAME = /^[A-Z_]\w*$/i
 
 function getShell(): ShellName {
   const { platform, ppid, env } = process
 
   if (platform === 'win32') {
     try {
-      const command = `wmic process get ParentProcessId,Name | findstr "${ppid}"`
-      const parentProcess = execSync(command, { stdio: 'pipe' }).toString()
-
-      if (parentProcess.toLowerCase().includes('powershell.exe')) {
-        return 'powershell'
-      }
+      const parentProcess = execFileSync(
+        'powershell.exe',
+        [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          buildWindowsParentProcessNameScript(ppid),
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+      )
+      return classifyWindowsShellProcess(parentProcess)
     }
     catch {
       return 'cmd'
     }
-
-    return 'cmd'
   }
   else {
     const shellPath = env.SHELL
@@ -55,10 +62,12 @@ export function generateEnvScript(
   const filteredEnvVars = Object.entries(envVars).filter(
     ([, value]) => value !== undefined,
   ) as Array<[string, string]>
+  validateEnvVars(filteredEnvVars)
 
   let commandBlock: string
 
   switch (shell) {
+    case 'pwsh':
     case 'powershell': {
       commandBlock = filteredEnvVars
         .map(([key, value]) => `$env:${key} = ${quotePowerShell(value)}`)
@@ -66,10 +75,7 @@ export function generateEnvScript(
       break
     }
     case 'cmd': {
-      commandBlock = filteredEnvVars
-        .map(([key, value]) => `set "${key}=${value.replace(/"/g, '\\"')}"`)
-        .join(' & ')
-      break
+      return generateCmdScript(filteredEnvVars, commandToRun)
     }
     case 'fish': {
       commandBlock = filteredEnvVars
@@ -88,11 +94,9 @@ export function generateEnvScript(
   }
 
   if (commandBlock && commandToRun) {
-    const separator = shell === 'cmd'
-      ? ' & '
-      : shell === 'powershell'
-        ? '; '
-        : ' && '
+    const separator = shell === 'powershell' || shell === 'pwsh'
+      ? '; '
+      : ' && '
     return `${commandBlock}${separator}${commandToRun}`
   }
 
@@ -105,4 +109,62 @@ function quotePosix(value: string): string {
 
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, `''`)}'`
+}
+
+export function buildWindowsParentProcessNameScript(ppid: number): string {
+  if (!Number.isSafeInteger(ppid) || ppid <= 0)
+    throw new Error('Windows parent PID must be a positive safe integer')
+
+  return `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${ppid}'; if ($null -eq $process) { exit 1 }; [Console]::Out.Write([string]($process.Name))`
+}
+
+export function classifyWindowsShellProcess(processName: string): ShellName {
+  const executable = processName.trim().toLowerCase().split(/[\\/]/).at(-1)
+  if (executable === 'powershell' || executable === 'powershell.exe')
+    return 'powershell'
+  if (executable === 'pwsh' || executable === 'pwsh.exe')
+    return 'pwsh'
+  return 'cmd'
+}
+
+function validateEnvVars(envVars: Array<[string, string]>): void {
+  for (const [key, value] of envVars) {
+    if (!SAFE_ENV_NAME.test(key))
+      throw new Error(`Unsafe environment variable name: ${key}`)
+    if (value.includes('\0'))
+      throw new Error(`Environment variable ${key} contains a NUL byte`)
+  }
+}
+
+/**
+ * cmd.exe has no reliable single-pass quoting for values containing quotes,
+ * percent expansion, delayed-expansion markers, and newlines at the same time.
+ * Run an encoded PowerShell child instead: the environment is set in that
+ * process and inherited by the requested cmd command without exposing any
+ * environment value to cmd.exe's parser.
+ */
+function generateCmdScript(
+  envVars: Array<[string, string]>,
+  commandToRun: string,
+): string {
+  if (envVars.length === 0)
+    return commandToRun
+
+  if (!commandToRun) {
+    for (const [key, value] of envVars) {
+      if (/[\r\n"%!]/.test(value)) {
+        throw new Error(`Cannot safely persist environment variable ${key} in an interactive cmd session`)
+      }
+    }
+    return envVars.map(([key, value]) => `set "${key}=${value}"`).join(' & ')
+  }
+
+  const script = [
+    ...envVars.map(([key, value]) => `$env:${key} = ${quotePowerShell(value)}`),
+    `$command = ${quotePowerShell(commandToRun)}`,
+    `& $env:ComSpec '/d' '/s' '/c' $command`,
+    'exit $LASTEXITCODE',
+  ].join('; ')
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`
 }

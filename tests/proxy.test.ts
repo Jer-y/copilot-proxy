@@ -10,6 +10,7 @@ import {
   throwProxyDispatchError,
 } from '../src/lib/proxy'
 import { NETWORK_BOOTSTRAPPED_ENV } from '../src/lib/proxy-environment'
+import { fetchWithTimeout } from '../src/lib/upstream-fetch'
 
 describe('clearProxyEnvironment', () => {
   test('removes upper- and lower-case proxy variables without touching unrelated env', () => {
@@ -89,6 +90,23 @@ describe('Bun HTTP client initialization', () => {
     }
     finally {
       delete process.env.HTTPS_PROXY
+    }
+  })
+
+  test('refuses a per-request NO_PROXY bypass after Bun clears proxy credentials', async () => {
+    process.env.HTTPS_PROXY = 'http://approved.invalid:8080'
+    process.env.NO_PROXY = 'blocked.example'
+    try {
+      initializeNodeHttpClient({ proxyEnv: true })
+      await expect(fetchWithTimeout('https://blocked.example/resource', {}, {
+        timeoutMs: 100,
+        timeoutLabel: 'blocked target',
+      })).rejects.toThrow('refusing to send upstream data')
+    }
+    finally {
+      delete process.env.HTTPS_PROXY
+      delete process.env.NO_PROXY
+      initializeNodeHttpClient({ proxyEnv: false })
     }
   })
 })

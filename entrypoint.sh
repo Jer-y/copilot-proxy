@@ -7,7 +7,7 @@ set -eu
 github_token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
 if [ -n "$github_token" ]; then
   data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
-  token_dir="$data_home/copilot-proxy"
+  token_dir=${COPILOT_PROXY_DATA_DIR:-"$data_home/copilot-proxy"}
   umask 077
   mkdir -p "$token_dir"
   printf '%s' "$github_token" > "$token_dir/github_token"

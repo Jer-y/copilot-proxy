@@ -5,7 +5,9 @@ import consola from 'consola'
 import { HTTPError } from './error'
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000
+const MAX_PENDING_APPROVALS = 4
 let approvalQueue: Promise<void> = Promise.resolve()
+let pendingApprovals = 0
 
 interface ApprovalRequestContext {
   method: string
@@ -29,12 +31,22 @@ export function setApprovalRequestModel(model: unknown): void {
 }
 
 export async function awaitApproval(options?: { timeoutMs?: number }) {
+  if (pendingApprovals >= MAX_PENDING_APPROVALS) {
+    throwApprovalUnavailable('Manual approval queue is full')
+  }
+
+  pendingApprovals++
   const run = approvalQueue.then(
     () => awaitApprovalUnqueued(options),
     () => awaitApprovalUnqueued(options),
   )
   approvalQueue = run.catch(() => {})
-  return run
+  try {
+    return await run
+  }
+  finally {
+    pendingApprovals--
+  }
 }
 
 async function awaitApprovalUnqueued(options?: { timeoutMs?: number }) {

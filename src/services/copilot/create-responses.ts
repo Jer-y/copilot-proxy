@@ -126,6 +126,11 @@ function isResponsesResponse(value: unknown): value is ResponsesResponse {
     && typeof response.id === 'string'
     && typeof response.model === 'string'
     && Array.isArray(response.output)
+    && response.output.every(item => Boolean(
+      item
+      && typeof item === 'object'
+      && typeof (item as { type?: unknown }).type === 'string',
+    ))
     && (
       status === 'completed'
       || status === 'failed'
@@ -378,33 +383,33 @@ export interface ResponsesTextConfig {
     type: string
     [key: string]: unknown
   }
-  verbosity?: 'low' | 'medium' | 'high'
+  verbosity?: 'low' | 'medium' | 'high' | null
 }
 
 export interface ResponsesPayload {
   model: string
-  instructions?: string
+  instructions?: string | null
   input: string | Array<ResponsesInputItem>
   tools?: Array<ResponsesTool>
   tool_choice?: ResponsesToolChoice
   reasoning?: {
-    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-    summary?: 'auto' | 'concise' | 'detailed' | 'none'
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+    summary?: 'auto' | 'concise' | 'detailed' | 'none' | null
     generate_summary?: 'auto' | 'concise' | 'detailed' | null
   }
   text?: ResponsesTextConfig
-  parallel_tool_calls?: boolean
+  parallel_tool_calls?: boolean | null
   previous_response_id?: string | null
   store?: boolean
-  background?: boolean
-  stream?: boolean
+  background?: boolean | null
+  stream?: boolean | null
   stream_options?: {
     include_obfuscation?: boolean
   } | null
-  include?: Array<string>
+  include?: Array<string> | null
   prompt_cache_key?: string
   prompt_cache_retention?: 'in_memory' | '24h' | string | null
-  truncation?: 'auto' | 'disabled' | string
+  truncation?: 'auto' | 'disabled' | string | null
   context_management?: Array<ResponsesContextManagementItem> | null
   max_tool_calls?: number | null
   service_tier?: string | null
@@ -445,20 +450,25 @@ export interface ResponsesOtherInputItem {
 
 export interface ResponsesFunctionCallItem {
   type: 'function_call'
-  id: string
+  id?: string
   call_id: string
   name: string
   arguments: string
-  status?: 'completed' | 'in_progress'
+  status?: 'completed' | 'in_progress' | 'incomplete'
 }
 
 export interface ResponsesFunctionCallOutputItem {
   type: 'function_call_output'
   call_id: string
-  output: string
-  status?: 'completed' | 'incomplete'
+  output: string | Array<ResponsesFunctionCallOutputContent>
+  status?: 'completed' | 'incomplete' | 'in_progress'
   is_error?: boolean
 }
+
+export type ResponsesFunctionCallOutputContent
+  = | { type: 'input_text', text: string, [key: string]: unknown }
+    | { type: 'input_image', image_url?: string | null, file_id?: string | null, [key: string]: unknown }
+    | { type: 'input_file', [key: string]: unknown }
 
 export type ResponsesInputItem
   = | ResponsesMessageInputItem
@@ -497,10 +507,15 @@ export interface ResponsesResponse {
   output: Array<ResponsesOutputItem>
   text?: ResponsesTextConfig
   reasoning?: {
-    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
-    summary?: Array<{ type: 'summary_text', text: string }> | null
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
+    summary?: 'auto' | 'concise' | 'detailed' | null
   }
   metadata?: Record<string, unknown>
+  temperature?: number | null
+  top_p?: number | null
+  parallel_tool_calls?: boolean
+  tool_choice?: ResponsesToolChoice
+  tools?: Array<ResponsesTool>
   usage?: {
     input_tokens: number
     output_tokens: number
@@ -531,17 +546,20 @@ export interface ResponsesOutputItem {
 // Stream event types (discriminated union)
 
 export type ResponsesStreamEvent
-  = | { type: 'response.created', response: ResponsesResponse }
+  = (
+    | { type: 'response.created', response: ResponsesResponse }
     | { type: 'response.in_progress', response: ResponsesResponse }
     | { type: 'response.output_item.added', output_index: number, item: ResponsesOutputItem }
-    | { type: 'response.output_text.delta', output_index: number, content_index: number, delta: string, item_id?: string }
-    | { type: 'response.output_text.done', output_index: number, content_index: number, text: string, item_id?: string }
+    | { type: 'response.output_text.delta', output_index: number, content_index: number, delta: string, logprobs: Array<Record<string, unknown>>, item_id: string }
+    | { type: 'response.output_text.done', output_index: number, content_index: number, text: string, logprobs: Array<Record<string, unknown>>, item_id: string }
     | { type: 'response.function_call_arguments.delta', output_index: number, item_id: string, delta: string }
-    | { type: 'response.function_call_arguments.done', output_index: number, item_id: string, arguments: string, item?: ResponsesOutputItem }
-    | { type: 'response.content_part.added', output_index: number, content_index: number, part: Record<string, unknown>, item_id?: string }
-    | { type: 'response.content_part.done', output_index: number, content_index: number, part: Record<string, unknown>, item_id?: string }
+    | { type: 'response.function_call_arguments.done', output_index: number, item_id: string, arguments: string, name: string, item?: ResponsesOutputItem }
+    | { type: 'response.content_part.added', output_index: number, content_index: number, part: Record<string, unknown>, item_id: string }
+    | { type: 'response.content_part.done', output_index: number, content_index: number, part: Record<string, unknown>, item_id: string }
     | { type: 'response.output_item.done', output_index: number, item: ResponsesOutputItem }
     | { type: 'response.completed', response: ResponsesResponse }
     | { type: 'response.incomplete', response: ResponsesResponse }
     | { type: 'response.failed', response: ResponsesResponse }
+    | { type: 'error', code: string | null, message: string, param: string | null }
     | { type: 'error', error: ResponsesResponseError }
+  ) & { sequence_number: number }

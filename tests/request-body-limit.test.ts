@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
 import { state } from '~/lib/state'
-import { JSON_BODY_SIZE_LIMIT_ENV } from '~/lib/validate'
+import { JSON_BODY_SIZE_LIMIT_ENV, readRequestBodyChunk } from '~/lib/validate'
 import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
@@ -158,4 +158,46 @@ test('Responses passthrough subroutes size limit streaming bodies before forward
   expect(json.error.code).toBe('payload_too_large')
   expect(json.error.message).toContain('max_body_bytes=192')
   expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
+test('validation errors cap issue details instead of amplifying large arrays', async () => {
+  process.env[JSON_BODY_SIZE_LIMIT_ENV] = String(1024 * 1024)
+  const requestBody = JSON.stringify({
+    model: 'gpt-5',
+    messages: Array.from({ length: 2_000 }, () => ({})),
+  })
+
+  const response = await server.request('/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: requestBody,
+  })
+
+  const responseBody = await response.text()
+  expect(response.status).toBe(400)
+  expect(responseBody.length).toBeLessThan(8_192)
+  expect(responseBody).toContain('additional validation issue(s) omitted')
+  expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
+test('request body reads time out after a period of inactivity and cancel the reader', async () => {
+  const cancel = mock(async (_reason?: unknown): Promise<void> => {})
+  const reader = {
+    read: async () => await new Promise<never>(() => {}),
+    cancel,
+  }
+
+  const error = await readRequestBodyChunk(reader, 20).catch((error: unknown) => error)
+  expect(error).toMatchObject({
+    response: expect.objectContaining({ status: 408 }),
+  })
+  const body = await (error as { json: () => Promise<unknown> }).json() as {
+    error: { code: string, message: string, type: string }
+  }
+  expect(body.error).toMatchObject({
+    code: 'request_timeout',
+    type: 'invalid_request_error',
+  })
+  expect(body.error.message).toContain('20ms of inactivity')
+  expect(cancel).toHaveBeenCalledTimes(1)
 })

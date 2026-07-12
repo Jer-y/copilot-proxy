@@ -45,4 +45,13 @@ describe('GitHub token file permissions', () => {
     const stat = await fs.stat(tokenPath)
     expect(stat.mode & 0o777).toBe(0o600)
   })
+
+  test('token file helpers preserve a clean token without trailing whitespace', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'copilot-proxy-token-trim-'))
+    tempDirs.push(tempDir)
+    const tokenPath = path.join(tempDir, 'github_token')
+    await writeGithubTokenFile(tokenPath, 'secret-token\n')
+
+    expect(await fs.readFile(tokenPath, 'utf8')).toBe('secret-token')
+  })
 })

@@ -47,21 +47,14 @@ export function mapAnthropicReasoningToResponses(
     return undefined
   }
 
-  const supported = new Set(modelConfig.supportedReasoningEfforts ?? [])
-  if (supported.size === 0) {
+  const declaredEfforts = modelConfig.supportedReasoningEfforts
+  if (declaredEfforts !== undefined && !declaredEfforts.includes(effort)) {
     return undefined
   }
 
-  const candidates: Array<NonNullable<NonNullable<ResponsesPayload['reasoning']>['effort']>> = effort === 'max'
-    ? ['xhigh', 'high']
-    : [effort]
-
-  const resolved = candidates.find(candidate => supported.has(candidate))
-  if (!resolved) {
-    return undefined
-  }
-
-  return { effort: resolved }
+  // Current Responses upstreams accept `max` on models that advertise it, so
+  // preserve the exact verified wire value instead of downgrading to xhigh.
+  return { effort }
 }
 
 function normalizeAnthropicReasoningEffort(

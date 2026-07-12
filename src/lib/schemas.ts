@@ -8,7 +8,7 @@ const AnthropicCacheControlSchema = z.object({
 const AnthropicTextBlockSchema = z.object({
   type: z.literal('text'),
   text: z.string(),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicImageBlockSchema = z.object({
@@ -24,7 +24,7 @@ const AnthropicImageBlockSchema = z.object({
       url: z.string().min(1),
     }).passthrough(),
   ]),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicDocumentBlockSchema = z.object({
@@ -64,12 +64,29 @@ const AnthropicDocumentBlockSchema = z.object({
       file_id: z.string().min(1),
     }).passthrough(),
   ]),
-  title: z.string().optional(),
-  context: z.string().optional(),
+  title: z.string().nullable().optional(),
+  context: z.string().nullable().optional(),
+  citations: z.object({
+    enabled: z.boolean(),
+  }).passthrough().nullable().optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
+}).passthrough()
+
+const AnthropicSearchResultBlockSchema = z.object({
+  type: z.literal('search_result'),
+  source: z.string(),
+  title: z.string(),
+  content: z.array(AnthropicTextBlockSchema),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
   citations: z.object({
     enabled: z.boolean(),
   }).passthrough().optional(),
-  cache_control: AnthropicCacheControlSchema.optional(),
+}).passthrough()
+
+const AnthropicToolReferenceBlockSchema = z.object({
+  type: z.literal('tool_reference'),
+  tool_name: z.string(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicToolResultBlockSchema = z.object({
@@ -81,10 +98,12 @@ const AnthropicToolResultBlockSchema = z.object({
       AnthropicTextBlockSchema,
       AnthropicImageBlockSchema,
       AnthropicDocumentBlockSchema,
+      AnthropicSearchResultBlockSchema,
+      AnthropicToolReferenceBlockSchema,
     ])),
-  ]),
+  ]).optional(),
   is_error: z.boolean().optional(),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicToolUseBlockSchema = z.object({
@@ -92,7 +111,7 @@ const AnthropicToolUseBlockSchema = z.object({
   id: z.string(),
   name: z.string(),
   input: z.record(z.string(), z.unknown()),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicThinkingBlockSchema = z.object({
@@ -124,7 +143,7 @@ const AnthropicServerToolUseBlockSchema = z.object({
   id: z.string(),
   name: z.string(),
   input: z.record(z.string(), z.unknown()),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const STANDARD_ASSISTANT_CONTENT_BLOCK_TYPES = new Set([
@@ -181,28 +200,42 @@ const AnthropicCustomToolSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   input_schema: z.record(z.string(), z.unknown()),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicAdvisorToolSchema = z.object({
   type: z.literal('advisor_20260301'),
   name: z.string(),
   model: z.string(),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
+}).passthrough()
+
+const AnthropicMcpToolConfigSchema = z.object({
+  defer_loading: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+}).passthrough()
+
+const AnthropicMcpToolsetSchema = z.object({
+  type: z.literal('mcp_toolset'),
+  mcp_server_name: z.string(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
+  configs: z.record(z.string(), AnthropicMcpToolConfigSchema).nullable().optional(),
+  default_config: AnthropicMcpToolConfigSchema.optional(),
 }).passthrough()
 
 const AnthropicServerToolSchema = z.object({
   type: z.string().refine(
-    type => type !== 'custom' && type !== 'advisor_20260301',
-    { message: 'Typed custom/advisor tools must include their required fields' },
+    type => type !== 'custom' && type !== 'advisor_20260301' && type !== 'mcp_toolset',
+    { message: 'Typed custom/advisor/MCP toolsets must include their required fields' },
   ),
   name: z.string(),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
 const AnthropicToolSchema = z.union([
   AnthropicCustomToolSchema,
   AnthropicAdvisorToolSchema,
+  AnthropicMcpToolsetSchema,
   AnthropicServerToolSchema,
 ])
 
@@ -241,10 +274,15 @@ const AnthropicThinkingConfigSchema = z.discriminatedUnion('type', [
 ])
 
 const AnthropicOutputConfigSchema = z.object({
-  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullable().optional(),
   format: z.object({
     type: z.string(),
-  }).passthrough().optional(),
+  }).passthrough().nullable().optional(),
+  task_budget: z.object({
+    type: z.literal('tokens'),
+    total: z.number().int().positive(),
+    remaining: z.number().int().nonnegative().nullable().optional(),
+  }).passthrough().nullable().optional(),
 }).passthrough()
 
 // ─── Chat Completions (OpenAI format) ─────────────────────────────
@@ -276,13 +314,13 @@ export const AnthropicMessagesPayloadSchema = z.object({
   max_tokens: z.number().int().nonnegative().optional(),
   stream: z.boolean().optional(),
   system: z.union([z.string(), z.array(AnthropicTextBlockSchema)]).optional(),
-  cache_control: AnthropicCacheControlSchema.optional(),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
   tools: z.array(AnthropicToolSchema).optional(),
   tool_choice: AnthropicToolChoiceSchema.optional(),
   thinking: AnthropicThinkingConfigSchema.optional(),
   output_config: AnthropicOutputConfigSchema.optional(),
   metadata: z.object({
-    user_id: z.string().optional(),
+    user_id: z.string().nullable().optional(),
   }).passthrough().optional(),
   temperature: z.number().optional(),
   top_p: z.number().optional(),
@@ -308,7 +346,7 @@ const ResponsesMessageInputSchema = z.object({
 
 const ResponsesFunctionCallInputSchema = z.object({
   type: z.literal('function_call'),
-  id: z.string(),
+  id: z.string().optional(),
   call_id: z.string(),
   name: z.string(),
   arguments: z.string(),
@@ -318,8 +356,34 @@ const ResponsesFunctionCallInputSchema = z.object({
 const ResponsesFunctionCallOutputInputSchema = z.object({
   type: z.literal('function_call_output'),
   call_id: z.string(),
-  output: z.string(),
-  status: z.enum(['completed', 'incomplete']).optional(),
+  output: z.union([
+    z.string(),
+    z.array(z.discriminatedUnion('type', [
+      z.object({
+        type: z.literal('input_text'),
+        text: z.string(),
+      }).passthrough(),
+      z.object({
+        type: z.literal('input_image'),
+        image_url: z.string().nullable().optional(),
+        file_id: z.string().nullable().optional(),
+      }).passthrough().superRefine((value, ctx) => {
+        if (typeof value.image_url === 'string' || typeof value.file_id === 'string') {
+          return
+        }
+
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'input_image requires either "image_url" or "file_id"',
+          path: ['image_url'],
+        })
+      }),
+      z.object({
+        type: z.literal('input_file'),
+      }).passthrough(),
+    ])),
+  ]),
+  status: z.enum(['completed', 'incomplete', 'in_progress']).nullable().optional(),
   is_error: z.boolean().optional(),
 }).passthrough()
 
@@ -337,12 +401,12 @@ const ResponsesInputItemSchema = z.union([
 export const ResponsesPayloadSchema = z.object({
   model: z.string(),
   input: z.union([z.string(), z.array(ResponsesInputItemSchema)]),
-  instructions: z.string().optional(),
+  instructions: z.string().nullable().optional(),
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
   reasoning: z.unknown().optional(),
   text: z.unknown().optional(),
-  stream: z.boolean().optional(),
+  stream: z.boolean().nullable().optional(),
   temperature: z.number().nullable().optional(),
   top_p: z.number().nullable().optional(),
   max_output_tokens: z.number().nullable().optional(),

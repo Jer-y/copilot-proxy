@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
 import process from 'node:process'
 
@@ -75,7 +75,7 @@ function isProcessRunningWin32(pid: number): boolean {
   }
   catch {
     try {
-      const output = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+      const output = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
         stdio: 'pipe',
         encoding: 'utf8',
       }).trim()
@@ -99,10 +99,7 @@ function isOurDaemonProcess(pid: number, recordedStartTime: number): boolean {
     // Check command line
     let cmdline: string
     if (process.platform === 'win32') {
-      cmdline = execSync(
-        `wmic process where ProcessId=${pid} get CommandLine /format:list`,
-        { stdio: 'pipe', encoding: 'utf8' },
-      )
+      cmdline = queryWindowsProcessProperty(pid, 'CommandLine')
     }
     else {
       try {
@@ -143,19 +140,9 @@ function isOurDaemonProcess(pid: number, recordedStartTime: number): boolean {
 function getProcessStartTime(pid: number): number | null {
   try {
     if (process.platform === 'win32') {
-      const output = execSync(
-        `wmic process where ProcessId=${pid} get CreationDate /format:list`,
-        { stdio: 'pipe', encoding: 'utf8' },
-      )
-      // Format: CreationDate=20260302123456.123456+480 (offset is minutes from UTC)
-      const match = output.match(/CreationDate=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.\d+([+-]\d+)/)
-      if (!match)
-        return null
-      const [, y, m, d, h, min, s, offsetStr] = match
-      const offsetMinutes = Number.parseInt(offsetStr, 10)
-      // Parse as local time then adjust by the UTC offset
-      const localMs = new Date(`${y}-${m}-${d}T${h}:${min}:${s}Z`).getTime()
-      return localMs - offsetMinutes * 60 * 1000
+      const output = queryWindowsProcessProperty(pid, 'CreationDate').trim()
+      const startTime = Number(output)
+      return Number.isSafeInteger(startTime) && startTime > 0 ? startTime : null
     }
     else {
       // Linux: read /proc/<pid>/stat, field 22 is starttime in clock ticks since boot
@@ -196,6 +183,42 @@ function getProcessStartTime(pid: number): number | null {
   catch {
     return null
   }
+}
+
+type WindowsProcessProperty = 'CommandLine' | 'CreationDate'
+
+/**
+ * Build a PowerShell CIM query for the two process properties used to verify a
+ * legacy Windows daemon PID. Keeping the PID numeric and invoking PowerShell
+ * through execFileSync avoids the removed legacy management executable and
+ * cmd.exe interpolation.
+ */
+export function buildWindowsCimProcessScript(
+  pid: number,
+  property: WindowsProcessProperty,
+): string {
+  if (!Number.isSafeInteger(pid) || pid <= 0)
+    throw new Error('Windows process PID must be a positive safe integer')
+
+  const query = `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'; if ($null -eq $process) { exit 1 }; `
+  if (property === 'CommandLine')
+    return `${query}[Console]::Out.Write([string]($process.CommandLine))`
+
+  return `${query}[Console]::Out.Write([DateTimeOffset]::new($process.CreationDate).ToUnixTimeMilliseconds())`
+}
+
+function queryWindowsProcessProperty(pid: number, property: WindowsProcessProperty): string {
+  return execFileSync(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildWindowsCimProcessScript(pid, property),
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+  )
 }
 
 /**

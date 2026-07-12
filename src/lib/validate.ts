@@ -8,6 +8,17 @@ import { HTTPError } from './error'
 
 export const JSON_BODY_SIZE_LIMIT_ENV = 'COPILOT_PROXY_MAX_JSON_BODY_BYTES'
 export const DEFAULT_MAX_JSON_BODY_BYTES = 32 * 1024 * 1024
+export const JSON_BODY_READ_INACTIVITY_TIMEOUT_MS = 30_000
+const MAX_VALIDATION_ISSUES = 10
+const MAX_VALIDATION_MESSAGE_CHARS = 4_096
+
+export interface JsonBodyReader {
+  read: () => Promise<
+    | { done: true, value?: undefined }
+    | { done: false, value: Uint8Array }
+  >
+  cancel: (reason?: unknown) => Promise<void>
+}
 
 /**
  * Parse and validate the JSON body against a Zod schema.
@@ -38,9 +49,7 @@ export async function validateBody<T>(c: Context, schema: z.ZodType): Promise<T>
 
   const result = schema.safeParse(raw)
   if (!result.success) {
-    const message = result.error.issues
-      .map(i => `${i.path.join('.')}: ${i.message}`)
-      .join('; ')
+    const message = formatValidationIssues(result.error.issues)
     throw new HTTPError(
       `Request validation failed: ${message}`,
       Response.json(
@@ -54,6 +63,18 @@ export async function validateBody<T>(c: Context, schema: z.ZodType): Promise<T>
     setApprovalRequestModel(result.data.model)
 
   return result.data as T
+}
+
+function formatValidationIssues(issues: z.core.$ZodIssue[]): string {
+  const shown = issues.slice(0, MAX_VALIDATION_ISSUES)
+    .map((issue) => {
+      const path = issue.path.join('.')
+      return `${path ? `${path}: ` : ''}${issue.message}`
+    })
+    .join('; ')
+  const omitted = issues.length - Math.min(issues.length, MAX_VALIDATION_ISSUES)
+  const suffix = omitted > 0 ? `; ... ${omitted} additional validation issue(s) omitted` : ''
+  return `${shown}${suffix}`.slice(0, MAX_VALIDATION_MESSAGE_CHARS)
 }
 
 export async function readJsonBodyText(c: Context): Promise<string> {
@@ -75,7 +96,7 @@ export async function readJsonBodyText(c: Context): Promise<string> {
 
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await readRequestBodyChunk(reader)
       if (done)
         break
 
@@ -98,6 +119,42 @@ export async function readJsonBodyText(c: Context): Promise<string> {
   }
 
   return decodeUtf8Chunks(chunks, bodyBytes)
+}
+
+export async function readRequestBodyChunk(
+  reader: JsonBodyReader,
+  inactivityTimeoutMs: number = JSON_BODY_READ_INACTIVITY_TIMEOUT_MS,
+): Promise<
+  | { done: true, value?: undefined }
+  | { done: false, value: Uint8Array }
+> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          const message = `JSON request body timed out after ${inactivityTimeoutMs}ms of inactivity`
+          void reader.cancel(message).catch(() => {})
+          reject(new HTTPError(
+            message,
+            Response.json({
+              error: {
+                message,
+                type: 'invalid_request_error',
+                code: 'request_timeout',
+              },
+            }, { status: 408 }),
+          ))
+        }, inactivityTimeoutMs)
+        timeout.unref?.()
+      }),
+    ])
+  }
+  finally {
+    if (timeout)
+      clearTimeout(timeout)
+  }
 }
 
 function requireJsonContentType(c: Context): void {

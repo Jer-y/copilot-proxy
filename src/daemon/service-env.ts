@@ -1,9 +1,9 @@
 import fs from 'node:fs'
-import path from 'node:path'
 import process from 'node:process'
 
+import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { PATHS } from '~/lib/paths'
-import { hasProxyEndpointEnvironment, PROXY_ENV_KEYS } from '~/lib/proxy-environment'
+import { PROXY_ENV_KEYS, resolveProxyForUrlFromEnvironment, withoutProxyEnvironment } from '~/lib/proxy-environment'
 
 export const SERVICE_SECURITY_ENV_KEYS = [
   'COPILOT_PROXY_ALLOWED_HOSTS',
@@ -31,23 +31,48 @@ export interface NativeServiceEnvironmentOptions {
   filePath?: string
 }
 
-export function hasProxyEndpoint(env: NodeJS.ProcessEnv): boolean {
-  return hasProxyEndpointEnvironment(env)
-}
-
-export function assertProxyEndpointAvailable(env: NodeJS.ProcessEnv): void {
-  if (!hasProxyEndpoint(env)) {
+export function assertProxyEndpointAvailable(
+  env: NodeJS.ProcessEnv,
+  requiredTargets: string[] = ['https://api.github.com'],
+): void {
+  const resolvedRoutes = requiredTargets.map(target => ({
+    proxy: resolveProxyForUrlFromEnvironment(target, env),
+    target,
+  }))
+  const directTarget = resolvedRoutes.find(route => !route.proxy)?.target
+  if (directTarget) {
     throw new Error(
-      '--proxy-env requires at least one non-empty HTTP_PROXY, HTTPS_PROXY, or ALL_PROXY setting (uppercase or lowercase). Refusing to fall back to a direct connection.',
+      `--proxy-env requires HTTPS_PROXY or ALL_PROXY to route ${directTarget} (and NO_PROXY must not bypass it). Refusing to fall back to a direct connection.`,
     )
+  }
+
+  for (const route of resolvedRoutes) {
+    let proxyUrl: URL
+    try {
+      proxyUrl = new URL(route.proxy!)
+    }
+    catch {
+      throw new Error(`--proxy-env resolved an invalid proxy URL for ${route.target}. Refusing to fall back to a direct connection.`)
+    }
+    if (proxyUrl.protocol !== 'http:' && proxyUrl.protocol !== 'https:') {
+      throw new Error(`--proxy-env resolved unsupported proxy protocol ${proxyUrl.protocol} for ${route.target}. Use an HTTP(S) proxy.`)
+    }
   }
 }
 
 export function saveNativeServiceEnvironment(
   options: NativeServiceEnvironmentOptions,
 ): void {
-  const sourceEnv = options.sourceEnv ?? process.env
+  const saved = buildNativeServiceEnvironment(options)
   const filePath = options.filePath ?? PATHS.NATIVE_SERVICE_ENV
+
+  writeOwnerOnlyFileAtomically(filePath, `${JSON.stringify(saved, null, 2)}\n`)
+}
+
+export function buildNativeServiceEnvironment(
+  options: Pick<NativeServiceEnvironmentOptions, 'proxyEnv' | 'sourceEnv'>,
+): Record<string, string> {
+  const sourceEnv = options.sourceEnv ?? process.env
 
   if (options.proxyEnv)
     assertProxyEndpointAvailable(sourceEnv)
@@ -63,12 +88,7 @@ export function saveNativeServiceEnvironment(
       saved[key] = value
   }
 
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 })
-  try {
-    fs.chmodSync(filePath, 0o600)
-  }
-  catch {}
+  return saved
 }
 
 export function loadNativeServiceEnvironment(
@@ -97,6 +117,28 @@ export function loadNativeServiceEnvironment(
 
   if (options.proxyEnv)
     assertProxyEndpointAvailable(targetEnv)
+}
+
+export function buildNativeServiceBootstrapEnvironment(
+  sourceEnv: NodeJS.ProcessEnv,
+  saved: Record<string, string>,
+  options: { proxyEnv?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const env = withoutProxyEnvironment(sourceEnv)
+  for (const key of SERVICE_TLS_ENV_KEYS)
+    delete env[key]
+
+  if (options.proxyEnv)
+    assertProxyEndpointAvailable(saved)
+
+  const restoredKeys = options.proxyEnv
+    ? [...PROXY_ENV_KEYS, ...SERVICE_TLS_ENV_KEYS] as const
+    : SERVICE_TLS_ENV_KEYS
+  for (const key of restoredKeys) {
+    if (saved[key] !== undefined)
+      env[key] = saved[key]
+  }
+  return env
 }
 
 export function removeNativeServiceEnvironment(filePath: string = PATHS.NATIVE_SERVICE_ENV): void {

@@ -150,6 +150,20 @@ describe('/v1/models', () => {
     expect(body.error.message).toContain('Failed to fetch Codex bundled model catalog for 0.133.1: 404 Not Found')
   })
 
+  test('negative-caches catalog failures to avoid repeated outbound fetches', async () => {
+    fetchMock.mockImplementation(async () => new Response('missing tag', {
+      status: 404,
+      statusText: 'Not Found',
+    }))
+
+    const first = await server.request('/v1/models?client_version=0.133.99')
+    const second = await server.request('/v1/models?client_version=0.133.99')
+
+    expect(first.status).toBe(500)
+    expect(second.status).toBe(500)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   test('filters response-capable Copilot models that are missing from the bundled Codex catalog', async () => {
     state.models = {
       object: 'list',

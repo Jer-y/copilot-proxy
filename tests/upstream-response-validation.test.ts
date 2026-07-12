@@ -383,6 +383,34 @@ describe('Responses translation route safeguards', () => {
     expect(response.status).toBe(200)
     expect(upstreamBody?.reasoning).toEqual({ effort: 'high' })
   })
+
+  test('uses live tool capabilities for an unknown Responses model instead of dropping controls', async () => {
+    let upstreamBody: Record<string, unknown> | undefined
+    state.models = {
+      object: 'list',
+      data: [makeModel('mai-code-1-flash-picker')],
+    }
+    responseFactory = (_input, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return validResponsesResponse('mai-code-1-flash-picker')
+    }
+
+    const response = await post('/v1/messages', {
+      model: 'mai-code-1-flash-picker',
+      max_tokens: 32,
+      tools: [{ name: 'noop', input_schema: { type: 'object', properties: {} } }],
+      tool_choice: {
+        type: 'tool',
+        name: 'noop',
+        disable_parallel_tool_use: true,
+      },
+      messages: [{ role: 'user', content: 'Call noop.' }],
+    })
+
+    expect(response.status).toBe(200)
+    expect(upstreamBody?.tool_choice).toEqual({ type: 'function', name: 'noop' })
+    expect(upstreamBody?.parallel_tool_calls).toBe(false)
+  })
 })
 
 function makeModel(id: string): Model {
@@ -395,6 +423,7 @@ function makeModel(id: string): Model {
       supports: {
         reasoning_effort: ['low', 'medium', 'high'],
         tool_calls: true,
+        parallel_tool_calls: true,
       },
       tokenizer: 'o200k_base',
       type: 'chat',

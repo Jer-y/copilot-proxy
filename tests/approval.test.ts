@@ -78,6 +78,41 @@ describe('awaitApproval', () => {
     await second
   })
 
+  test('rejects requests beyond the bounded approval queue', async () => {
+    const resolvers: Array<(value: boolean) => void> = []
+    consola.prompt = mock(async () => await new Promise<boolean>((resolve) => {
+      resolvers.push(resolve)
+    })) as unknown as typeof consola.prompt
+    setIsTTY(process.stdin, true)
+    setIsTTY(process.stdout, true)
+
+    const admitted = Array.from({ length: 4 }, () => awaitApproval({ timeoutMs: 5_000 }))
+    await waitFor(() => resolvers.length === 1)
+
+    try {
+      const rejected = await awaitApproval({ timeoutMs: 5_000 }).catch((error: unknown) => error)
+      expect(rejected).toMatchObject({
+        response: expect.objectContaining({ status: 503 }),
+      })
+      const body = await (rejected as { json: () => Promise<unknown> }).json() as {
+        error: { code: string, message: string }
+      }
+      expect(body.error).toMatchObject({
+        code: 'manual_approval_unavailable',
+        message: 'Manual approval queue is full',
+      })
+      expect(consola.prompt).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      for (const [index, approval] of admitted.entries()) {
+        await waitFor(() => resolvers.length === index + 1)
+        resolvers[index](true)
+        await approval
+      }
+    }
+    expect(consola.prompt).toHaveBeenCalledTimes(4)
+  })
+
   test('shows bounded request context before approval', async () => {
     let message = ''
     consola.prompt = mock(async (promptMessage: string) => {

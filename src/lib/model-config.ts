@@ -236,7 +236,7 @@ const DEFAULT_CONFIG: ModelConfig = {
 export function getModelConfig(modelId: string): ModelConfig {
   // Exact match
   if (MODEL_CONFIGS[modelId]) {
-    return withLiveReasoningEfforts(modelId, MODEL_CONFIGS[modelId])
+    return withLiveModelCapabilities(modelId, MODEL_CONFIGS[modelId])
   }
 
   // Try prefix match for families (e.g., 'gpt-5.2-codex-max' matches 'gpt-5.2-codex')
@@ -245,7 +245,7 @@ export function getModelConfig(modelId: string): ModelConfig {
   )
   for (const [key, config] of entries) {
     if (hasModelConfigPrefix(modelId, key)) {
-      return withLiveReasoningEfforts(modelId, config)
+      return withLiveModelCapabilities(modelId, config)
     }
   }
 
@@ -253,7 +253,7 @@ export function getModelConfig(modelId: string): ModelConfig {
   // entries above: native /v1/messages for Anthropic clients, plus
   // chat-completions so that /chat/completions clients can still reach them.
   if (modelId.startsWith('claude')) {
-    return withLiveReasoningEfforts(modelId, {
+    return withLiveModelCapabilities(modelId, {
       supportedApis: ['anthropic-messages', 'chat-completions'],
       preferredApi: 'anthropic-messages',
       enableCacheControl: true,
@@ -261,10 +261,10 @@ export function getModelConfig(modelId: string): ModelConfig {
     })
   }
 
-  return withLiveReasoningEfforts(modelId, DEFAULT_CONFIG)
+  return withLiveModelCapabilities(modelId, DEFAULT_CONFIG)
 }
 
-function withLiveReasoningEfforts(modelId: string, config: ModelConfig): ModelConfig {
+function withLiveModelCapabilities(modelId: string, config: ModelConfig): ModelConfig {
   const models = state.models?.data
   if (!models) {
     return config
@@ -275,13 +275,55 @@ function withLiveReasoningEfforts(modelId: string, config: ModelConfig): ModelCo
       .filter(model => modelId.startsWith(`${model.id}-`))
       .sort((a, b) => b.id.length - a.id.length)[0]
   const liveEfforts = liveModel?.capabilities?.supports?.reasoning_effort
-  if (!Array.isArray(liveEfforts)) {
+  const liveToolCalls = liveModel?.capabilities?.supports?.tool_calls
+  const liveParallelToolCalls = liveModel?.capabilities?.supports?.parallel_tool_calls
+  const liveApis = liveModel?.supported_endpoints
+    ?.map(endpointToBackendApi)
+    .filter((api): api is BackendApiType => api !== undefined)
+    .filter((api, index, apis) => apis.indexOf(api) === index)
+
+  if (!Array.isArray(liveEfforts)
+    && typeof liveToolCalls !== 'boolean'
+    && typeof liveParallelToolCalls !== 'boolean'
+    && !liveApis?.length) {
     return config
   }
 
   return {
     ...config,
-    supportedReasoningEfforts: liveEfforts.filter(isReasoningEffort),
+    ...(liveApis?.length && {
+      supportedApis: liveApis,
+      preferredApi: liveApis.includes(config.preferredApi ?? 'chat-completions')
+        ? config.preferredApi
+        : liveApis.includes('responses')
+          ? 'responses'
+          : liveApis[0],
+    }),
+    ...(Array.isArray(liveEfforts) && {
+      reasoningMode: liveEfforts.length > 0 ? 'thinking' : config.reasoningMode,
+      supportedReasoningEfforts: liveEfforts.filter(isReasoningEffort),
+    }),
+    ...(typeof liveToolCalls === 'boolean' && {
+      supportsToolChoice: liveToolCalls,
+    }),
+    ...(typeof liveParallelToolCalls === 'boolean' && {
+      supportsParallelToolCalls: liveParallelToolCalls,
+    }),
+  }
+}
+
+function endpointToBackendApi(endpoint: string): BackendApiType | undefined {
+  const normalized = endpoint.trim().toLowerCase().replace(/^wss?:/, '').replace(/^\/v1\//, '/').replace(/^v1\//, '').replace(/^\/+/, '')
+
+  switch (normalized) {
+    case 'chat/completions':
+      return 'chat-completions'
+    case 'responses':
+      return 'responses'
+    case 'messages':
+      return 'anthropic-messages'
+    default:
+      return undefined
   }
 }
 

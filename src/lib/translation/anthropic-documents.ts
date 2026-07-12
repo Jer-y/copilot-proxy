@@ -11,15 +11,19 @@ import { Buffer } from 'node:buffer'
 import { lookup } from 'node:dns/promises'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
-import { isIP } from 'node:net'
+import { BlockList, isIP } from 'node:net'
 import process from 'node:process'
 import { Readable } from 'node:stream'
 
 import consola from 'consola'
 import { JSONResponseError } from '~/lib/error'
+import { isRuntimeProxyEnvironmentEnabled } from '~/lib/upstream-fetch'
 import { logLossyAnthropicCompatibility, throwAnthropicInvalidRequestError } from './anthropic-compat'
 
 const MAX_DOCUMENT_SIZE = 32 * 1024 * 1024 // 32 MB
+const MAX_DOCUMENT_AGGREGATE_SIZE = 32 * 1024 * 1024 // Match the Messages request budget
+const MAX_DOCUMENTS_PER_REQUEST = 16
+const MAX_GLOBAL_DOCUMENT_EXPANSIONS = 6
 const URL_FETCH_TIMEOUT = 30_000 // 30 seconds
 const MAX_REDIRECTS = 5
 export const DOCUMENT_URL_FETCH_ENV = 'COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH'
@@ -81,6 +85,19 @@ let documentHostnameLookup: DocumentHostnameLookup = async (hostname: string) =>
 }
 
 let documentUrlFetcher: DocumentUrlFetcher = fetchDocumentUrlAtVerifiedAddresses
+let activeDocumentExpansions = 0
+
+interface DocumentExpansionBudget {
+  usedBytes: number
+}
+
+const blockedTransitionV6 = new BlockList()
+blockedTransitionV6.addSubnet('64:ff9b::', 96, 'ipv6')
+blockedTransitionV6.addSubnet('64:ff9b:1::', 48, 'ipv6')
+blockedTransitionV6.addSubnet('2002::', 16, 'ipv6')
+blockedTransitionV6.addSubnet('2001::', 32, 'ipv6')
+blockedTransitionV6.addSubnet('::', 96, 'ipv6')
+blockedTransitionV6.addSubnet('fec0::', 10, 'ipv6')
 
 export function setDocumentUrlResolverForTesting(resolver: DocumentHostnameLookup): () => void {
   const previous = documentHostnameLookup
@@ -163,6 +180,8 @@ function isBlockedHost(hostname: string): boolean {
 
   // --- IPv6 checks ---
   if (bare.includes(':')) {
+    if (isIP(bare) === 6 && blockedTransitionV6.check(bare, 'ipv6'))
+      return true
     // Loopback
     if (bare === '::1')
       return true
@@ -369,6 +388,10 @@ async function fetchDocumentUrlUnderNode(
   url: string,
   addresses: ReadonlyArray<DocumentResolvedAddress>,
 ): Promise<DocumentUrlFetchResult> {
+  if (isRuntimeProxyEnvironmentEnabled()) {
+    throw new Error('Document URL fetching is disabled when --proxy-env is enabled because a proxy-safe DNS-pinned connector is not available.')
+  }
+
   const target = new URL(url)
   const requestFn = target.protocol === 'https:' ? httpsRequest : httpRequest
 
@@ -495,6 +518,7 @@ function normalizeLookupHostname(hostname: string): string {
 async function readResponseWithSizeLimit(
   response: Response,
   maxBytes: number,
+  budget?: DocumentExpansionBudget,
 ): Promise<Uint8Array> {
   const reader = response.body?.getReader()
   if (!reader) {
@@ -503,6 +527,7 @@ async function readResponseWithSizeLimit(
     if (buf.byteLength > maxBytes) {
       throwAnthropicInvalidRequestError('Document exceeds maximum size of 32MB')
     }
+    consumeDocumentBudget(budget, buf.byteLength)
     return new Uint8Array(buf)
   }
 
@@ -520,6 +545,7 @@ async function readResponseWithSizeLimit(
       if (totalSize > maxBytes) {
         throwAnthropicInvalidRequestError('Document exceeds maximum size of 32MB')
       }
+      consumeDocumentBudget(budget, value.byteLength)
       chunks.push(value)
     }
     completed = true
@@ -617,13 +643,20 @@ async function expandDocumentBlocksMatching(
     return
   }
 
+  if (tasks.length > MAX_DOCUMENTS_PER_REQUEST) {
+    throwAnthropicInvalidRequestError(`A request may expand at most ${MAX_DOCUMENTS_PER_REQUEST} document blocks`)
+  }
+
   consola.debug(`Expanding ${tasks.length} document block(s) into text`)
+  const budget: DocumentExpansionBudget = { usedBytes: 0 }
 
   // Process documents with bounded concurrency (max 3 at a time) to limit memory pressure
   const MAX_CONCURRENCY = 3
   for (let i = 0; i < tasks.length; i += MAX_CONCURRENCY) {
     const batch = tasks.slice(i, i + MAX_CONCURRENCY)
-    const results = await Promise.all(batch.map(t => documentToTextBlock(t.block)))
+    const results = await Promise.all(batch.map(t => withDocumentExpansionSlot(
+      () => documentToTextBlock(t.block, budget),
+    )))
     for (let j = 0; j < batch.length; j++) {
       batch[j].array[batch[j].index] = results[j]
     }
@@ -710,12 +743,20 @@ function normalizeTextDocumentSource(
 
 async function documentToTextBlock(
   block: AnthropicDocumentBlock,
+  budget: DocumentExpansionBudget,
 ): Promise<AnthropicTextBlock> {
-  const source = await resolveDocumentSource(block.source)
+  const source = await resolveDocumentSource(block.source, budget)
   const rawText = source.kind === 'text'
     ? source.text
     : await extractDocumentText(source.buffer, source.mediaType, source.charset)
-  const text = formatDocumentText(rawText, block.title, block.context)
+  const text = formatDocumentText(
+    rawText,
+    block.title ?? undefined,
+    block.context ?? undefined,
+  )
+  if (source.kind === 'bytes' && source.mediaType === 'application/pdf') {
+    consumeDocumentBudget(budget, Buffer.byteLength(text, 'utf8'))
+  }
 
   return {
     type: 'text',
@@ -738,6 +779,7 @@ type ResolvedDocumentSource
 
 async function resolveDocumentSource(
   source: AnthropicDocumentBlock['source'],
+  budget: DocumentExpansionBudget,
 ): Promise<ResolvedDocumentSource> {
   if (source.type === 'base64') {
     // Validate base64 format — Buffer.from is too permissive (silently ignores invalid chars)
@@ -762,6 +804,7 @@ async function resolveDocumentSource(
         'Document exceeds maximum size of 32MB',
       )
     }
+    consumeDocumentBudget(budget, buffer.byteLength)
 
     // Convert to plain Uint8Array — unpdf rejects Buffer instances
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
@@ -796,16 +839,20 @@ async function resolveDocumentSource(
       )
     }
 
+    const text = getTextDocumentSourceData(source)
+    consumeDocumentBudget(budget, Buffer.byteLength(text, 'utf8'))
     return {
       kind: 'text',
-      text: getTextDocumentSourceData(source),
+      text,
     }
   }
 
   if (source.type === 'content') {
+    const text = source.content.map(block => block.text).join('\n\n')
+    consumeDocumentBudget(budget, Buffer.byteLength(text, 'utf8'))
     return {
       kind: 'text',
-      text: source.content.map(block => block.text).join('\n\n'),
+      text,
     }
   }
 
@@ -869,7 +916,7 @@ async function resolveDocumentSource(
 
       // Stream response body with size enforcement to prevent memory exhaustion
       // (Content-Length may be absent, chunked, or lie)
-      const buffer = await readResponseWithSizeLimit(response, MAX_DOCUMENT_SIZE)
+      const buffer = await readResponseWithSizeLimit(response, MAX_DOCUMENT_SIZE, budget)
 
       // Sniff content when Content-Type is generic/missing (common for pre-signed URLs, attachment endpoints)
       if (mediaType === 'application/octet-stream' && buffer.length > 0) {
@@ -907,6 +954,42 @@ async function resolveDocumentSource(
     throwAnthropicInvalidRequestError(
       `Failed to fetch document from URL: ${error instanceof Error ? error.message : String(error)}`,
     )
+  }
+}
+
+function consumeDocumentBudget(
+  budget: DocumentExpansionBudget | undefined,
+  bytes: number,
+): void {
+  if (!budget)
+    return
+  budget.usedBytes += bytes
+  if (budget.usedBytes > MAX_DOCUMENT_AGGREGATE_SIZE) {
+    throwAnthropicInvalidRequestError('Expanded documents exceed the per-request aggregate limit of 32MB')
+  }
+}
+
+async function withDocumentExpansionSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeDocumentExpansions >= MAX_GLOBAL_DOCUMENT_EXPANSIONS) {
+    throw new JSONResponseError(
+      'Too many document expansions are already in progress',
+      503,
+      {
+        type: 'error',
+        error: {
+          type: 'overloaded_error',
+          message: 'Too many document expansions are already in progress',
+        },
+      },
+    )
+  }
+
+  activeDocumentExpansions++
+  try {
+    return await fn()
+  }
+  finally {
+    activeDocumentExpansions--
   }
 }
 

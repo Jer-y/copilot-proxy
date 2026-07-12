@@ -2,11 +2,14 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
 
-import { loadDaemonConfig } from '~/daemon/config'
-import { loadInstalledNativeServiceCommands } from '~/daemon/native-service'
+import { DEFAULT_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
+import { loadInstalledNativeServiceCommands, waitForNativeServiceReadiness } from '~/daemon/native-service'
 import { isDaemonRunning } from '~/daemon/pid'
-import { daemonStart } from '~/daemon/start'
+import { loadNativeServiceEnvironment } from '~/daemon/service-env'
+import { loadNativeServiceInstallState } from '~/daemon/service-install-state'
+import { daemonStart, prepareDaemonEnvironment } from '~/daemon/start'
 import { stopDaemon } from '~/daemon/stop'
+import { PATHS } from '~/lib/paths'
 
 export const restart = defineCommand({
   meta: {
@@ -14,17 +17,45 @@ export const restart = defineCommand({
     description: 'Restart the native background service or legacy daemon',
   },
   async run() {
+    const config = loadDaemonConfig()
     const nativeService = await loadInstalledNativeServiceCommands()
     if (nativeService) {
+      try {
+        const installState = loadNativeServiceInstallState()
+        loadNativeServiceEnvironment({
+          proxyEnv: installState?.proxyEnv ?? (config ?? DEFAULT_SERVICE_CONFIG).proxyEnv,
+          targetEnv: { ...process.env },
+          filePath: PATHS.NATIVE_SERVICE_ENV,
+        })
+      }
+      catch (error) {
+        consola.error('Cannot restart native service because its persisted environment is invalid:', error instanceof Error ? error.message : error)
+        consola.info('Run `copilot-proxy enable` from the intended environment to repair it before retrying restart.')
+        process.exit(1)
+      }
       if (!nativeService.restartAutoStartService()) {
+        process.exit(1)
+      }
+      const readinessConfig = config ?? DEFAULT_SERVICE_CONFIG
+      if (!await waitForNativeServiceReadiness(readinessConfig)) {
+        consola.error(`Native service did not become ready on ${readinessConfig.host}:${readinessConfig.port} within the startup deadline.`)
         process.exit(1)
       }
       return
     }
 
-    const config = loadDaemonConfig()
     if (!config) {
       consola.error('No daemon config found. Start the daemon first with `start -d`')
+      process.exit(1)
+    }
+
+    let preparedEnvironment: NodeJS.ProcessEnv
+    try {
+      preparedEnvironment = prepareDaemonEnvironment(config, { usePersistedEnvironment: true })
+    }
+    catch (error) {
+      consola.error('Cannot restart daemon because its persisted environment is invalid:', error instanceof Error ? error.message : error)
+      consola.info('Run `start -d` with the intended environment to repair it; the existing daemon was left running.')
       process.exit(1)
     }
 
@@ -38,6 +69,9 @@ export const restart = defineCommand({
     }
 
     // Start with saved config
-    await daemonStart(config, { usePersistedEnvironment: true })
+    await daemonStart(config, {
+      usePersistedEnvironment: true,
+      preparedEnvironment,
+    })
   },
 })

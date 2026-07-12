@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 
 import {
   assertProxyEndpointAvailable,
+  buildNativeServiceBootstrapEnvironment,
   loadNativeServiceEnvironment,
   removeNativeServiceEnvironment,
   saveNativeServiceEnvironment,
@@ -76,6 +77,35 @@ describe('native service environment', () => {
     expect(() => loadNativeServiceEnvironment({ proxyEnv: true, filePath, targetEnv: {} })).toThrow('Refusing to fall back to a direct connection')
   })
 
+  test('fails closed for HTTP-only proxies and external NO_PROXY bypasses', () => {
+    expect(() => assertProxyEndpointAvailable({
+      HTTP_PROXY: 'http://http-only.invalid:8080',
+    })).toThrow('HTTPS_PROXY or ALL_PROXY')
+
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'http://secure-proxy.invalid:8080',
+      NO_PROXY: 'api.github.com',
+    })).toThrow('Refusing to fall back to a direct connection')
+
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'http://secure-proxy.invalid:8080',
+      NO_PROXY: 'localhost,127.0.0.1',
+    })).not.toThrow()
+
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'http://secure-proxy.invalid:8080',
+      NO_PROXY: '.corp.local,10.0.0.8',
+    })).not.toThrow()
+  })
+
+  test('validates only the network targets required by each command', () => {
+    const env = {
+      HTTPS_PROXY: 'http://secure-proxy.invalid:8080',
+      NO_PROXY: 'localhost',
+    }
+    expect(() => assertProxyEndpointAvailable(env, ['https://github.com'])).not.toThrow()
+  })
+
   test('rejects malformed environment files', () => {
     const filePath = makeFilePath()
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -92,6 +122,50 @@ describe('native service environment', () => {
     removeNativeServiceEnvironment(filePath)
 
     expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  test('clears ambient startup TLS settings before applying the persisted snapshot', () => {
+    const environment = buildNativeServiceBootstrapEnvironment(
+      {
+        HTTPS_PROXY: 'http://ambient-proxy:8080',
+        NODE_EXTRA_CA_CERTS: '/ambient/ca.pem',
+        SSL_CERT_FILE: '/ambient/cert.pem',
+        SSL_CERT_DIR: '/ambient/certs',
+      },
+      {
+        HTTPS_PROXY: 'http://saved-proxy:8080',
+        NODE_EXTRA_CA_CERTS: '/saved/ca.pem',
+      },
+      { proxyEnv: true },
+    )
+
+    expect(environment.HTTPS_PROXY).toBe('http://saved-proxy:8080')
+    expect(environment.NODE_EXTRA_CA_CERTS).toBe('/saved/ca.pem')
+    expect(environment.SSL_CERT_FILE).toBeUndefined()
+    expect(environment.SSL_CERT_DIR).toBeUndefined()
+  })
+
+  test('does not replay stale proxy keys when the service definition disables proxy mode', () => {
+    const environment = buildNativeServiceBootstrapEnvironment(
+      { HTTPS_PROXY: 'http://ambient-proxy:8080' },
+      {
+        HTTPS_PROXY: 'http://stale-saved-proxy:8080',
+        NODE_EXTRA_CA_CERTS: '/saved/ca.pem',
+      },
+      { proxyEnv: false },
+    )
+
+    expect(environment.HTTPS_PROXY).toBeUndefined()
+    expect(environment.NODE_EXTRA_CA_CERTS).toBe('/saved/ca.pem')
+  })
+
+  test('rejects invalid proxy URLs before a Bun service can snapshot them', () => {
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'not a valid proxy',
+    })).toThrow('invalid proxy URL')
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'socks5://proxy.internal:1080',
+    })).toThrow('unsupported proxy protocol')
   })
 })
 

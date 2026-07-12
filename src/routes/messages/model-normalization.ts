@@ -16,6 +16,13 @@ export function normalizeAnthropicModelName(model: string): string {
   return model
 }
 
+export function toAnthropicClientModelName(model: string): string {
+  return model.replace(
+    /^(claude-(?:sonnet|opus|haiku)-\d+)\.(\d+)$/,
+    '$1-$2',
+  )
+}
+
 export function sanitizeAnthropicBetaHeader(anthropicBeta: string | undefined): string | undefined {
   if (!anthropicBeta) {
     return undefined

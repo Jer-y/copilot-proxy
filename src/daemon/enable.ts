@@ -1,17 +1,19 @@
 import type { DaemonConfig } from '~/daemon/config'
+import type { NativeServiceCommands } from '~/daemon/native-service'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { defineCommand } from 'citty'
 
 import consola from 'consola'
+import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { DEFAULT_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
-import { loadInstalledNativeServiceCommands } from '~/daemon/native-service'
+import { loadInstalledNativeServiceCommands, waitForNativeServiceReadiness } from '~/daemon/native-service'
 import { isDaemonRunning } from '~/daemon/pid'
 import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
-import { loadNativeServiceInstallState, removeNativeServiceInstallState, saveNativeServiceInstallState } from '~/daemon/service-install-state'
+import { loadNativeServiceInstallState, NATIVE_SERVICE_DEFINITION_PATH_ENV, removeNativeServiceInstallState, saveNativeServiceInstallState } from '~/daemon/service-install-state'
 import { stopDaemon } from '~/daemon/stop'
-import { PATHS } from '~/lib/paths'
+import { getUserHomeDir, PATHS } from '~/lib/paths'
 
 export function buildServiceStartArgs(scriptPath: string, config: DaemonConfig): string[] {
   const args = [
@@ -46,6 +48,31 @@ export function buildServiceStartArgs(scriptPath: string, config: DaemonConfig):
     args.push('--proxy-env')
 
   return args
+}
+
+export function resolveNativeServiceInstallLocations(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  userHome: string = getUserHomeDir(env),
+): { serviceDefinitionPath?: string, xdgConfigHome?: string } {
+  const configuredXdgHome = env.XDG_CONFIG_HOME?.trim()
+  const xdgConfigHome = platform === 'linux'
+    ? configuredXdgHome && path.isAbsolute(configuredXdgHome)
+      ? configuredXdgHome
+      : path.join(userHome, '.config')
+    : undefined
+  const persistedDefinitionPath = env[NATIVE_SERVICE_DEFINITION_PATH_ENV]
+  const serviceDefinitionPath = persistedDefinitionPath && path.isAbsolute(persistedDefinitionPath)
+    ? persistedDefinitionPath
+    : platform === 'linux'
+      ? path.join(xdgConfigHome!, 'systemd', 'user', 'copilot-proxy.service')
+      : platform === 'darwin'
+        ? path.join(userHome, 'Library', 'LaunchAgents', 'com.copilot-proxy.plist')
+        : undefined
+  return {
+    ...(serviceDefinitionPath && { serviceDefinitionPath }),
+    ...(xdgConfigHome && { xdgConfigHome }),
+  }
 }
 
 export function isEphemeralPackageRunnerPath(scriptPath: string): boolean {
@@ -93,52 +120,83 @@ export const enable = defineCommand({
 
     const previousServiceEnvironment = readExistingServiceEnvironment()
     const previousInstallState = loadNativeServiceInstallState()
+    let replacementServiceEnvironment: ExistingServiceEnvironment | undefined
+    let replacementInstallState: ReturnType<typeof loadNativeServiceInstallState>
     try {
       // Re-running enable snapshots the current shell exactly. Missing values
       // intentionally clear stale service settings, including lower/uppercase
       // proxy aliases that proxy-from-env resolves with different precedence.
       saveNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: process.env })
-      saveNativeServiceInstallState({ dataDir: PATHS.APP_DIR })
+      const { serviceDefinitionPath, xdgConfigHome } = resolveNativeServiceInstallLocations(platform, process.env)
+      saveNativeServiceInstallState({
+        dataDir: PATHS.APP_DIR,
+        proxyEnv: config.proxyEnv,
+        ...(serviceDefinitionPath && { serviceDefinitionPath }),
+        ...(xdgConfigHome && { xdgConfigHome }),
+      })
+      replacementServiceEnvironment = readExistingServiceEnvironment()
+      replacementInstallState = loadNativeServiceInstallState()
     }
     catch (error) {
       consola.error('Cannot persist native service environment:', error instanceof Error ? error.message : error)
-      restoreServiceEnvironment(previousServiceEnvironment)
-      restoreInstallState(previousInstallState)
+      tryRestorePersistedState(previousServiceEnvironment, previousInstallState, 'previous native service state')
       process.exit(1)
     }
 
-    if (platform === 'linux') {
-      const { installAutoStart } = await import('~/daemon/platform/linux')
-      success = await installAutoStart(execPath, args)
+    try {
+      if (platform === 'linux') {
+        const { installAutoStart } = await import('~/daemon/platform/linux')
+        success = await installAutoStart(execPath, args)
+      }
+      else if (platform === 'darwin') {
+        const { installAutoStart } = await import('~/daemon/platform/darwin')
+        success = await installAutoStart(execPath, args)
+      }
+      else if (platform === 'win32') {
+        const { installAutoStart } = await import('~/daemon/platform/win32')
+        success = await installAutoStart(execPath, args)
+      }
+      else {
+        consola.error(`Unsupported platform: ${platform}`)
+        tryRestorePersistedState(previousServiceEnvironment, previousInstallState, 'previous native service state')
+        process.exit(1)
+      }
     }
-    else if (platform === 'darwin') {
-      const { installAutoStart } = await import('~/daemon/platform/darwin')
-      success = await installAutoStart(execPath, args)
-    }
-    else if (platform === 'win32') {
-      const { installAutoStart } = await import('~/daemon/platform/win32')
-      success = await installAutoStart(execPath, args)
-    }
-    else {
-      consola.error(`Unsupported platform: ${platform}`)
-      restoreServiceEnvironment(previousServiceEnvironment)
-      restoreInstallState(previousInstallState)
+    catch (error) {
+      consola.error('Native service installation failed unexpectedly:', error instanceof Error ? error.message : error)
+      await rollbackEnableInstallation(
+        platform,
+        previousServiceEnvironment,
+        previousInstallState,
+        replacementServiceEnvironment,
+        replacementInstallState,
+      )
       process.exit(1)
     }
 
     if (!success) {
-      restoreServiceEnvironment(previousServiceEnvironment)
-      restoreInstallState(previousInstallState)
+      await rollbackEnableInstallation(
+        platform,
+        previousServiceEnvironment,
+        previousInstallState,
+        replacementServiceEnvironment,
+        replacementInstallState,
+      )
       process.exit(1)
     }
 
-    const nativeService = await loadInstalledNativeServiceCommands()
+    let nativeService: NativeServiceCommands | null
+    try {
+      nativeService = await loadInstalledNativeServiceCommands()
+    }
+    catch (error) {
+      consola.error('Failed to verify the installed native service:', error instanceof Error ? error.message : error)
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)
+      process.exit(1)
+    }
     if (!nativeService) {
       consola.error('Auto-start installation did not produce a detectable native service.')
-      if (await rollbackAutoStartInstall(platform)) {
-        restoreServiceEnvironment(previousServiceEnvironment)
-        restoreInstallState(previousInstallState)
-      }
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)
       process.exit(1)
     }
 
@@ -148,25 +206,46 @@ export const enable = defineCommand({
       consola.info('Stopping existing app-managed daemon before starting the native service...')
       if (!stopDaemon()) {
         consola.error('Cannot start native service: failed to stop existing app-managed daemon')
-        if (await rollbackAutoStartInstall(platform)) {
-          restoreServiceEnvironment(previousServiceEnvironment)
-          restoreInstallState(previousInstallState)
-        }
+        await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)
         process.exit(1)
       }
     }
 
-    if (!nativeService.restartAutoStartService()) {
-      if (await rollbackAutoStartInstall(platform)) {
-        restoreServiceEnvironment(previousServiceEnvironment)
-        restoreInstallState(previousInstallState)
+    let serviceStarted = false
+    try {
+      serviceStarted = nativeService.restartAutoStartService()
+    }
+    catch (error) {
+      consola.error('Failed to activate native service:', error instanceof Error ? error.message : error)
+    }
+    if (!serviceStarted) {
+      if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)) {
         if (legacyWasRunning)
           await restoreLegacyDaemon(config)
       }
       process.exit(1)
     }
 
-    await commitAutoStartInstall(platform)
+    if (!await waitForNativeServiceReadiness(config)) {
+      consola.error(`Native service did not become ready on ${config.host}:${config.port} within the startup deadline.`)
+      if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)) {
+        if (legacyWasRunning)
+          await restoreLegacyDaemon(config)
+      }
+      process.exit(1)
+    }
+
+    try {
+      await commitAutoStartInstall(platform)
+    }
+    catch (error) {
+      consola.error('Failed to commit native service installation:', error instanceof Error ? error.message : error)
+      if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)) {
+        if (legacyWasRunning)
+          await restoreLegacyDaemon(config)
+      }
+      process.exit(1)
+    }
 
     if (previousInstallState && previousInstallState.dataDir !== PATHS.APP_DIR) {
       try {
@@ -178,6 +257,51 @@ export const enable = defineCommand({
     }
   },
 })
+
+export async function rollbackEnableStateAfterFailure(
+  rollbackPlatform: () => boolean | Promise<boolean>,
+  restorePersistedState: () => void,
+): Promise<boolean> {
+  const rolledBack = await rollbackPlatform()
+  if (rolledBack)
+    restorePersistedState()
+  return rolledBack
+}
+
+async function rollbackEnableInstallation(
+  platform: NodeJS.Platform,
+  previousServiceEnvironment: ExistingServiceEnvironment | undefined,
+  previousInstallState: ReturnType<typeof loadNativeServiceInstallState>,
+  replacementServiceEnvironment: ExistingServiceEnvironment | undefined,
+  replacementInstallState: ReturnType<typeof loadNativeServiceInstallState>,
+): Promise<boolean> {
+  // Restore the environment/control state first so a platform rollback that
+  // reactivates the previous definition starts it with its matching settings.
+  if (!tryRestorePersistedState(previousServiceEnvironment, previousInstallState, 'previous native service state')) {
+    tryRestorePersistedState(replacementServiceEnvironment, replacementInstallState, 'replacement native service state')
+    return false
+  }
+
+  const rolledBack = await rollbackAutoStartInstall(platform)
+  if (!rolledBack) {
+    // The replacement definition may still be installed or running. Keep the
+    // replacement state aligned with it rather than leaving an old/new split.
+    tryRestorePersistedState(replacementServiceEnvironment, replacementInstallState, 'replacement native service state')
+    return false
+  }
+
+  if (previousInstallState) {
+    try {
+      const previousService = await loadInstalledNativeServiceCommands()
+      if (previousService && !previousService.restartAutoStartService())
+        consola.error('Previous native service definition was restored but could not be restarted.')
+    }
+    catch (error) {
+      consola.error('Previous native service definition was restored but could not be reactivated:', error instanceof Error ? error.message : error)
+    }
+  }
+  return true
+}
 
 interface ExistingServiceEnvironment {
   content: Uint8Array
@@ -197,29 +321,32 @@ function readExistingServiceEnvironment(): ExistingServiceEnvironment | undefine
 }
 
 function restoreServiceEnvironment(previous: ExistingServiceEnvironment | undefined): void {
-  try {
-    if (previous) {
-      fs.writeFileSync(PATHS.NATIVE_SERVICE_ENV, previous.content, { mode: 0o600 })
-      fs.chmodSync(PATHS.NATIVE_SERVICE_ENV, 0o600)
-    }
-    else {
-      fs.rmSync(PATHS.NATIVE_SERVICE_ENV, { force: true })
-    }
-  }
-  catch (error) {
-    consola.error('Failed to restore native service environment:', error instanceof Error ? error.message : error)
-  }
+  if (previous)
+    writeOwnerOnlyFileAtomically(PATHS.NATIVE_SERVICE_ENV, previous.content)
+  else
+    fs.rmSync(PATHS.NATIVE_SERVICE_ENV, { force: true })
 }
 
 function restoreInstallState(previous: ReturnType<typeof loadNativeServiceInstallState>): void {
+  if (previous)
+    saveNativeServiceInstallState(previous)
+  else
+    removeNativeServiceInstallState()
+}
+
+function tryRestorePersistedState(
+  serviceEnvironment: ExistingServiceEnvironment | undefined,
+  installState: ReturnType<typeof loadNativeServiceInstallState>,
+  label: string,
+): boolean {
   try {
-    if (previous)
-      saveNativeServiceInstallState(previous)
-    else
-      removeNativeServiceInstallState()
+    restoreServiceEnvironment(serviceEnvironment)
+    restoreInstallState(installState)
+    return true
   }
   catch (error) {
-    consola.error('Failed to restore native service control state:', error instanceof Error ? error.message : error)
+    consola.error(`Failed to restore ${label}:`, error instanceof Error ? error.message : error)
+    return false
   }
 }
 
@@ -242,19 +369,25 @@ async function restoreLegacyDaemon(config: DaemonConfig): Promise<void> {
 
 async function rollbackAutoStartInstall(platform: NodeJS.Platform): Promise<boolean> {
   consola.warn('Native service activation failed; restoring the previous auto-start definition.')
-  if (platform === 'linux') {
-    const { rollbackAutoStartInstall } = await import('~/daemon/platform/linux')
-    return rollbackAutoStartInstall()
+  try {
+    if (platform === 'linux') {
+      const { rollbackAutoStartInstall } = await import('~/daemon/platform/linux')
+      return rollbackAutoStartInstall()
+    }
+    if (platform === 'darwin') {
+      const { rollbackAutoStartInstall } = await import('~/daemon/platform/darwin')
+      return rollbackAutoStartInstall()
+    }
+    if (platform === 'win32') {
+      const { rollbackAutoStartInstall } = await import('~/daemon/platform/win32')
+      return rollbackAutoStartInstall()
+    }
+    return false
   }
-  if (platform === 'darwin') {
-    const { rollbackAutoStartInstall } = await import('~/daemon/platform/darwin')
-    return rollbackAutoStartInstall()
+  catch (error) {
+    consola.error('Failed to roll back native service installation:', error instanceof Error ? error.message : error)
+    return false
   }
-  if (platform === 'win32') {
-    const { rollbackAutoStartInstall } = await import('~/daemon/platform/win32')
-    return rollbackAutoStartInstall()
-  }
-  return false
 }
 
 async function commitAutoStartInstall(platform: NodeJS.Platform): Promise<void> {

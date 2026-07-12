@@ -1,3 +1,6 @@
+import type { DaemonConfig } from '~/daemon/config'
+
+import http from 'node:http'
 import process from 'node:process'
 
 export interface NativeServiceLogOptions {
@@ -11,6 +14,89 @@ export interface NativeServiceCommands {
   restartAutoStartService: () => boolean
   showAutoStartStatus: () => boolean
   showAutoStartLogs: (options: NativeServiceLogOptions) => boolean
+}
+
+export interface NativeServiceReadinessOptions {
+  timeoutMs?: number
+  pollIntervalMs?: number
+  requiredReadyChecks?: number
+  probe?: () => boolean | Promise<boolean>
+  delay?: (milliseconds: number) => Promise<void>
+  now?: () => number
+}
+
+export async function waitForNativeServiceReadiness(
+  config: Pick<DaemonConfig, 'host' | 'port'>,
+  options: NativeServiceReadinessOptions = {},
+): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 30_000
+  const pollIntervalMs = options.pollIntervalMs ?? 100
+  const requiredReadyChecks = options.requiredReadyChecks ?? 2
+  const now = options.now ?? Date.now
+  const delay = options.delay ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)))
+  const probe = options.probe ?? (() => probeCopilotProxyServer(config.host, config.port))
+  const deadline = now() + timeoutMs
+  let consecutiveReadyChecks = 0
+
+  while (now() < deadline) {
+    if (await probe()) {
+      consecutiveReadyChecks++
+      if (consecutiveReadyChecks >= requiredReadyChecks)
+        return true
+    }
+    else {
+      consecutiveReadyChecks = 0
+    }
+    await delay(pollIntervalMs)
+  }
+
+  return false
+}
+
+export async function probeCopilotProxyServer(host: string, port: number): Promise<boolean> {
+  const hostname = readinessProbeHostname(host)
+  return await new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (ready: boolean) => {
+      if (settled)
+        return
+      settled = true
+      resolve(ready)
+    }
+
+    const request = http.get({
+      hostname,
+      port,
+      path: '/',
+      headers: { Host: `localhost:${port}` },
+      timeout: 1_500,
+    }, (response) => {
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', (chunk: string) => {
+        body += chunk
+        if (body.length > 64) {
+          request.destroy()
+          finish(false)
+        }
+      })
+      response.once('end', () => {
+        finish(response.statusCode === 200 && body.trim() === 'Server running')
+      })
+      response.once('error', () => finish(false))
+    })
+    request.once('timeout', () => request.destroy(new Error('readiness probe timed out')))
+    request.once('error', () => finish(false))
+  })
+}
+
+export function readinessProbeHostname(host: string): string {
+  const normalized = host.trim().replace(/^\[|\]$/g, '')
+  if (normalized === '0.0.0.0')
+    return '127.0.0.1'
+  if (normalized === '::' || normalized === '0:0:0:0:0:0:0:0')
+    return '::1'
+  return normalized
 }
 
 export async function loadNativeServiceCommands(): Promise<NativeServiceCommands | null> {

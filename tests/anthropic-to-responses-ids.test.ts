@@ -262,7 +262,7 @@ describe('Anthropic -> Responses message IDs', () => {
         id: 'msg_msg_pause_stream_0',
         role: 'assistant',
         status: 'completed',
-        content: [{ type: 'output_text', text: 'Need another turn.' }],
+        content: [{ type: 'output_text', text: 'Need another turn.', annotations: [] }],
       },
     ])
   })

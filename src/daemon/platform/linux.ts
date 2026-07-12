@@ -2,23 +2,46 @@ import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import process from 'node:process'
 import consola from 'consola'
+import { writeFileAtomically } from '~/daemon/atomic-file'
+import { NATIVE_SERVICE_DEFINITION_PATH_ENV } from '~/daemon/service-install-state'
 import { getUserHomeDir } from '~/lib/paths'
 
 const SERVICE_NAME = 'copilot-proxy'
-const SERVICE_DIR = path.join(getUserHomeDir(), '.config', 'systemd', 'user')
-const SERVICE_PATH = path.join(SERVICE_DIR, `${SERVICE_NAME}.service`)
+const SERVICE_PATH = process.env[NATIVE_SERVICE_DEFINITION_PATH_ENV]
+  || path.join(getSystemdUserServiceDir(), `${SERVICE_NAME}.service`)
+const SERVICE_DIR = path.dirname(SERVICE_PATH)
 let pendingInstall: { previous: ExistingServiceFile | undefined } | undefined
+
+export interface UninstallAutoStartOptions {
+  isInstalled?: () => boolean
+  stop?: () => void
+  disable?: () => void
+  removeDefinition?: () => void
+  reload?: () => void
+}
 
 export function shellQuote(s: string): string {
   if (/[\r\n]/.test(s))
     throw new Error('systemd unit arguments cannot contain newlines')
 
   // Escape systemd specifiers and environment expansion.
-  const escaped = s.replace(/%/g, '%%').replace(/\$/g, '$$$$')
+  const escaped = s.replace(/\\/g, '\\\\').replace(/%/g, '%%').replace(/\$/g, '$$$$')
   if (/^[\w/.:-]+$/.test(escaped))
     return escaped
   return `"${escaped.replace(/"/g, '\\"')}"`
+}
+
+export function getSystemdUserServiceDir(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = getUserHomeDir(env),
+): string {
+  const configuredHome = env.XDG_CONFIG_HOME?.trim()
+  const configHome = configuredHome && path.isAbsolute(configuredHome)
+    ? configuredHome
+    : path.join(userHome, '.config')
+  return path.join(configHome, 'systemd', 'user')
 }
 
 export function buildSystemdUnit(execPath: string, args: string[]): string {
@@ -60,15 +83,22 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   }
 
   const previousUnit = readExistingServiceFile()
-  const rollback = () => rollbackServiceFile(previousUnit)
+  pendingInstall = { previous: previousUnit }
+  const rollback = () => {
+    const restored = rollbackServiceFile(previousUnit)
+    if (restored)
+      pendingInstall = undefined
+    return restored
+  }
 
   try {
     fs.mkdirSync(SERVICE_DIR, { recursive: true })
-    fs.writeFileSync(SERVICE_PATH, unit)
+    writeFileAtomically(SERVICE_PATH, unit, 0o600)
   }
   catch (error) {
     consola.error('Failed to write systemd service file:', error instanceof Error ? error.message : error)
-    rollback()
+    if (!rollback())
+      throw new Error('Failed to write systemd service file and roll back the previous definition', { cause: error })
     return false
   }
 
@@ -78,28 +108,36 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   catch {
     consola.error('Failed to reload systemd. Is systemd running in user mode?')
     consola.info('On WSL2, you may need to enable systemd: https://learn.microsoft.com/en-us/windows/wsl/systemd')
-    rollback()
+    if (!rollback())
+      throw new Error('Failed to reload systemd and roll back the previous definition')
     return false
   }
 
   const username = os.userInfo().username
   if (!ensureUserLingerEnabled(username)) {
-    rollback()
+    if (!rollback())
+      throw new Error('Failed to enable user lingering and roll back the previous systemd definition')
     return false
   }
 
   try {
-    execSync(`systemctl --user enable ${SERVICE_NAME}`, { stdio: 'pipe' })
+    // The user manager may have started before the caller's current
+    // XDG_CONFIG_HOME existed, so enabling by unit name can miss a valid unit
+    // at a persisted custom path. systemctl accepts an absolute unit path and
+    // creates the manager-visible link needed for subsequent name-based
+    // start/stop/status commands.
+    execFileSync('systemctl', ['--user', 'enable', SERVICE_PATH], { stdio: 'pipe' })
+    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' })
   }
   catch (error) {
     consola.error('Failed to enable service:', error instanceof Error ? error.message : error)
     consola.info(`Service file written to: ${SERVICE_PATH}`)
     consola.info('You can try manually: systemctl --user enable copilot-proxy')
-    rollback()
+    if (!rollback())
+      throw new Error('Failed to enable systemd service and roll back the previous definition', { cause: error })
     return false
   }
 
-  pendingInstall = { previous: previousUnit }
   consola.success('Auto-start enabled via systemd')
   return true
 }
@@ -128,19 +166,16 @@ function rollbackServiceFile(previous: ExistingServiceFile | undefined): boolean
   try {
     if (previous) {
       fs.mkdirSync(SERVICE_DIR, { recursive: true })
-      fs.writeFileSync(SERVICE_PATH, previous.content, { mode: previous.mode })
-      fs.chmodSync(SERVICE_PATH, previous.mode)
+      writeFileAtomically(SERVICE_PATH, previous.content, previous.mode)
     }
     else {
       // `systemctl enable` may create the wants/ symlink before returning a
-      // non-zero exit. Disable first so a failed fresh install cannot leave a
-      // ghost auto-start reference to the unit we are about to remove.
-      try {
-        execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME], { stdio: 'pipe' })
-      }
-      catch {
-        // No symlink is the expected case for failures before the enable step.
-      }
+      // non-zero exit. Stop and disable so a failed fresh install cannot leave
+      // a process or ghost auto-start reference behind.
+      if (!stopSystemdServiceForRollback())
+        return false
+      if (!disableSystemdServiceForRollback())
+        return false
       fs.rmSync(SERVICE_PATH, { force: true })
     }
     execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
@@ -152,30 +187,63 @@ function rollbackServiceFile(previous: ExistingServiceFile | undefined): boolean
   }
 }
 
+function stopSystemdServiceForRollback(): boolean {
+  try {
+    execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME], { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    // A failure before daemon-reload/activation is safe only when systemd can
+    // explicitly confirm that the unit is inactive or unknown.
+    const activeState = querySystemdProperty('ActiveState', error)
+    return activeState === 'inactive' || activeState === 'failed'
+  }
+}
+
+function disableSystemdServiceForRollback(): boolean {
+  try {
+    execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME], { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    const unitFileState = querySystemdProperty('UnitFileState', error)
+    if (unitFileState === 'disabled')
+      return true
+    return querySystemdProperty('LoadState', error) === 'not-found'
+  }
+}
+
+function querySystemdProperty(property: string, originalError: unknown): string | undefined {
+  try {
+    return execFileSync(
+      'systemctl',
+      ['--user', 'show', SERVICE_NAME, `--property=${property}`, '--value'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim()
+  }
+  catch {
+    consola.error('Cannot confirm systemd rollback safety after a control failure:', originalError instanceof Error ? originalError.message : originalError)
+    return undefined
+  }
+}
+
 export function commitAutoStartInstall(): void {
   pendingInstall = undefined
 }
 
 export function rollbackAutoStartInstall(): boolean {
   const install = pendingInstall
-  pendingInstall = undefined
   if (!install)
     return true
 
   if (!rollbackServiceFile(install.previous))
     return false
-  if (!install.previous)
-    return true
-
-  try {
-    execFileSync('systemctl', ['--user', 'enable', SERVICE_NAME], { stdio: 'pipe' })
-    execFileSync('systemctl', ['--user', 'restart', SERVICE_NAME], { stdio: 'pipe' })
+  if (!install.previous) {
+    pendingInstall = undefined
     return true
   }
-  catch (error) {
-    consola.error('Restored the previous systemd unit but failed to restart it:', error instanceof Error ? error.message : error)
-    return false
-  }
+  pendingInstall = undefined
+  return true
 }
 
 function ensureUserLingerEnabled(username: string): boolean {
@@ -215,7 +283,15 @@ function isUserLingerEnabled(username: string): boolean {
 }
 
 export function isAutoStartInstalled(): boolean {
-  return fs.existsSync(SERVICE_PATH)
+  try {
+    fs.statSync(SERVICE_PATH)
+    return true
+  }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      return false
+    throw error
+  }
 }
 
 export function stopAutoStartService(): boolean {
@@ -270,31 +346,42 @@ function runSystemctl(args: string[], failureMessage: string): boolean {
   }
 }
 
-export async function uninstallAutoStart(): Promise<boolean> {
-  if (!fs.existsSync(SERVICE_PATH)) {
+export async function uninstallAutoStart(options: UninstallAutoStartOptions = {}): Promise<boolean> {
+  const isInstalled = options.isInstalled ?? (() => fs.existsSync(SERVICE_PATH))
+  const stop = options.stop ?? (() => {
+    execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME], { stdio: 'pipe' })
+  })
+  const disable = options.disable ?? (() => {
+    execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME], { stdio: 'pipe' })
+  })
+  const removeDefinition = options.removeDefinition ?? (() => fs.unlinkSync(SERVICE_PATH))
+  const reload = options.reload ?? (() => {
+    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' })
+  })
+
+  if (!isInstalled()) {
     consola.info('Auto-start service is not installed')
     return true
   }
 
-  let hadErrors = false
-
   try {
-    execSync(`systemctl --user stop ${SERVICE_NAME}`, { stdio: 'pipe' })
-  }
-  catch {
-    // Service may not be running, that's fine
-  }
-
-  try {
-    execSync(`systemctl --user disable ${SERVICE_NAME}`, { stdio: 'pipe' })
+    stop()
   }
   catch (error) {
-    consola.warn('Failed to disable service:', error instanceof Error ? error.message : error)
-    hadErrors = true
+    consola.error('Failed to stop systemd service; keeping its definition installed:', error instanceof Error ? error.message : error)
+    return false
   }
 
   try {
-    fs.unlinkSync(SERVICE_PATH)
+    disable()
+  }
+  catch (error) {
+    consola.error('Failed to disable systemd service; keeping its unit file installed:', error instanceof Error ? error.message : error)
+    return false
+  }
+
+  try {
+    removeDefinition()
   }
   catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code !== 'ENOENT') {
@@ -303,16 +390,16 @@ export async function uninstallAutoStart(): Promise<boolean> {
     }
   }
 
+  if (isInstalled()) {
+    consola.error('Failed to remove systemd service file: file still exists after deletion')
+    return false
+  }
+
   try {
-    execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
+    reload()
   }
   catch (error) {
     consola.warn('Failed to reload systemd:', error instanceof Error ? error.message : error)
-    hadErrors = true
-  }
-
-  if (hadErrors) {
-    consola.warn('Auto-start disabled with warnings')
     return false
   }
 

@@ -4,7 +4,7 @@ import consola from 'consola'
 
 type OpenAISSEStream = Pick<SSEStreamingApi, 'aborted' | 'closed' | 'writeSSE'>
 
-interface OpenAIStreamError {
+interface ChatCompatibleStreamError {
   type: 'error'
   error: {
     message: string
@@ -13,12 +13,21 @@ interface OpenAIStreamError {
   }
 }
 
+interface ResponsesStreamError {
+  type: 'error'
+  code: 'stream_error'
+  message: string
+  param: null
+  sequence_number: number
+}
+
 export async function writeOpenAIStreamError(
   stream: OpenAISSEStream,
   error: unknown,
   options: {
     fallbackMessage: string
     label: string
+    responsesSequenceNumber?: number
   },
 ): Promise<void> {
   if (error instanceof Error && error.name === 'AbortError') {
@@ -33,21 +42,43 @@ export async function writeOpenAIStreamError(
 
   await stream.writeSSE({
     event: 'error',
-    data: JSON.stringify(createOpenAIStreamError(error, options.fallbackMessage)),
+    data: JSON.stringify(createOpenAIStreamError(
+      error,
+      options.fallbackMessage,
+      options.responsesSequenceNumber,
+    )),
   })
 
-  if (!stream.aborted && !stream.closed) {
+  // Chat Completions uses the legacy [DONE] sentinel. Responses streams are
+  // terminated by their typed `error` event and must not add a non-schema
+  // sentinel after the official terminal event.
+  if (options.responsesSequenceNumber === undefined && !stream.aborted && !stream.closed) {
     await stream.writeSSE({
       data: '[DONE]',
     })
   }
 }
 
-function createOpenAIStreamError(error: unknown, fallbackMessage: string): OpenAIStreamError {
+function createOpenAIStreamError(
+  error: unknown,
+  fallbackMessage: string,
+  responsesSequenceNumber?: number,
+): ChatCompatibleStreamError | ResponsesStreamError {
+  const message = error instanceof Error ? error.message : fallbackMessage
+  if (responsesSequenceNumber !== undefined) {
+    return {
+      type: 'error',
+      code: 'stream_error',
+      message,
+      param: null,
+      sequence_number: responsesSequenceNumber,
+    }
+  }
+
   return {
     type: 'error',
     error: {
-      message: error instanceof Error ? error.message : fallbackMessage,
+      message,
       type: 'server_error',
       code: 'stream_error',
     },

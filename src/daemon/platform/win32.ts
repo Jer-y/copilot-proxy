@@ -10,7 +10,26 @@ import { PATHS } from '~/lib/paths'
 
 const TASK_NAME = 'CopilotProxy'
 const GRACEFUL_STOP_TIMEOUT_MS = 5_000
+const TASK_STOP_POLL_INTERVAL_MS = 100
 let pendingInstall: { previousTaskXml: string | undefined } | undefined
+
+export interface UninstallAutoStartOptions {
+  isInstalled?: () => boolean
+  isRunning?: () => boolean
+  requestGracefulStop?: () => boolean
+  endTask?: () => void
+  waitForStop?: () => boolean
+  deleteTask?: () => void
+}
+
+export interface ScheduledTaskControlOptions {
+  isInstalled?: () => boolean
+  isRunning?: () => boolean
+  requestGracefulStop?: () => boolean
+  endTask?: () => void
+  waitForStop?: () => boolean
+  runTask?: () => void
+}
 
 function escapeXmlAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
@@ -164,6 +183,14 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   const xmlPath = path.join(tmpDir, 'copilot-proxy-task.xml')
   const wasInstalled = isAutoStartInstalled()
   const previousTaskXml = wasInstalled ? readInstalledTaskXml() : undefined
+  if (wasInstalled && !previousTaskXml) {
+    consola.error('Cannot update scheduled task because its current definition could not be captured for rollback')
+    return false
+  }
+  // Register the rollback state before any write or schtasks mutation. If an
+  // unexpected exception escapes this function, enable.ts can still restore
+  // the previous definition (or remove a partially-created new task).
+  pendingInstall = { previousTaskXml }
 
   try {
     fs.writeFileSync(xmlPath, taskXml, { encoding: 'utf16le' })
@@ -179,30 +206,8 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   }
   catch (error) {
     consola.error('Failed to create scheduled task:', error instanceof Error ? error.message : error)
-    if (wasInstalled && previousTaskXml) {
-      try {
-        fs.writeFileSync(xmlPath, previousTaskXml, { encoding: 'utf16le' })
-        execFileSync('schtasks', [
-          '/create',
-          '/tn',
-          TASK_NAME,
-          '/xml',
-          xmlPath,
-          '/f',
-        ], { stdio: 'pipe' })
-      }
-      catch (rollbackError) {
-        consola.error('Failed to restore the previous scheduled task:', rollbackError instanceof Error ? rollbackError.message : rollbackError)
-      }
-    }
-    else if (!wasInstalled && isAutoStartInstalled()) {
-      try {
-        execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
-      }
-      catch (rollbackError) {
-        consola.error('Failed to roll back partially-created scheduled task:', rollbackError instanceof Error ? rollbackError.message : rollbackError)
-      }
-    }
+    if (!rollbackAutoStartInstall())
+      throw new Error('Failed to create scheduled task and roll back the previous definition', { cause: error })
     return false
   }
   finally {
@@ -212,7 +217,6 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
     catch {}
   }
 
-  pendingInstall = { previousTaskXml }
   consola.success('Auto-start enabled via Task Scheduler')
   return true
 }
@@ -223,20 +227,20 @@ export function commitAutoStartInstall(): void {
 
 export function rollbackAutoStartInstall(): boolean {
   const install = pendingInstall
-  pendingInstall = undefined
   if (!install)
     return true
 
-  try {
-    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
-  }
-  catch {
-    // The replacement task may not have started.
-  }
+  if (!stopReplacementTaskForRollback())
+    return false
 
   if (!install.previousTaskXml) {
+    if (!isAutoStartInstalled()) {
+      pendingInstall = undefined
+      return true
+    }
     try {
       execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
+      pendingInstall = undefined
       return true
     }
     catch (error) {
@@ -256,7 +260,7 @@ export function rollbackAutoStartInstall(): boolean {
       rollbackPath,
       '/f',
     ], { stdio: 'pipe' })
-    execFileSync('schtasks', ['/run', '/tn', TASK_NAME], { stdio: 'pipe' })
+    pendingInstall = undefined
     return true
   }
   catch (error) {
@@ -266,6 +270,26 @@ export function rollbackAutoStartInstall(): boolean {
   finally {
     fs.rmSync(rollbackPath, { force: true })
   }
+}
+
+function stopReplacementTaskForRollback(): boolean {
+  if (!isScheduledTaskRunning())
+    return true
+  if (requestGracefulTaskStop())
+    return true
+
+  try {
+    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
+  }
+  catch (error) {
+    consola.error('Failed to stop replacement scheduled task during rollback:', error instanceof Error ? error.message : error)
+    return false
+  }
+  if (waitForScheduledTaskStop())
+    return true
+
+  consola.error('Replacement scheduled task is still running; refusing to replace or delete its definition')
+  return false
 }
 
 function readInstalledTaskXml(): string | undefined {
@@ -283,53 +307,74 @@ function readInstalledTaskXml(): string | undefined {
 }
 
 export function isAutoStartInstalled(): boolean {
-  try {
-    execFileSync('schtasks', ['/query', '/tn', TASK_NAME], { stdio: 'pipe' })
+  const output = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$ErrorActionPreference = 'Stop'; $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -eq '${TASK_NAME}' }); if ($tasks.Count -gt 0) { 'installed' } else { 'absent' }`,
+    ],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  ).trim()
+  if (output === 'installed')
     return true
-  }
-  catch {
+  if (output === 'absent')
     return false
-  }
+  throw new Error(`Unexpected Task Scheduler query result: ${output || '<empty>'}`)
 }
 
-export function stopAutoStartService(): boolean {
-  if (!isAutoStartInstalled())
+export function stopAutoStartService(options: ScheduledTaskControlOptions = {}): boolean {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  const isRunning = options.isRunning ?? isScheduledTaskRunning
+  const gracefulStop = options.requestGracefulStop ?? requestGracefulTaskStop
+  const endTask = options.endTask ?? (() => {
+    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'inherit' })
+  })
+  const waitForStop = options.waitForStop ?? waitForScheduledTaskStop
+
+  if (!isInstalled())
     return false
 
-  if (!isScheduledTaskRunning())
+  if (!isRunning())
     return true
 
-  if (requestGracefulTaskStop())
+  if (gracefulStop())
     return true
 
   try {
-    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'inherit' })
-    return true
+    endTask()
   }
   catch (error) {
     consola.error('Failed to stop scheduled task:', error instanceof Error ? error.message : error)
     return false
   }
+
+  if (!waitForStop()) {
+    consola.error('Scheduled task is still running after schtasks /end')
+    return false
+  }
+  return true
 }
 
-export function restartAutoStartService(): boolean {
-  if (!isAutoStartInstalled())
+export function restartAutoStartService(options: ScheduledTaskControlOptions = {}): boolean {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  const isRunning = options.isRunning ?? isScheduledTaskRunning
+  const runTask = options.runTask ?? (() => {
+    execFileSync('schtasks', ['/run', '/tn', TASK_NAME], { stdio: 'inherit' })
+  })
+
+  if (!isInstalled())
     return false
 
-  if (isScheduledTaskRunning() && !requestGracefulTaskStop()) {
-    try {
-      execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
-    }
-    catch {
-      // Starting below is the important part.
-    }
-  }
+  if (isRunning() && !stopAutoStartService(options))
+    return false
 
   rotateDaemonLogIfNeeded()
   ensureDaemonLogFile()
 
   try {
-    execFileSync('schtasks', ['/run', '/tn', TASK_NAME], { stdio: 'inherit' })
+    runTask()
     return true
   }
   catch (error) {
@@ -371,36 +416,63 @@ export function showAutoStartLogs(options: { follow: boolean, lines: number }): 
   return true
 }
 
-export async function uninstallAutoStart(): Promise<boolean> {
-  if (!isAutoStartInstalled()) {
+export async function uninstallAutoStart(options: UninstallAutoStartOptions = {}): Promise<boolean> {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  const isRunning = options.isRunning ?? isScheduledTaskRunning
+  const gracefulStop = options.requestGracefulStop ?? requestGracefulTaskStop
+  const endTask = options.endTask ?? (() => {
+    execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
+  })
+  const waitForStop = options.waitForStop ?? waitForScheduledTaskStop
+  const deleteTask = options.deleteTask ?? (() => {
+    execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
+  })
+
+  if (!isInstalled()) {
     consola.info('Auto-start service is not installed')
     return true
   }
 
-  if (isScheduledTaskRunning() && !requestGracefulTaskStop()) {
+  if (isRunning() && !gracefulStop()) {
     try {
-      execFileSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'pipe' })
+      endTask()
     }
-    catch {
-      // Task may already have stopped, that's fine.
+    catch (error) {
+      consola.error('Failed to end scheduled task; refusing to delete a task that may still be running:', error instanceof Error ? error.message : error)
+      return false
+    }
+
+    if (!waitForStop()) {
+      consola.error('Scheduled task is still running after schtasks /end; refusing to delete it')
+      return false
     }
   }
 
   try {
-    execFileSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'pipe' })
+    deleteTask()
   }
   catch (error) {
     consola.error('Failed to delete scheduled task:', error instanceof Error ? error.message : error)
     return false
   }
 
-  if (isAutoStartInstalled()) {
+  if (isInstalled()) {
     consola.error('Failed to delete scheduled task: task still exists after deletion')
     return false
   }
 
   consola.success('Auto-start disabled')
   return true
+}
+
+function waitForScheduledTaskStop(): boolean {
+  const deadline = Date.now() + GRACEFUL_STOP_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if (!isScheduledTaskRunning())
+      return true
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TASK_STOP_POLL_INTERVAL_MS)
+  }
+  return !isScheduledTaskRunning()
 }
 
 function isScheduledTaskRunning(): boolean {
@@ -435,14 +507,14 @@ function requestGracefulTaskStop(): boolean {
 
   const deadline = Date.now() + GRACEFUL_STOP_TIMEOUT_MS
   while (fs.existsSync(PATHS.DAEMON_STOP) && Date.now() < deadline)
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TASK_STOP_POLL_INTERVAL_MS)
 
   let acknowledged = !fs.existsSync(PATHS.DAEMON_STOP)
   if (acknowledged) {
     while (Date.now() < deadline) {
       if (!isScheduledTaskRunning())
         break
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TASK_STOP_POLL_INTERVAL_MS)
     }
   }
   acknowledged = acknowledged && !isScheduledTaskRunning()

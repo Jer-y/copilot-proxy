@@ -282,6 +282,59 @@ describe('chat-completions error paths', () => {
     expect(body).toContain('data: [DONE]')
   })
 
+  test('streaming rejects non-SSE success responses before opening a client stream', async () => {
+    fetchMock.mockImplementation(async () => new Response('maintenance', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    }))
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(502)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'invalid_upstream_response',
+      },
+    })
+  })
+
+  test('streaming emits an error when upstream closes before [DONE]', async () => {
+    fetchMock.mockImplementation(async () => new Response([
+      'data: {"id":"chatcmpl_truncated","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}',
+      '',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    const body = await res.text()
+    expect(res.status).toBe(200)
+    expect(body).toContain('"partial"')
+    expect(body).toContain('event: error')
+    expect(body).toContain('terminated before the [DONE] event')
+    expect(body).toContain('data: [DONE]')
+  })
+
   test('Claude chat-completions requests keep using /chat/completions despite native Anthropic support', async () => {
     fetchMock.mockImplementation(async (url: string, _init?: RequestInit): Promise<Response> => {
       if (url.endsWith('/chat/completions')) {

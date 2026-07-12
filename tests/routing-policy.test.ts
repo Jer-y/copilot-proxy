@@ -261,15 +261,16 @@ describe('assertResponsesPayloadTranslatable', () => {
         input: 'hi',
         store: false,
         previous_response_id: null,
-        background: false,
+        background: null,
         conversation: null,
         prompt: null,
         max_tool_calls: null,
         context_management: [],
-        truncation: 'disabled',
+        truncation: null,
         include: [],
         stream_options: { include_obfuscation: false },
-        reasoning: { summary: 'none', generate_summary: null },
+        text: { verbosity: null },
+        reasoning: { summary: null, generate_summary: null },
       },
       (msg) => { throw new Error(msg) },
     )).not.toThrow()
@@ -351,6 +352,103 @@ describe('assertMessagesPayloadTranslatable', () => {
         max_tokens: 64,
         messages: [{ role: 'user', content: 'Call noop.' }],
         tools: [{ type: 'custom', name: 'noop', input_schema: { type: 'object', properties: {} } }],
+      },
+      (msg) => { throw new Error(msg) },
+    )).not.toThrow()
+  })
+
+  test('rejects Anthropic request semantics that Responses translation cannot preserve', () => {
+    const base = {
+      model: 'gpt-5.4',
+      max_tokens: 64,
+      messages: [{ role: 'user' as const, content: 'hi' }],
+    }
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['stop_sequences', { stop_sequences: ['END'] }],
+      ['top_k', { top_k: 40 }],
+      ['task_budget', { output_config: { task_budget: { type: 'tokens', total: 20_000 } } }],
+      ['MCP servers', { mcp_servers: [{ type: 'url', name: 'tools', url: 'https://example.com/mcp' }] }],
+      ['context_management', { context_management: { edits: [{ type: 'compact_20260112' }] } }],
+    ]
+
+    for (const [field, extra] of cases) {
+      expect(() => assertMessagesPayloadTranslatable(
+        { ...base, ...extra } as never,
+        (msg) => { throw new Error(msg) },
+      )).toThrow(field)
+    }
+  })
+
+  test('allows explicit no-op Anthropic translation settings', () => {
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+        stop_sequences: [],
+        mcp_servers: [],
+        context_management: { edits: [] },
+        output_config: { task_budget: null },
+      } as never,
+      (msg) => { throw new Error(msg) },
+    )).not.toThrow()
+  })
+
+  test('rejects replayed Anthropic server-tool history instead of deleting it', () => {
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{
+          role: 'assistant',
+          content: [
+            { type: 'server_tool_use', id: 'srv_1', name: 'code_execution', input: {} },
+            { type: 'bash_code_execution_tool_result', tool_use_id: 'srv_1', content: { stdout: 'ok' } },
+          ],
+        }],
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/server-tool history/)
+  })
+
+  test('rejects explicit tool and reasoning controls only when model capability cannot preserve them', () => {
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'future-responses-model',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+        tool_choice: { type: 'any' },
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/tool_choice/)
+
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'o3-mini',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+        tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/parallel_tool_calls/)
+
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+        output_config: { effort: 'max' },
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/thinking\/output_config\.effort/)
+
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.6',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+        tool_choice: { type: 'tool', name: 'noop', disable_parallel_tool_use: true },
+        output_config: { effort: 'max' },
       },
       (msg) => { throw new Error(msg) },
     )).not.toThrow()

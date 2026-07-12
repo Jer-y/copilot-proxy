@@ -397,6 +397,7 @@ describe('finalizeAnthropicToResponsesStreamState', () => {
     const finalEvents = finalizeAnthropicToResponsesStreamState(state)
 
     expect(failureEvents.map(event => event.type)).toEqual(['response.failed'])
+    expect(failureEvents[0]?.sequence_number).toBe(2)
     expect(lateCompletionEvents).toEqual([])
     expect(finalEvents).toEqual([])
   })
@@ -427,6 +428,7 @@ describe('finalizeAnthropicToResponsesStreamState', () => {
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({
       type: 'response.failed',
+      sequence_number: 4,
       response: {
         status: 'failed',
         error: { code: 'upstream_stream_terminated' },
@@ -434,7 +436,7 @@ describe('finalizeAnthropicToResponsesStreamState', () => {
     })
   })
 
-  test('synthesizes response.completed when Anthropic stream ends after visible text', () => {
+  test('emits response.failed when Anthropic stream ends after visible text without message_stop', () => {
     const state = createAnthropicToResponsesStreamState()
     translateAnthropicStreamEventToResponses({
       type: 'message_start',
@@ -462,19 +464,20 @@ describe('finalizeAnthropicToResponsesStreamState', () => {
 
     const events = finalizeAnthropicToResponsesStreamState(state)
 
-    expect(events.map(event => event.type)).toEqual([
-      'response.output_text.done',
-      'response.content_part.done',
-      'response.output_item.done',
-      'response.completed',
-    ])
-    expect(events[3]).toMatchObject({
-      type: 'response.completed',
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'response.failed',
+      sequence_number: 5,
       response: {
-        status: 'completed',
+        status: 'failed',
+        error: {
+          code: 'upstream_stream_terminated',
+          message: expect.stringContaining('message_stop'),
+        },
         output: [
           {
             type: 'message',
+            status: 'in_progress',
             content: [{ type: 'output_text', text: 'partial' }],
           },
         ],
@@ -513,6 +516,7 @@ describe('finalizeAnthropicToResponsesStreamState', () => {
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({
       type: 'response.failed',
+      sequence_number: 3,
       response: {
         status: 'failed',
         error: {

@@ -1,18 +1,29 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import consola from 'consola'
 
+import { writeFileAtomically } from '~/daemon/atomic-file'
 import { ensureDaemonLogFile, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
+import { NATIVE_SERVICE_DEFINITION_PATH_ENV } from '~/daemon/service-install-state'
 import { getUserHomeDir, PATHS } from '~/lib/paths'
 
 const PLIST_NAME = 'com.copilot-proxy.plist'
 const LABEL = 'com.copilot-proxy'
 const LAUNCH_AGENTS_DIR = path.join(getUserHomeDir(), 'Library', 'LaunchAgents')
-const PLIST_PATH = path.join(LAUNCH_AGENTS_DIR, PLIST_NAME)
+const PLIST_PATH = process.env[NATIVE_SERVICE_DEFINITION_PATH_ENV]
+  || path.join(LAUNCH_AGENTS_DIR, PLIST_NAME)
 const LAUNCHD_STOP_TIMEOUT_MS = 5_000
 let pendingInstall: { previous: ExistingPlist | undefined } | undefined
+
+export interface UninstallAutoStartOptions {
+  isInstalled?: () => boolean
+  isLoaded?: () => boolean
+  stop?: () => boolean
+  unload?: () => void
+  removeDefinition?: () => void
+}
 
 function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -52,13 +63,33 @@ ${programArgs}
 `
 
   const previousPlist = readExistingPlist()
+  const previousWasLoaded = previousPlist !== undefined && isLaunchdJobLoaded()
+  pendingInstall = { previous: previousPlist }
+
+  if (previousWasLoaded) {
+    if (!stopAutoStartService()) {
+      consola.error('Failed to stop the previous launchd service before updating it')
+      pendingInstall = undefined
+      return false
+    }
+    try {
+      execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
+    }
+    catch (error) {
+      consola.error('Failed to unload the previous launchd service before updating it:', error instanceof Error ? error.message : error)
+      if (!rollbackAutoStartInstall())
+        throw new Error('Failed to unload launchd service and restore the previous definition', { cause: error })
+      return false
+    }
+  }
+
   try {
-    fs.mkdirSync(LAUNCH_AGENTS_DIR, { recursive: true })
-    fs.writeFileSync(PLIST_PATH, plist)
+    writeFileAtomically(PLIST_PATH, plist, previousPlist?.mode ?? 0o600)
   }
   catch (error) {
     consola.error('Failed to write launchd plist:', error instanceof Error ? error.message : error)
-    rollbackPlist(previousPlist)
+    if (!rollbackAutoStartInstall())
+      throw new Error('Failed to write launchd plist and roll back the previous definition', { cause: error })
     return false
   }
 
@@ -68,25 +99,11 @@ ${programArgs}
   catch {
     consola.error('launchctl load failed. You may need to load it manually.')
     consola.info(`Plist written to: ${PLIST_PATH}`)
-    try {
-      execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
-    }
-    catch {
-      // The failed load normally means no new job was registered.
-    }
-    rollbackPlist(previousPlist)
-    if (previousPlist) {
-      try {
-        execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'pipe' })
-      }
-      catch (restoreError) {
-        consola.error('Failed to reload the previous launchd service after rollback:', restoreError instanceof Error ? restoreError.message : restoreError)
-      }
-    }
+    if (!rollbackAutoStartInstall())
+      throw new Error('launchctl load failed and the previous definition could not be restored')
     return false
   }
 
-  pendingInstall = { previous: previousPlist }
   consola.success('Auto-start enabled via launchd')
   return true
 }
@@ -114,8 +131,7 @@ function readExistingPlist(): ExistingPlist | undefined {
 function rollbackPlist(previous: ExistingPlist | undefined): boolean {
   try {
     if (previous) {
-      fs.writeFileSync(PLIST_PATH, previous.content, { mode: previous.mode })
-      fs.chmodSync(PLIST_PATH, previous.mode)
+      writeFileAtomically(PLIST_PATH, previous.content, previous.mode)
     }
     else {
       fs.rmSync(PLIST_PATH, { force: true })
@@ -134,33 +150,36 @@ export function commitAutoStartInstall(): void {
 
 export function rollbackAutoStartInstall(): boolean {
   const install = pendingInstall
-  pendingInstall = undefined
   if (!install)
     return true
 
-  try {
-    execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
-  }
-  catch {
-    // The replacement may have failed before launchd kept it loaded.
+  if (isLaunchdJobLoaded()) {
+    if (!stopAutoStartService())
+      return false
+    try {
+      execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
+    }
+    catch (error) {
+      consola.error('Failed to unload replacement launchd service during rollback:', error instanceof Error ? error.message : error)
+      return false
+    }
   }
   if (!rollbackPlist(install.previous))
     return false
-  if (!install.previous)
-    return true
-
-  try {
-    execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'pipe' })
-    return true
-  }
-  catch (error) {
-    consola.error('Restored the previous launchd plist but failed to load it:', error instanceof Error ? error.message : error)
-    return false
-  }
+  pendingInstall = undefined
+  return true
 }
 
 export function isAutoStartInstalled(): boolean {
-  return fs.existsSync(PLIST_PATH)
+  try {
+    fs.statSync(PLIST_PATH)
+    return true
+  }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      return false
+    throw error
+  }
 }
 
 export function stopAutoStartService(): boolean {
@@ -194,13 +213,29 @@ export function restartAutoStartService(): boolean {
   rotateDaemonLogIfNeeded()
   ensureDaemonLogFile()
 
+  const uid = process.getuid?.()
+  const target = launchdTarget(uid)
   try {
-    execFileSync('launchctl', ['start', LABEL], { stdio: 'inherit' })
+    // A previously disabled job stays disabled across load/bootstrap. Re-enable
+    // the exact GUI-domain target before kickstarting it.
+    execFileSync('launchctl', buildLaunchctlEnableArgs(uid), { stdio: 'inherit' })
+    execFileSync('launchctl', buildLaunchctlKickstartArgs(uid), { stdio: 'inherit' })
     return true
   }
-  catch (error) {
-    consola.error('Failed to start launchd service:', error instanceof Error ? error.message : error)
-    return false
+  catch (kickstartError) {
+    // The plist may exist while the job is not currently loaded. Load it and
+    // retry the same domain-qualified kickstart once.
+    try {
+      execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'inherit' })
+      execFileSync('launchctl', ['enable', target], { stdio: 'inherit' })
+      execFileSync('launchctl', buildLaunchctlKickstartArgs(uid), { stdio: 'inherit' })
+      return true
+    }
+    catch (error) {
+      consola.error('Failed to kickstart launchd service:', error instanceof Error ? error.message : error)
+      consola.debug('Initial launchd kickstart failure:', kickstartError)
+      return false
+    }
   }
 }
 
@@ -226,6 +261,10 @@ export function buildLaunchctlKickstartArgs(uid?: number): string[] {
   return ['kickstart', '-k', launchdTarget(uid)]
 }
 
+export function buildLaunchctlEnableArgs(uid?: number): string[] {
+  return ['enable', launchdTarget(uid)]
+}
+
 function launchdTarget(uid?: number): string {
   return typeof uid === 'number' ? `gui/${uid}/${LABEL}` : LABEL
 }
@@ -235,44 +274,80 @@ export function isLaunchdJobRunningOutput(output: string): boolean {
 }
 
 function waitForLaunchdStop(): boolean {
-  const target = launchdTarget(process.getuid?.())
   const deadline = Date.now() + LAUNCHD_STOP_TIMEOUT_MS
   while (Date.now() < deadline) {
-    try {
-      const output = execFileSync('launchctl', ['print', target], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      if (!isLaunchdJobRunningOutput(output))
-        return true
-    }
-    catch {
+    const query = queryLaunchdJob()
+    if (query.state === 'not_loaded')
       return true
-    }
+    if (query.state === 'unknown')
+      return false
+    if (!isLaunchdJobRunningOutput(query.output))
+      return true
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
   }
   return false
 }
 
-export async function uninstallAutoStart(): Promise<boolean> {
-  if (!fs.existsSync(PLIST_PATH)) {
+function isLaunchdJobLoaded(): boolean {
+  const query = queryLaunchdJob()
+  if (query.state === 'unknown')
+    throw new Error(`Cannot determine launchd job state: ${query.detail}`)
+  return query.state === 'loaded'
+}
+
+function queryLaunchdJob():
+  | { state: 'loaded', output: string }
+  | { state: 'not_loaded' }
+  | { state: 'unknown', detail: string } {
+  const result = spawnSync('launchctl', ['print', launchdTarget(process.getuid?.())], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (result.error)
+    return { state: 'unknown', detail: result.error.message }
+  if (result.status === 0)
+    return { state: 'loaded', output: result.stdout }
+
+  const detail = `${result.stdout}\n${result.stderr}`.trim()
+  if (/could not find service|service not found|no such process/i.test(detail)) {
+    return { state: 'not_loaded' }
+  }
+  return {
+    state: 'unknown',
+    detail: detail || `launchctl exited with status ${result.status ?? 'unknown'}`,
+  }
+}
+
+export async function uninstallAutoStart(options: UninstallAutoStartOptions = {}): Promise<boolean> {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  const isLoaded = options.isLoaded ?? isLaunchdJobLoaded
+  const stop = options.stop ?? stopAutoStartService
+  const unload = options.unload ?? (() => {
+    execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
+  })
+  const removeDefinition = options.removeDefinition ?? (() => fs.unlinkSync(PLIST_PATH))
+
+  if (!isInstalled()) {
     consola.info('Auto-start service is not installed')
     return true
   }
 
-  let hadErrors = false
-  if (!stopAutoStartService())
-    hadErrors = true
-  try {
-    execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
-  }
-  catch (error) {
-    consola.error('Failed to unload service:', error instanceof Error ? error.message : error)
-    hadErrors = true
+  if (isLoaded()) {
+    if (!stop()) {
+      consola.error('Failed to stop launchd service; keeping its plist installed')
+      return false
+    }
+    try {
+      unload()
+    }
+    catch (error) {
+      consola.error('Failed to unload service; keeping its plist installed:', error instanceof Error ? error.message : error)
+      return false
+    }
   }
 
   try {
-    fs.unlinkSync(PLIST_PATH)
+    removeDefinition()
   }
   catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code !== 'ENOENT') {
@@ -281,13 +356,8 @@ export async function uninstallAutoStart(): Promise<boolean> {
     }
   }
 
-  if (fs.existsSync(PLIST_PATH)) {
+  if (isInstalled()) {
     consola.error('Failed to remove plist file: file still exists after deletion')
-    return false
-  }
-
-  if (hadErrors) {
-    consola.warn('Auto-start plist was removed, but launchd reported an unload failure')
     return false
   }
 

@@ -10,9 +10,9 @@ export interface AnthropicMessagesPayload {
   messages: Array<AnthropicMessage>
   max_tokens?: number
   system?: string | Array<AnthropicTextBlock>
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
   metadata?: {
-    user_id?: string
+    user_id?: string | null
   }
   stop_sequences?: Array<string>
   stream?: boolean
@@ -38,11 +38,18 @@ export interface AnthropicMessagesPayload {
       type: 'disabled'
     }
   output_config?: {
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-    format?: AnthropicOutputConfigFormat
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
+    format?: AnthropicOutputConfigFormat | null
+    task_budget?: {
+      type: 'tokens'
+      total: number
+      remaining?: number | null
+    } | null
   }
   service_tier?: 'auto' | 'standard_only'
   speed?: 'fast' | 'normal'
+  context_management?: Record<string, unknown> | null
+  mcp_servers?: Array<AnthropicMcpServerDefinition>
 }
 
 export interface AnthropicOutputConfigJsonSchemaFormat {
@@ -64,7 +71,7 @@ export interface AnthropicTextBlock {
   type: 'text'
   text: string
   citations?: Array<Record<string, unknown>>
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicImageBlock {
@@ -79,7 +86,7 @@ export interface AnthropicImageBlock {
       type: 'url'
       url: string
     }
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicDocumentBlock {
@@ -103,12 +110,12 @@ export interface AnthropicDocumentBlock {
       type: 'file'
       file_id: string
     }
-  title?: string
-  context?: string
+  title?: string | null
+  context?: string | null
   citations?: {
     enabled: boolean
-  }
-  cache_control?: AnthropicCacheControl
+  } | null
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicTextDocumentSource {
@@ -123,9 +130,30 @@ export interface AnthropicTextDocumentSource {
 export interface AnthropicToolResultBlock {
   type: 'tool_result'
   tool_use_id: string
-  content: string | Array<AnthropicTextBlock | AnthropicImageBlock | AnthropicDocumentBlock>
+  content?: string | Array<
+    | AnthropicTextBlock
+    | AnthropicImageBlock
+    | AnthropicDocumentBlock
+    | AnthropicSearchResultBlock
+    | AnthropicToolReferenceBlock
+  >
   is_error?: boolean
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicSearchResultBlock {
+  type: 'search_result'
+  source: string
+  title: string
+  content: Array<AnthropicTextBlock>
+  citations?: { enabled: boolean }
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicToolReferenceBlock {
+  type: 'tool_reference'
+  tool_name: string
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicToolUseBlock {
@@ -133,7 +161,7 @@ export interface AnthropicToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicThinkingBlock {
@@ -157,7 +185,7 @@ export interface AnthropicServerToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicServerToolResultBlock {
@@ -169,6 +197,8 @@ export type AnthropicUserContentBlock
   = | AnthropicTextBlock
     | AnthropicImageBlock
     | AnthropicDocumentBlock
+    | AnthropicSearchResultBlock
+    | AnthropicToolReferenceBlock
     | AnthropicToolResultBlock
 
 export type AnthropicAssistantContentBlock
@@ -196,27 +226,51 @@ export interface AnthropicSystemMessage {
 
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage | AnthropicSystemMessage
 
-export type AnthropicTool = AnthropicCustomTool | AnthropicAdvisorTool | AnthropicServerTool
+export type AnthropicTool = AnthropicCustomTool | AnthropicAdvisorTool | AnthropicMcpToolset | AnthropicServerTool
 
 export interface AnthropicCustomTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
   strict?: boolean
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicAdvisorTool {
   type: 'advisor_20260301'
   name: string
   model: string
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicMcpToolConfig {
+  defer_loading?: boolean
+  enabled?: boolean
+}
+
+export interface AnthropicMcpToolset {
+  type: 'mcp_toolset'
+  mcp_server_name: string
+  cache_control?: AnthropicCacheControl | null
+  configs?: Record<string, AnthropicMcpToolConfig> | null
+  default_config?: AnthropicMcpToolConfig
+}
+
+export interface AnthropicMcpServerDefinition {
+  type: 'url'
+  name: string
+  url: string
+  authorization_token?: string | null
+  tool_configuration?: {
+    allowed_tools?: Array<string> | null
+    enabled?: boolean | null
+  } | null
 }
 
 export interface AnthropicServerTool {
   type: string
   name: string
-  cache_control?: AnthropicCacheControl
+  cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicResponse {
@@ -361,6 +415,8 @@ export interface AnthropicToResponsesStreamState {
   requestedModel?: string
   createdSent: boolean
   messageStopSent: boolean
+  /** Next monotonically increasing Responses SSE sequence number. */
+  nextSequenceNumber: number
   nextOutputIndex: number
   /** Current Anthropic content block type (needed because content_block_stop has no type info) */
   currentBlockType: 'text' | 'thinking' | 'tool_use' | 'redacted_thinking' | null

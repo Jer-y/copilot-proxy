@@ -99,6 +99,7 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
     let completed = false
+    let terminalSeen = false
     stream.onAbort(() => result.cancel?.('chat completions client disconnected before upstream stream completed'))
     try {
       for await (const chunk of streamBody) {
@@ -107,9 +108,14 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
         if (consola.level >= 4) {
           consola.debug('Chat completions stream chunk:', summarizeChatCompletionStreamChunk(chunk as SSEMessage))
         }
-        await stream.writeSSE(normalizeChatCompletionStreamChunk(chunk as SSEMessage))
+        const message = normalizeChatCompletionStreamChunk(chunk as SSEMessage)
+        terminalSeen ||= message.data === '[DONE]'
+        await stream.writeSSE(message)
       }
-      completed = !stream.aborted
+      if (!stream.aborted && !terminalSeen) {
+        throw new Error('Copilot chat completion stream terminated before the [DONE] event.')
+      }
+      completed = terminalSeen && !stream.aborted
     }
     catch (error) {
       await writeOpenAIStreamError(stream, error, {

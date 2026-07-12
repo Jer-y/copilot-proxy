@@ -21,6 +21,7 @@ interface CodexModelsResponse {
 const CODEX_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[\d.a-z-]+)?$/i
 const CODEX_CATALOG_FETCH_TIMEOUT_MS = 5_000
 const CODEX_CATALOG_CACHE_MAX_ENTRIES = 16
+const CODEX_CATALOG_FAILURE_CACHE_MS = 30_000
 // Codex derives the compact threshold at 90% of the usable context window.
 const CODEX_AUTO_COMPACT_PROMPT_WINDOW_RATIO = 0.9
 const codexCatalogCache = new Map<string, Promise<CodexModelsResponse>>()
@@ -106,7 +107,11 @@ async function fetchCodexBundledCatalog(clientVersion: string): Promise<CodexMod
   let cachedCatalog = codexCatalogCache.get(clientVersion)
   if (!cachedCatalog) {
     cachedCatalog = fetchCodexBundledCatalogUncached(clientVersion).catch((error: unknown) => {
-      codexCatalogCache.delete(clientVersion)
+      const timer = setTimeout(() => {
+        if (codexCatalogCache.get(clientVersion) === cachedCatalog)
+          codexCatalogCache.delete(clientVersion)
+      }, CODEX_CATALOG_FAILURE_CACHE_MS)
+      timer.unref?.()
       throw error
     })
     pruneCodexCatalogCache()

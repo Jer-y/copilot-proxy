@@ -17,6 +17,7 @@ import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { generateEnvScript } from './lib/shell'
 import { state } from './lib/state'
+import { toAnthropicClientModelName } from './routes/messages/model-normalization'
 import { server } from './server'
 
 export interface RunServerOptions {
@@ -72,15 +73,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         options: state.models.data.map(model => model.id),
       },
     )
+    const clientModel = toAnthropicClientModelName(selectedModel)
+    const clientSmallModel = toAnthropicClientModelName(selectedSmallModel)
 
     const command = generateEnvScript(
       {
         ANTHROPIC_BASE_URL: serverUrl,
         ANTHROPIC_AUTH_TOKEN: 'dummy',
-        ANTHROPIC_MODEL: selectedModel,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: selectedModel,
-        ANTHROPIC_SMALL_FAST_MODEL: selectedSmallModel,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: selectedSmallModel,
+        ANTHROPIC_MODEL: clientModel,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: clientModel,
+        ANTHROPIC_SMALL_FAST_MODEL: clientSmallModel,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: clientSmallModel,
         DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       },
@@ -283,7 +286,7 @@ export const start = defineCommand({
       alias: 'g',
       type: 'string',
       description:
-        'Provide GitHub token directly (must be generated using the `auth` subcommand)',
+        'Persist a GitHub token securely, then exit; rerun start without this flag',
     },
     'claude-code': {
       alias: 'c',
@@ -342,10 +345,6 @@ export const start = defineCommand({
       // will rewrite the marker and the watcher below will still observe it.
       fs.rmSync(PATHS.DAEMON_STOP, { force: true })
     }
-    else if (args['proxy-env'] && !args._supervisor) {
-      const { assertProxyEndpointAvailable } = await import('~/daemon/service-env')
-      assertProxyEndpointAvailable(process.env)
-    }
 
     const port = validatePort(args.port)
     if (port === null) {
@@ -390,6 +389,19 @@ export const start = defineCommand({
     if (!validateAccountType(args['account-type'])) {
       consola.error(`Invalid account-type: ${args['account-type']} (must be one of: individual, business, enterprise)`)
       process.exit(1)
+    }
+
+    if (args['proxy-env']) {
+      const { assertProxyEndpointAvailable } = await import('~/daemon/service-env')
+      const copilotOrigin = args['account-type'] === 'individual'
+        ? 'https://api.githubcopilot.com'
+        : `https://api.${args['account-type']}.githubcopilot.com`
+      assertProxyEndpointAvailable(process.env, [
+        'https://api.github.com',
+        copilotOrigin,
+        'https://update.code.visualstudio.com',
+        'https://raw.githubusercontent.com',
+      ])
     }
 
     if (args._supervisor) {
