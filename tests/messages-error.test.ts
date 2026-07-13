@@ -64,6 +64,50 @@ beforeEach(() => {
 })
 
 describe('messages error paths', () => {
+  test('upstream AbortError returns Anthropic API errors for messages and count_tokens', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    const abortError = new Error('Copilot upstream request aborted.')
+    abortError.name = 'AbortError'
+    globalThis.fetch = mock(async () => {
+      throw abortError
+    }) as unknown as typeof fetch
+
+    for (const request of [
+      {
+        path: '/v1/messages',
+        body: {
+          model: 'claude-opus-4.8',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+      },
+      {
+        path: '/v1/messages/count_tokens',
+        body: {
+          model: 'claude-opus-4.8',
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+      },
+    ]) {
+      const res = await server.request(request.path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request.body),
+      })
+
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({
+        type: 'error',
+        error: {
+          type: 'api_error',
+          message: 'Copilot upstream request aborted.',
+        },
+      })
+    }
+  })
+
   test('invalid JSON body returns 400 with invalid_request_error', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -562,40 +606,132 @@ describe('messages error paths', () => {
     expect(forwardedPayload.max_tokens).toBe(8192)
   })
 
-  test('max_tokens above model limits are clamped before forwarding', async () => {
+  test('explicit 128K max_tokens is preserved for verified Opus models even when live metadata is stale', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    state.models = {
+      data: ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8'].map(id => ({
+        id,
+        capabilities: {
+          limits: {
+            max_output_tokens: 64000,
+          },
+        },
+      })),
+    } as typeof state.models
+
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    for (const model of ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8']) {
+      fetchMock.mockClear()
+      const res = await server.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          max_tokens: 128000,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
+      expect(forwardedPayload.max_tokens).toBe(128000)
+    }
+  })
+
+  test('missing max_tokens uses the verified 128K Opus limit over stale live metadata', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    state.models = {
+      data: ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8'].map(id => ({
+        id,
+        capabilities: {
+          limits: {
+            max_output_tokens: 64000,
+          },
+        },
+      })),
+    } as typeof state.models
+
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    for (const model of ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8']) {
+      fetchMock.mockClear()
+      const res = await server.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
+      expect(forwardedPayload.max_tokens).toBe(128000)
+    }
+  })
+
+  test('translated Responses preserves explicit max_output_tokens and uses the verified Opus default', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
     state.accountType = 'individual'
     state.models = {
       data: [{
-        id: 'claude-sonnet-4',
+        id: 'claude-opus-4.8',
         capabilities: {
           limits: {
-            max_output_tokens: 8192,
+            max_output_tokens: 64000,
           },
         },
+        supported_endpoints: ['/v1/messages'],
       }],
     } as typeof state.models
 
     // @ts-expect-error test mock only needs fetch callable shape
     globalThis.fetch = fetchMock
 
-    const res = await server.request('/v1/messages', {
+    const res = await server.request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4',
-        max_tokens: 16000,
-        messages: [{ role: 'user', content: 'hi' }],
+        model: 'claude-opus-4.8',
+        store: false,
+        input: 'hi',
+        max_output_tokens: 128000,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
-    expect(forwardedPayload.max_tokens).toBe(8192)
+    expect(forwardedPayload.max_tokens).toBe(128000)
+
+    fetchMock.mockClear()
+    const defaultedRes = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.8',
+        store: false,
+        input: 'hi',
+      }),
+    })
+
+    expect(defaultedRes.status).toBe(200)
+    const [, defaultedInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const defaultedPayload = JSON.parse(String(defaultedInit?.body)) as { max_tokens?: number }
+    expect(defaultedPayload.max_tokens).toBe(128000)
   })
 
   test('gpt-5.4 anthropic requests without "max_tokens" are backfilled and routed to /responses', async () => {

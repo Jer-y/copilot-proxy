@@ -59,8 +59,8 @@ On Linux, `enable` installs a user systemd service and requires systemd user lin
 
 ## Prerequisites
 
-- Bun >= 1.3.6 when running from source or with Bun
-- Node.js >= 22.19.0 when using npm, npx, pnpm, Yarn, or Volta
+- Bun >= 1.3.6 when running from source or using `bunx --bun`
+- Node.js >= 22.19.0 for global CLI installations and when using npm, npx, pnpm, Yarn, or Volta
 - GitHub account with Copilot subscription (individual, business, or enterprise)
 
 ## Installation
@@ -78,9 +78,6 @@ pnpm add -g @jer-y/copilot-proxy
 
 # yarn (classic)
 yarn global add @jer-y/copilot-proxy
-
-# bun
-bun add -g @jer-y/copilot-proxy
 
 # volta (optional)
 volta install @jer-y/copilot-proxy
@@ -104,8 +101,8 @@ pnpm dlx @jer-y/copilot-proxy@latest start
 # yarn dlx
 yarn dlx @jer-y/copilot-proxy@latest start
 
-# bunx
-bunx @jer-y/copilot-proxy@latest start
+# Bun (force the package bin to run with Bun)
+bunx --bun @jer-y/copilot-proxy@latest start
 ```
 
 ### Install from source (development)
@@ -218,7 +215,7 @@ For Claude-compatible clients, use New API's Claude-compatible access layer if y
 
 This gives a practical "deploy once, access everywhere" layout: copilot-proxy concentrates the Copilot compatibility work in one place, while New API provides the shared access-control and API-key layer for all downstream clients.
 
-## Using with npx (or pnpm/bunx)
+## Using with npx (or pnpm/Bun/Yarn)
 
 You can run the project directly using npx:
 
@@ -238,7 +235,7 @@ For authentication only:
 npx @jer-y/copilot-proxy@latest auth
 ```
 
-> Tip: If you prefer pnpm/bun/yarn, replace `npx` with `pnpm dlx`, `bunx`, or `yarn dlx`.
+> Tip: If you prefer pnpm/Bun/Yarn, replace `npx` with `pnpm dlx`, `bunx --bun`, or `yarn dlx`. The published global bin uses a Node.js shebang, so a Bun-only machine should use `bunx --bun` instead of `bun add -g`.
 
 ## Command Structure
 
@@ -315,6 +312,8 @@ When a `/v1/responses` request must be translated to a native Claude `/v1/messag
 | ------------ | ------------------------- | ------- | ----- |
 | --verbose    | Enable sensitive diagnostics | false | -v    |
 | --show-token | Show GitHub token on auth | false   | none  |
+| --github-token | Persist a GitHub token securely, then exit | none | -g |
+| --proxy-env | Use HTTP(S)_PROXY/NO_PROXY for authentication requests | false | none |
 
 ### Debug Command Options
 
@@ -371,7 +370,7 @@ Endpoints for monitoring your Copilot usage and quotas.
 
 ## Example Usage
 
-Using with npx (replace with `pnpm dlx`, `bunx`, or `yarn dlx` if preferred):
+Using with npx (replace with `pnpm dlx`, `bunx --bun`, or `yarn dlx` if preferred):
 
 ```sh
 # Basic usage with start command
@@ -401,6 +400,9 @@ npx @jer-y/copilot-proxy@latest start
 
 # Run only the auth flow
 npx @jer-y/copilot-proxy@latest auth
+
+# Persist an existing token without starting the device flow
+npx @jer-y/copilot-proxy@latest auth --github-token ghp_YOUR_TOKEN_HERE
 
 # Run auth flow with verbose logging
 npx @jer-y/copilot-proxy@latest auth --verbose

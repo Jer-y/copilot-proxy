@@ -3,6 +3,7 @@ import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 
 import { getModelConfig } from '~/lib/model-config'
+import { throwOpenAIInvalidRequestError } from '~/lib/openai-compat'
 import { fetchWithTimeout } from '~/lib/upstream-fetch'
 
 type CodexInputModality = 'text' | 'image'
@@ -33,7 +34,7 @@ export function isCodexModelsRequest(url: URL): boolean {
 export async function toCodexModelsResponse(models: Array<Model>, url: URL): Promise<CodexModelsResponse> {
   const clientVersion = url.searchParams.get('client_version')
   if (!clientVersion || !CODEX_VERSION_PATTERN.test(clientVersion)) {
-    throw new Error('Invalid Codex client_version')
+    throwOpenAIInvalidRequestError('Invalid Codex client_version')
   }
 
   const bundledCatalog = await fetchCodexBundledCatalog(clientVersion)

@@ -17,40 +17,32 @@ import { prepareAnthropicPayloadForNativeCopilotBackend } from './request-adapta
  * Handles token counting for Anthropic messages
  */
 export async function handleCountTokens(c: Context) {
-  try {
-    await enforceRateLimit(state)
+  await enforceRateLimit(state)
 
-    const anthropicBeta = c.req.header('anthropic-beta')
+  const anthropicBeta = c.req.header('anthropic-beta')
 
-    let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
+  let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
 
-    const effectiveModel = normalizeAnthropicModelName(anthropicPayload.model)
-    if (effectiveModel !== anthropicPayload.model) {
-      anthropicPayload = {
-        ...anthropicPayload,
-        model: effectiveModel,
-      }
+  const effectiveModel = normalizeAnthropicModelName(anthropicPayload.model)
+  if (effectiveModel !== anthropicPayload.model) {
+    anthropicPayload = {
+      ...anthropicPayload,
+      model: effectiveModel,
     }
-
-    // Count the exact request shape used by the native /v1/messages path.
-    // In particular, Copilot-unsupported text documents must be expanded in
-    // both endpoints or count_tokens can disagree with the actual request.
-    await prepareAnthropicPayloadForNativeCopilotBackend(anthropicPayload)
-    assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
-
-    await enforceManualApproval(state)
-
-    const result = await createAnthropicCountTokens(anthropicPayload, {
-      anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
-    })
-
-    forwardUpstreamHeaders(c, result.headers)
-    return c.json(result.body)
   }
-  catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      return c.body(null)
-    }
-    throw error
-  }
+
+  // Count the exact request shape used by the native /v1/messages path.
+  // In particular, Copilot-unsupported text documents must be expanded in
+  // both endpoints or count_tokens can disagree with the actual request.
+  await prepareAnthropicPayloadForNativeCopilotBackend(anthropicPayload)
+  assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
+
+  await enforceManualApproval(state)
+
+  const result = await createAnthropicCountTokens(anthropicPayload, {
+    anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
+  })
+
+  forwardUpstreamHeaders(c, result.headers)
+  return c.json(result.body)
 }

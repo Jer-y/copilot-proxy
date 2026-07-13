@@ -37,6 +37,7 @@ export interface RunServerOptions {
   proxyEnv: boolean
   exitOnPortInUse?: boolean
   nativeService?: boolean
+  nativeServiceInstanceToken?: string
 }
 
 function formatHostForUrl(host: string): string {
@@ -55,64 +56,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
 
-  if (options.claudeCode) {
-    invariant(state.models, 'Models should be loaded by now')
-
-    const selectedModel = await consola.prompt(
-      'Select a model to use with Claude Code',
-      {
-        type: 'select',
-        options: state.models.data.map(model => model.id),
-      },
-    )
-
-    const selectedSmallModel = await consola.prompt(
-      'Select a small model to use with Claude Code',
-      {
-        type: 'select',
-        options: state.models.data.map(model => model.id),
-      },
-    )
-    const clientModel = toAnthropicClientModelName(selectedModel)
-    const clientSmallModel = toAnthropicClientModelName(selectedSmallModel)
-
-    const command = generateEnvScript(
-      {
-        ANTHROPIC_BASE_URL: serverUrl,
-        ANTHROPIC_AUTH_TOKEN: 'dummy',
-        ANTHROPIC_MODEL: clientModel,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: clientModel,
-        ANTHROPIC_SMALL_FAST_MODEL: clientSmallModel,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: clientSmallModel,
-        DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1',
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      },
-      'claude',
-    )
-
-    try {
-      clipboard.writeSync(command)
-      consola.success('Copied Claude Code command to clipboard!')
-    }
-    catch {
-      consola.warn(
-        'Failed to copy to clipboard. Here is the Claude Code command:',
-      )
-      consola.log(command)
-    }
-  }
-
-  consola.box(
-    `🌐 Usage Viewer: https://jer-y.github.io/copilot-proxy?endpoint=${serverUrl}/usage`,
-  )
-
   try {
-    if (!isLoopbackHostname(options.host)) {
-      consola.warn(
-        `Listening on non-loopback host ${options.host}. Do not expose this proxy to LAN or Internet unless you fully trust every client that can reach it.`,
-      )
-    }
-
     const appServer = serve({
       fetch: server.fetch as ServerHandler,
       port: options.port,
@@ -123,9 +67,66 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       },
     })
 
+    await appServer.ready()
     installShutdownHandlers(appServer, {
       watchStopFile: process.platform === 'win32' && options.nativeService === true,
     })
+
+    if (!isLoopbackHostname(options.host)) {
+      consola.warn(
+        `Listening on non-loopback host ${options.host}. Do not expose this proxy to LAN or Internet unless you fully trust every client that can reach it.`,
+      )
+    }
+    consola.box(
+      `🌐 Usage Viewer: https://jer-y.github.io/copilot-proxy?endpoint=${serverUrl}/usage`,
+    )
+
+    if (options.claudeCode) {
+      invariant(state.models, 'Models should be loaded by now')
+
+      const selectedModel = await consola.prompt(
+        'Select a model to use with Claude Code',
+        {
+          type: 'select',
+          options: state.models.data.map(model => model.id),
+        },
+      )
+
+      const selectedSmallModel = await consola.prompt(
+        'Select a small model to use with Claude Code',
+        {
+          type: 'select',
+          options: state.models.data.map(model => model.id),
+        },
+      )
+      const clientModel = toAnthropicClientModelName(selectedModel)
+      const clientSmallModel = toAnthropicClientModelName(selectedSmallModel)
+
+      const command = generateEnvScript(
+        {
+          ANTHROPIC_BASE_URL: serverUrl,
+          ANTHROPIC_AUTH_TOKEN: 'dummy',
+          ANTHROPIC_MODEL: clientModel,
+          ANTHROPIC_DEFAULT_SONNET_MODEL: clientModel,
+          ANTHROPIC_SMALL_FAST_MODEL: clientSmallModel,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: clientSmallModel,
+          DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1',
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        },
+        'claude',
+      )
+
+      try {
+        clipboard.writeSync(command)
+        consola.success('Copied Claude Code command to clipboard!')
+      }
+      catch {
+        consola.warn(
+          'Failed to copy to clipboard. Here is the Claude Code command:',
+        )
+        consola.log(command)
+      }
+    }
   }
   catch (error) {
     if (isPortInUseError(error) && (options.exitOnPortInUse ?? true)) {
@@ -330,6 +331,10 @@ export const start = defineCommand({
       type: 'string',
       description: 'Internal: use the persisted native-service data directory',
     },
+    '_instance-token': {
+      type: 'string',
+      description: 'Internal: identify the installed native-service instance',
+    },
   },
   async run({ args }) {
     if (args['_log-file']) {
@@ -388,6 +393,12 @@ export const start = defineCommand({
 
     if (!validateAccountType(args['account-type'])) {
       consola.error(`Invalid account-type: ${args['account-type']} (must be one of: individual, business, enterprise)`)
+      process.exit(1)
+    }
+
+    const nativeServiceInstanceToken = args['_instance-token']?.trim()
+    if (nativeServiceInstanceToken && !/^[\w-]{16,128}$/.test(nativeServiceInstanceToken)) {
+      consola.error('Invalid internal native-service instance token')
       process.exit(1)
     }
 
@@ -515,6 +526,7 @@ export const start = defineCommand({
       showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
       nativeService: args._service,
+      nativeServiceInstanceToken,
     })
   },
 })

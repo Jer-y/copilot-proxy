@@ -22,6 +22,27 @@ function makePayload(
 }
 
 describe('sanitizeForCopilotBackend', () => {
+  test('rejects advisor tools instead of stripping their semantics', () => {
+    const payload = makePayload({
+      tools: [
+        {
+          type: 'advisor_20260301',
+          name: 'advisor',
+          model: 'claude-opus-4-8',
+        },
+        {
+          name: 'noop',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+    })
+
+    expect(() => sanitizeForCopilotBackend(payload)).toThrow(
+      'advisor_20260301 tools are not supported',
+    )
+    expect(payload.tools).toHaveLength(2)
+  })
+
   test('preserves native context_management for Copilot upstream capability truth', () => {
     const payload = makePayload() as AnthropicMessagesPayload & {
       context_management?: { edits?: Array<{ type: string }> }

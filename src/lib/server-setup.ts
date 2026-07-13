@@ -42,6 +42,7 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   })
 
   state.accountType = options.accountType
+  state.nativeServiceInstanceToken = options.nativeServiceInstanceToken
   if (options.accountType !== 'individual') {
     consola.info(`Using ${options.accountType} plan GitHub account`)
   }

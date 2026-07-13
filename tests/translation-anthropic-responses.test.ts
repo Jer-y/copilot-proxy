@@ -638,7 +638,7 @@ describe('translateAnthropicRequestToResponses', () => {
     }])
   })
 
-  test('mixed tool_result content falls back to JSON for function_call_output', () => {
+  test('mixed text and base64 image tool_result content becomes rich function_call_output', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
       max_tokens: 1024,
@@ -654,8 +654,9 @@ describe('translateAnthropicRequestToResponses', () => {
                 {
                   type: 'image',
                   source: {
-                    type: 'url',
-                    url: 'https://example.com/result.png',
+                    type: 'base64',
+                    media_type: 'image/png',
+                    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
                   },
                 },
               ],
@@ -670,18 +671,52 @@ describe('translateAnthropicRequestToResponses', () => {
       {
         type: 'function_call_output',
         call_id: 'toolu_2',
-        output: JSON.stringify([
-          { type: 'text', text: 'Screenshot attached' },
+        output: [
+          { type: 'input_text', text: 'Screenshot attached' },
           {
-            type: 'image',
-            source: {
-              type: 'url',
-              url: 'https://example.com/result.png',
-            },
+            type: 'input_image',
+            image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
           },
-        ]),
+        ],
       },
     ])
+  })
+
+  test('rich tool_result is_error keeps the Copilot-compatible string envelope', () => {
+    const content = [
+      { type: 'text' as const, text: 'Screenshot failed' },
+      {
+        type: 'image' as const,
+        source: {
+          type: 'base64' as const,
+          media_type: 'image/png' as const,
+          data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+        },
+      },
+    ]
+    const result = translateAnthropicRequestToResponses({
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_rich_error',
+          content,
+          is_error: true,
+        }],
+      }],
+    })
+
+    expect(result.input).toEqual([{
+      type: 'function_call_output',
+      call_id: 'toolu_rich_error',
+      output: JSON.stringify({
+        is_error: true,
+        content: JSON.stringify(content),
+      }),
+      status: 'incomplete',
+    }])
   })
 
   test('tool_result is_error is preserved without an unsupported top-level Responses field', () => {
@@ -1035,29 +1070,21 @@ describe('translateResponsesRequestToAnthropic', () => {
     ])
   })
 
-  test('unknown user content parts are preserved as JSON text blocks', () => {
-    const payload: ResponsesPayload = {
-      model: 'claude-opus-4.6',
-      store: false,
-      input: [
-        {
-          role: 'user',
-          content: [
-            { type: 'input_audio', audio: 'opaque' },
-          ],
-        },
-      ],
-    }
+  test('unknown user and assistant content parts are rejected instead of reinterpreted as text', () => {
+    for (const role of ['user', 'assistant'] as const) {
+      const payload: ResponsesPayload = {
+        model: 'claude-opus-4.6',
+        store: false,
+        input: [{
+          role,
+          content: [{ type: 'input_audio', audio: 'opaque' }],
+        }],
+      }
 
-    const result = translateResponsesRequestToAnthropic(payload)
-    expect(result.messages).toEqual([
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: JSON.stringify({ type: 'input_audio', audio: 'opaque' }) },
-        ],
-      },
-    ])
+      expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+        `Unsupported Responses ${role} content part type "input_audio"`,
+      )
+    }
   })
 
   test('function_call_output error metadata becomes Anthropic is_error', () => {
@@ -1491,6 +1518,45 @@ describe('translateResponsesResponseToAnthropic', () => {
 })
 
 describe('additional Anthropic ↔ Responses coverage', () => {
+  test('translated response envelopes distinguish nullable request values from resolved defaults', () => {
+    const translated = translateAnthropicResponseToResponses({
+      id: 'msg_nullable_request_context',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4.8',
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 2, output_tokens: 1 },
+    }, {
+      requestContext: {
+        instructions: null,
+        max_output_tokens: null,
+        metadata: null,
+        parallel_tool_calls: null,
+        reasoning: null,
+        temperature: null,
+        text: undefined,
+        tool_choice: undefined,
+        tools: undefined,
+        top_p: null,
+      },
+    })
+
+    expect(translated).toMatchObject({
+      instructions: null,
+      max_output_tokens: null,
+      metadata: null,
+      parallel_tool_calls: true,
+      reasoning: null,
+      temperature: null,
+      text: { format: { type: 'text' } },
+      tool_choice: 'auto',
+      tools: [],
+      top_p: null,
+    })
+  })
+
   test('Anthropic thinking stays in a reasoning output item, not top-level reasoning.summary', () => {
     const response: AnthropicResponse = {
       id: 'msg_reasoning_contract',

@@ -1,3 +1,5 @@
+import type { ResponsesPayload } from '~/services/copilot/create-responses'
+
 // Anthropic API Types
 
 export interface AnthropicCacheControl {
@@ -409,10 +411,25 @@ export interface AnthropicStreamState {
 }
 
 // State for Anthropic → Responses streaming translation (T12)
+export type ResponsesRequestContext = Pick<
+  ResponsesPayload,
+  | 'instructions'
+  | 'max_output_tokens'
+  | 'metadata'
+  | 'parallel_tool_calls'
+  | 'reasoning'
+  | 'temperature'
+  | 'text'
+  | 'tool_choice'
+  | 'tools'
+  | 'top_p'
+>
+
 export interface AnthropicToResponsesStreamState {
   responseId: string
   model: string
   requestedModel?: string
+  requestContext?: ResponsesRequestContext
   createdSent: boolean
   messageStopSent: boolean
   /** Next monotonically increasing Responses SSE sequence number. */

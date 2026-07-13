@@ -30,7 +30,7 @@ function applyInternalDataDirArgument(args: string[]): void {
         : undefined
 
     if (value) {
-      process.env.COPILOT_PROXY_DATA_DIR = value
+      process.env.COPILOT_PROXY_DATA_DIR = path.resolve(value)
       return
     }
   }
@@ -132,6 +132,11 @@ async function persistGithubTokenArgumentIfNeeded(args: string[]): Promise<numbe
   // a parent command line for as long as the child runs. Persist and exit
   // promptly on every platform; a second start without the flag is the only
   // portable way to guarantee no long-lived process keeps the token argument.
+  if (args[0] === 'auth') {
+    process.stderr.write('GitHub token saved securely.\n')
+    return 0
+  }
+
   process.stderr.write(
     'GitHub token saved securely. Rerun `copilot-proxy start` without --github-token so no long-lived launcher process retains the secret in argv.\n',
   )

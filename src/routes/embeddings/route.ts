@@ -26,8 +26,6 @@ embeddingRoutes.post('/', async (c) => {
     return c.json(response.body)
   }
   catch (error) {
-    if (error instanceof Error && error.name === 'AbortError')
-      return c.body(null)
     return await forwardError(c, error)
   }
 })

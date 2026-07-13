@@ -1,5 +1,7 @@
 import type { Model, ModelsResponse } from '~/services/copilot/get-models'
 
+import { getModelConfig } from './model-config'
+
 /**
  * Find a model by ID, with fallback suffix stripping for future model variants.
  * e.g., "gpt-5.2-codex-experimental-latency" tries exact, then falls back to
@@ -23,10 +25,20 @@ export function findModelWithFallback(modelId: string, models: Array<Model> | un
 }
 
 /**
- * Get a model's max_output_tokens from the models list.
- * Returns undefined if model not found or has no limit.
+ * Get the best verified max_output_tokens value for a model. Live model
+ * metadata can lag the request boundary, so a dated static verification acts
+ * as a floor while newer, larger live values remain authoritative.
  */
 export function findModelMaxOutputTokens(modelId: string, models: ModelsResponse | undefined): number | undefined {
   const model = findModelWithFallback(modelId, models?.data)
-  return model?.capabilities?.limits?.max_output_tokens
+  const advertisedLimit = model?.capabilities?.limits?.max_output_tokens
+  const verifiedLimit = getModelConfig(modelId).verifiedMaxOutputTokens
+
+  if (advertisedLimit === undefined) {
+    return verifiedLimit
+  }
+  if (verifiedLimit === undefined) {
+    return advertisedLimit
+  }
+  return Math.max(advertisedLimit, verifiedLimit)
 }

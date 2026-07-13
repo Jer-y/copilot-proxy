@@ -1,6 +1,11 @@
 FROM oven/bun:1.3.6-alpine@sha256:819f91180e721ba09e0e5d3eb7fb985832fd23f516e18ddad7e55aaba8100be7 AS builder
 WORKDIR /app
 
+# The pinned Bun image is immutable, so refresh Alpine packages with fixes that
+# were published after that image digest was built. Release CI scans the final
+# image for fixable high/critical vulnerabilities before publishing it.
+RUN apk upgrade --no-cache
+
 COPY ./package.json ./bun.lock ./
 RUN bun install --frozen-lockfile
 
@@ -11,6 +16,8 @@ RUN bun run build
 FROM oven/bun:1.3.6-alpine@sha256:819f91180e721ba09e0e5d3eb7fb985832fd23f516e18ddad7e55aaba8100be7 AS runner
 WORKDIR /app
 ENV XDG_DATA_HOME=/home/bun/.local/share
+
+RUN apk upgrade --no-cache
 
 COPY ./package.json ./bun.lock ./
 RUN bun install --frozen-lockfile --production --ignore-scripts --no-cache \

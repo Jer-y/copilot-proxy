@@ -67,3 +67,11 @@ test('getAppDir uses XDG_DATA_HOME on non-Windows', () => {
     platform: 'linux',
   })).toBe(path.posix.join('/tmp/xdg-data', 'copilot-proxy'))
 })
+
+test('getAppDir ignores a relative XDG_DATA_HOME', () => {
+  expect(getAppDir({
+    env: { XDG_DATA_HOME: 'relative-data' },
+    homedir: '/home/alice',
+    platform: 'linux',
+  })).toBe('/home/alice/.local/share/copilot-proxy')
+})

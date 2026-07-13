@@ -20,10 +20,13 @@ export const restart = defineCommand({
     const config = loadDaemonConfig()
     const nativeService = await loadInstalledNativeServiceCommands()
     if (nativeService) {
+      let installState: ReturnType<typeof loadNativeServiceInstallState>
       try {
-        const installState = loadNativeServiceInstallState()
+        installState = loadNativeServiceInstallState()
         loadNativeServiceEnvironment({
-          proxyEnv: installState?.proxyEnv ?? (config ?? DEFAULT_SERVICE_CONFIG).proxyEnv,
+          proxyEnv: installState?.config?.proxyEnv
+            ?? installState?.proxyEnv
+            ?? (config ?? DEFAULT_SERVICE_CONFIG).proxyEnv,
           targetEnv: { ...process.env },
           filePath: PATHS.NATIVE_SERVICE_ENV,
         })
@@ -36,8 +39,10 @@ export const restart = defineCommand({
       if (!nativeService.restartAutoStartService()) {
         process.exit(1)
       }
-      const readinessConfig = config ?? DEFAULT_SERVICE_CONFIG
-      if (!await waitForNativeServiceReadiness(readinessConfig)) {
+      const readinessConfig = installState?.config ?? config ?? DEFAULT_SERVICE_CONFIG
+      if (!await waitForNativeServiceReadiness(readinessConfig, {
+        expectedInstanceToken: installState?.instanceToken,
+      })) {
         consola.error(`Native service did not become ready on ${readinessConfig.host}:${readinessConfig.port} within the startup deadline.`)
         process.exit(1)
       }

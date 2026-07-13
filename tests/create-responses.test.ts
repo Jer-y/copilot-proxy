@@ -155,6 +155,39 @@ test('summarizes inline image payloads without expanding them', () => {
   })
 })
 
+test('detects and summarizes rich function_call_output images', async () => {
+  const imageUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB'
+  const payload: ResponsesPayload = {
+    model: 'gpt-test',
+    input: [{
+      type: 'function_call_output',
+      call_id: 'call_image',
+      output: [
+        { type: 'input_text', text: 'Screenshot attached' },
+        { type: 'input_image', image_url: imageUrl },
+      ],
+    }],
+  }
+
+  await createResponses(payload)
+  const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers
+  expect(headers['copilot-vision-request']).toBe('true')
+  expect(summarizeResponsesPayload(payload)).toEqual({
+    model: 'gpt-test',
+    stream: false,
+    tools: 0,
+    inputType: 'array',
+    inputItems: 1,
+    messageItems: 0,
+    functionCalls: 0,
+    functionCallOutputs: 1,
+    imageParts: 1,
+    inlineDataUrlImages: 1,
+    inlineImageChars: imageUrl.length,
+    maxInlineImageChars: imageUrl.length,
+  })
+})
+
 test('turns upstream 413 into a clearer payload-too-large error', async () => {
   fetchMock.mockImplementationOnce(
     () => new Response(JSON.stringify({

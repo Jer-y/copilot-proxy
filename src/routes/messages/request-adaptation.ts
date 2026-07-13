@@ -69,7 +69,7 @@ export async function createAnthropicMessagesWithThinkingSignatureRetry(
  * Mutates the payload in place.
  */
 export function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
-  stripAdvisorToolsForCopilot(payload)
+  assertNoUnsupportedAdvisorToolsForCopilot(payload)
   normalizeLegacyDocumentTextSources(payload)
 
   const format = payload.output_config?.format
@@ -126,23 +126,14 @@ export async function prepareAnthropicPayloadForNativeCopilotBackend(
   await expandCopilotUnsupportedTextDocumentBlocks(payload)
 }
 
-function stripAdvisorToolsForCopilot(payload: AnthropicMessagesPayload): void {
-  if (!payload.tools) {
+export function assertNoUnsupportedAdvisorToolsForCopilot(payload: AnthropicMessagesPayload): void {
+  if (!payload.tools?.some(tool => 'type' in tool && tool.type === 'advisor_20260301')) {
     return
   }
 
-  const tools = payload.tools.filter(tool => !('type' in tool && tool.type === 'advisor_20260301'))
-  if (tools.length === payload.tools.length) {
-    return
-  }
-
-  consola.debug('Stripping advisor_20260301 tool (unsupported by Copilot /v1/messages backend)')
-  if (tools.length > 0) {
-    payload.tools = tools
-  }
-  else {
-    delete payload.tools
-  }
+  throwAnthropicInvalidRequestError(
+    'Anthropic advisor_20260301 tools are not supported by the selected GitHub Copilot backend. The proxy cannot remove an advisor tool without changing the request semantics.',
+  )
 }
 
 export function normalizeAdaptiveThinkingForCopilot(

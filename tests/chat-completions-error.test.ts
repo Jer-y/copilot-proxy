@@ -28,17 +28,27 @@ afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-function createErroringSSE(chunks: string[], message: string): ReadableStream<Uint8Array> {
+function createErroringSSE(
+  chunks: string[],
+  message: string,
+  errorName = 'Error',
+  errorDelayMs = 0,
+): ReadableStream<Uint8Array> {
   let index = 0
   return new ReadableStream<Uint8Array>({
-    pull(controller) {
+    async pull(controller) {
       if (index < chunks.length) {
         controller.enqueue(encoder.encode(chunks[index]))
         index++
         return
       }
 
-      controller.error(new Error(message))
+      if (errorDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, errorDelayMs))
+      }
+      const error = new Error(message)
+      error.name = errorName
+      controller.error(error)
     },
   })
 }
@@ -280,6 +290,100 @@ describe('chat-completions error paths', () => {
     expect(body).toContain('"message":"chat stream failed"')
     expect(body).toContain('"code":"stream_error"')
     expect(body).toContain('data: [DONE]')
+  })
+
+  test('non-streaming does not turn an upstream AbortError into an empty 200 response', async () => {
+    fetchMock.mockImplementation(async () => {
+      const error = new Error('chat upstream connection aborted')
+      error.name = 'AbortError'
+      throw error
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(502)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual({
+      error: {
+        message: 'chat upstream connection aborted',
+        type: 'api_error',
+        code: 'upstream_connection_aborted',
+      },
+    })
+  })
+
+  test('streaming reports AbortError and terminates when the client stream is still open', async () => {
+    fetchMock.mockImplementation(async () => {
+      return new Response(createErroringSSE([
+        [
+          'data: {"id":"chatcmpl_abort_error","object":"chat.completion.chunk","created":0,"model":"gpt-5.2","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null,"logprobs":null}]}',
+          '',
+          '',
+        ].join('\n'),
+      ], 'chat upstream stream aborted', 'AbortError'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    const body = await res.text()
+    expect(res.status).toBe(200)
+    expect(body).toContain('"partial"')
+    expect(body).toContain('event: error')
+    expect(body).toContain('"message":"chat upstream stream aborted"')
+    expect(body).toContain('"code":"stream_error"')
+    expect(body).toContain('data: [DONE]')
+  })
+
+  test('streaming ignores a transport AbortError after [DONE]', async () => {
+    fetchMock.mockImplementation(async () => {
+      return new Response(createErroringSSE([
+        [
+          'data: {"id":"chatcmpl_terminal_abort","object":"chat.completion.chunk","created":0,"model":"gpt-5.2","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop","logprobs":null}]}',
+          '',
+          'data: [DONE]',
+          '',
+          '',
+        ].join('\n'),
+      ], 'chat socket closed after [DONE]', 'AbortError', 25), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    const body = await res.text()
+    expect(res.status).toBe(200)
+    expect(body).toContain('"finish_reason":"stop"')
+    expect(body).toContain('data: [DONE]')
+    expect(body).not.toContain('event: error')
+    expect(body).not.toContain('chat socket closed after [DONE]')
   })
 
   test('streaming rejects non-SSE success responses before opening a client stream', async () => {

@@ -7,6 +7,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REGISTRY: ghcr.io
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -16,14 +23,18 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22.19.0
+          package-manager-cache: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.6
+          no-cache: true
 
       - name: Verify tag matches package version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
@@ -55,6 +66,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
@@ -65,6 +78,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.6
+          no-cache: true
 
       - name: Verify tag matches package version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
@@ -77,8 +91,159 @@ jobs:
       - name: Publish to npm with provenance
         run: npm publish --access public --provenance
 
+  docker-publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout validated release revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches package version
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:465d3fdd28d0f2b871ba4b4ec98bd183292e96167f00d9fd40bd249f8632d705
+          platforms: arm64
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          version: v0.35.0
+          driver-opts: image=moby/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+          cache-binary: false
+
+      - name: Normalize registry image name
+        id: image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}
+        run: echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+
+      - name: Build release image once and push it by digest
+        id: build-by-digest
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          provenance: true
+          sbom: true
+
+      - name: Resolve the exact runnable platform digests
+        id: platform-digests
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          INDEX_DIGEST: ${{ steps.build-by-digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$INDEX_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          manifest="$(docker buildx imagetools inspect "${IMAGE}@${INDEX_DIGEST}" --raw)"
+          for arch in amd64 arm64; do
+            digest="$(
+              jq -er --arg arch "$arch" '
+                [.manifests[] | select(
+                  .platform.os == "linux"
+                  and .platform.architecture == $arch
+                )]
+                | if length == 1 then .[0].digest
+                  else error("expected exactly one runnable linux/" + $arch + " manifest")
+                  end
+              ' <<< "$manifest"
+            )"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            echo "${arch}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Scan exact amd64 release image for fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.name }}@${{ steps.platform-digests.outputs.amd64 }}
+          version: v0.70.0
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Scan exact arm64 release image for fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.name }}@${{ steps.platform-digests.outputs.arm64 }}
+          version: v0.70.0
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Publish scanned image digest under release tags
+        id: publish-manifest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          INDEX_DIGEST: ${{ steps.build-by-digest.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          mapfile -t tags <<< "$TAGS"
+          ((${#tags[@]} > 0))
+          metadata_file="${RUNNER_TEMP}/copilot-proxy-published-manifest.json"
+          for tag in "${tags[@]}"; do
+            [[ -n "$tag" ]]
+            rm -f "$metadata_file"
+            docker buildx imagetools create \
+              --tag "$tag" \
+              --metadata-file "$metadata_file" \
+              "${IMAGE}@${INDEX_DIGEST}"
+            published_digest="$(jq -er '."containerimage.descriptor".digest' "$metadata_file")"
+            if [[ "$published_digest" != "$INDEX_DIGEST" ]]; then
+              echo "Published digest mismatch for ${tag}: expected ${INDEX_DIGEST}, got ${published_digest}" >&2
+              exit 1
+            fi
+          done
+          echo "digest=${INDEX_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign Docker image
+        env:
+          DIGEST: ${{ steps.publish-manifest.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
   github-release:
-    needs: npm-publish
+    needs: [npm-publish, docker-publish]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -87,10 +252,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.6
+          no-cache: true
 
       - name: Install locked changelog generator
         run: bun install --frozen-lockfile

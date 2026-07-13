@@ -97,4 +97,53 @@ describe('CLI entrypoint', () => {
       fs.rmSync(dataDir, { force: true, recursive: true })
     }
   })
+
+  test('documents and handles auth --github-token without starting the device flow', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-main-auth-token-'))
+    const token = 'ghu_auth_argv_secret'
+
+    try {
+      const help = spawnSync(
+        process.execPath,
+        [path.resolve('src/main.ts'), 'auth', '--help'],
+        {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 10_000,
+        },
+      )
+      expect(help.status).toBe(0)
+      expect(help.stdout).toContain('--github-token')
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.resolve('src/main.ts'),
+          'auth',
+          '--github-token',
+          token,
+          '--_data-dir',
+          dataDir,
+        ],
+        {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 10_000,
+        },
+      )
+
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(0)
+      expect(result.stdout).not.toContain(token)
+      expect(result.stderr).not.toContain(token)
+      expect(result.stderr).toContain('GitHub token saved securely.')
+      expect(result.stderr).not.toContain('Rerun `copilot-proxy start`')
+      expect(fs.readFileSync(path.join(dataDir, 'github_token'), 'utf8')).toBe(token)
+    }
+    finally {
+      fs.rmSync(dataDir, { force: true, recursive: true })
+    }
+  })
 })

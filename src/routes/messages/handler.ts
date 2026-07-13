@@ -4,7 +4,8 @@ import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventD
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
-import { findModelWithFallback } from '~/lib/model-utils'
+import { isAbortError } from '~/lib/error'
+import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { assertMessagesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
@@ -21,6 +22,7 @@ import {
   sanitizeAnthropicBetaHeader,
 } from './model-normalization'
 import {
+  assertNoUnsupportedAdvisorToolsForCopilot,
   createAnthropicMessagesWithThinkingSignatureRetry,
   normalizeAdaptiveThinkingForCopilot,
   overrideAnthropicResponseModel,
@@ -57,8 +59,7 @@ export async function handleCompletion(c: Context) {
   // Normalize historical Anthropic model aliases while preserving the client's
   // requested model name in responses.
   const effectiveModel = normalizeAnthropicModelName(requestedModel)
-  const selectedModel = findModelWithFallback(effectiveModel, state.models?.data)
-  const modelMaxOutputTokens = selectedModel?.capabilities.limits.max_output_tokens
+  const modelMaxOutputTokens = findModelMaxOutputTokens(effectiveModel, state.models)
 
   if (isNullish(anthropicPayload.max_tokens)) {
     anthropicPayload = {
@@ -69,48 +70,32 @@ export async function handleCompletion(c: Context) {
       consola.debug('Set Anthropic max_tokens:', anthropicPayload.max_tokens)
     }
   }
-  else if (modelMaxOutputTokens && anthropicPayload.max_tokens > modelMaxOutputTokens) {
-    consola.info(
-      `Clamping anthropic max_tokens from ${anthropicPayload.max_tokens} to backend model limit ${modelMaxOutputTokens} for ${effectiveModel}.`,
-    )
-    anthropicPayload = {
-      ...anthropicPayload,
-      max_tokens: modelMaxOutputTokens,
-    }
-  }
-
   normalizeAdaptiveThinkingForCopilot(anthropicPayload)
+  assertNoUnsupportedAdvisorToolsForCopilot(anthropicPayload)
 
   const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
     models: state.models?.data,
   })
 
-  try {
-    switch (route.backend) {
-      case 'anthropic-messages':
-        assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
-        return await handleViaNativeAnthropic(
-          c,
-          anthropicPayload,
-          anthropicBeta,
-          effectiveModel,
-          requestedModel,
-        )
-      case 'responses':
-        assertMessagesPayloadTranslatable(anthropicPayload, throwAnthropicInvalidRequestError)
-        await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
-        return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel)
-      case 'chat-completions':
-        // Unreachable: resolveRoute() never returns chat-completions for an Anthropic client.
-        throwAnthropicInvalidRequestError(
-          `Model ${effectiveModel} cannot be served via /v1/messages (would require translating to /chat/completions, which is disallowed).`,
-        )
-    }
-  }
-  catch (error) {
-    if (error instanceof Error && error.name === 'AbortError')
-      return c.body(null)
-    throw error
+  switch (route.backend) {
+    case 'anthropic-messages':
+      assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
+      return await handleViaNativeAnthropic(
+        c,
+        anthropicPayload,
+        anthropicBeta,
+        effectiveModel,
+        requestedModel,
+      )
+    case 'responses':
+      assertMessagesPayloadTranslatable(anthropicPayload, throwAnthropicInvalidRequestError)
+      await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
+      return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel)
+    case 'chat-completions':
+      // Unreachable: resolveRoute() never returns chat-completions for an Anthropic client.
+      throwAnthropicInvalidRequestError(
+        `Model ${effectiveModel} cannot be served via /v1/messages (would require translating to /chat/completions, which is disallowed).`,
+      )
   }
 }
 
@@ -198,6 +183,10 @@ async function handleViaResponses(
       }
     }
     catch (error) {
+      if (streamState.upstreamTerminalEventSeen && isAbortError(error)) {
+        completed = !stream.aborted
+        return
+      }
       await handleAnthropicStreamFailure({
         completionTerm: 'completion event',
         error,
@@ -208,6 +197,7 @@ async function handleViaResponses(
         writer: anthropicWriter,
         finalizeRecoveredEvents: () => [],
         canRecoverTermination: () => false,
+        clientAborted: () => stream.aborted,
       })
       return
     }
@@ -347,6 +337,10 @@ async function handleViaNativeAnthropic(
       completed = !stream.aborted
     }
     catch (error) {
+      if ((passthroughState.messageStopSeen || passthroughState.errorSeen) && isAbortError(error)) {
+        completed = !stream.aborted
+        return
+      }
       await handleAnthropicStreamFailure({
         completionTerm: 'completion event',
         error,
@@ -357,6 +351,7 @@ async function handleViaNativeAnthropic(
         writer: anthropicWriter,
         finalizeRecoveredEvents: () => finalizeNativeAnthropicPassthroughState(passthroughState),
         canRecoverTermination: () => false,
+        clientAborted: () => stream.aborted,
         shouldEmitTerminationError: () => shouldEmitNativeAnthropicTerminationError(passthroughState),
       })
       return

@@ -1,5 +1,6 @@
 import type { DaemonConfig } from '~/daemon/config'
 import type { NativeServiceCommands } from '~/daemon/native-service'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -11,11 +12,15 @@ import { DEFAULT_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
 import { loadInstalledNativeServiceCommands, waitForNativeServiceReadiness } from '~/daemon/native-service'
 import { isDaemonRunning } from '~/daemon/pid'
 import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
-import { loadNativeServiceInstallState, NATIVE_SERVICE_DEFINITION_PATH_ENV, removeNativeServiceInstallState, saveNativeServiceInstallState } from '~/daemon/service-install-state'
+import { loadNativeServiceInstallState, NATIVE_SERVICE_DEFINITION_PATH_ENV, removeNativeServiceInstallState, saveNativeServiceInstallState, toNativeServiceConfig } from '~/daemon/service-install-state'
 import { stopDaemon } from '~/daemon/stop'
 import { getUserHomeDir, PATHS } from '~/lib/paths'
 
-export function buildServiceStartArgs(scriptPath: string, config: DaemonConfig): string[] {
+export function buildServiceStartArgs(
+  scriptPath: string,
+  config: DaemonConfig,
+  instanceToken?: string,
+): string[] {
   const args = [
     scriptPath,
     'start',
@@ -46,6 +51,8 @@ export function buildServiceStartArgs(scriptPath: string, config: DaemonConfig):
     args.push('--connect-timeout-ms', String(config.connectTimeoutMs))
   if (config.proxyEnv)
     args.push('--proxy-env')
+  if (instanceToken)
+    args.push('--_instance-token', instanceToken)
 
   return args
 }
@@ -114,7 +121,8 @@ export const enable = defineCommand({
 
     let success = false
     const { platform } = process
-    const args = buildServiceStartArgs(scriptPath, config)
+    const instanceToken = randomUUID()
+    const args = buildServiceStartArgs(scriptPath, config, instanceToken)
     if (platform === 'darwin' || platform === 'win32')
       args.push('--_log-file')
 
@@ -131,6 +139,8 @@ export const enable = defineCommand({
       saveNativeServiceInstallState({
         dataDir: PATHS.APP_DIR,
         proxyEnv: config.proxyEnv,
+        instanceToken,
+        config: toNativeServiceConfig(config),
         ...(serviceDefinitionPath && { serviceDefinitionPath }),
         ...(xdgConfigHome && { xdgConfigHome }),
       })
@@ -226,7 +236,7 @@ export const enable = defineCommand({
       process.exit(1)
     }
 
-    if (!await waitForNativeServiceReadiness(config)) {
+    if (!await waitForNativeServiceReadiness(config, { expectedInstanceToken: instanceToken })) {
       consola.error(`Native service did not become ready on ${config.host}:${config.port} within the startup deadline.`)
       if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState)) {
         if (legacyWasRunning)

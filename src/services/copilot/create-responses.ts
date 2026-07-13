@@ -17,6 +17,10 @@ function isMessageInput(item: ResponsesInputItem): item is ResponsesMessageInput
     && (item.type === undefined || item.type === 'message')
 }
 
+function isFunctionCallOutput(item: ResponsesInputItem): item is ResponsesFunctionCallOutputItem {
+  return 'type' in item && item.type === 'function_call_output'
+}
+
 const VISION_TYPES = new Set([
   'input_image',
   'image',
@@ -185,10 +189,13 @@ export async function forwardResponsesEndpoint(
 
 function hasVisionInput(input: Array<ResponsesInputItem>): boolean {
   return input.some((item) => {
-    if (!isMessageInput(item) || !Array.isArray(item.content)) {
-      return false
+    if (isMessageInput(item) && Array.isArray(item.content)) {
+      return item.content.some(part => VISION_TYPES.has(part.type))
     }
-    return item.content.some(part => VISION_TYPES.has(part.type))
+
+    return isFunctionCallOutput(item)
+      && Array.isArray(item.output)
+      && item.output.some(part => VISION_TYPES.has(part.type))
   })
 }
 
@@ -315,8 +322,27 @@ export function summarizeResponsesPayload(payload: ResponsesPayload): ResponsesP
       continue
     }
 
-    if ('type' in item && item.type === 'function_call_output') {
+    if (isFunctionCallOutput(item)) {
       summary.functionCallOutputs++
+
+      if (!Array.isArray(item.output)) {
+        continue
+      }
+
+      for (const part of item.output) {
+        const inlineImageChars = getInlineImageChars(part)
+        if (inlineImageChars === undefined) {
+          continue
+        }
+
+        summary.imageParts++
+        summary.inlineImageChars += inlineImageChars
+        summary.maxInlineImageChars = Math.max(summary.maxInlineImageChars, inlineImageChars)
+
+        if (hasInlineImageData(part)) {
+          summary.inlineDataUrlImages++
+        }
+      }
     }
   }
 
@@ -393,10 +419,10 @@ export interface ResponsesPayload {
   tools?: Array<ResponsesTool>
   tool_choice?: ResponsesToolChoice
   reasoning?: {
-    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
     summary?: 'auto' | 'concise' | 'detailed' | 'none' | null
     generate_summary?: 'auto' | 'concise' | 'detailed' | null
-  }
+  } | null
   text?: ResponsesTextConfig
   parallel_tool_calls?: boolean | null
   previous_response_id?: string | null
@@ -509,8 +535,8 @@ export interface ResponsesResponse {
   reasoning?: {
     effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
     summary?: 'auto' | 'concise' | 'detailed' | null
-  }
-  metadata?: Record<string, unknown>
+  } | null
+  metadata?: Record<string, unknown> | null
   temperature?: number | null
   top_p?: number | null
   parallel_tool_calls?: boolean

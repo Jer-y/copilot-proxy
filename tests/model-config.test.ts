@@ -1,8 +1,9 @@
-import type { Model } from '~/services/copilot/get-models'
+import type { Model, ModelsResponse } from '~/services/copilot/get-models'
 
 import { describe, expect, test } from 'bun:test'
 
 import { getModelConfig } from '../src/lib/model-config'
+import { findModelMaxOutputTokens } from '../src/lib/model-utils'
 import { state } from '../src/lib/state'
 
 describe('getModelConfig', () => {
@@ -12,6 +13,7 @@ describe('getModelConfig', () => {
     expect(config.defaultReasoningEffort).toBe('high')
     expect(config.supportsToolChoice).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
+    expect(config.verifiedMaxOutputTokens).toBe(128000)
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
     expect(config.preferredApi).toBe('anthropic-messages')
   })
@@ -23,6 +25,7 @@ describe('getModelConfig', () => {
     expect(config.supportsToolChoice).toBe(false)
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(config.verifiedMaxOutputTokens).toBe(128000)
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
     expect(config.preferredApi).toBe('anthropic-messages')
   })
@@ -34,6 +37,7 @@ describe('getModelConfig', () => {
     expect(config.supportsToolChoice).toBe(false)
     expect(config.supportsParallelToolCalls).toBe(true)
     expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(config.verifiedMaxOutputTokens).toBe(128000)
     expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
     expect(config.preferredApi).toBe('anthropic-messages')
   })
@@ -210,5 +214,22 @@ describe('getModelConfig', () => {
     finally {
       state.models = previousModels
     }
+  })
+})
+
+describe('findModelMaxOutputTokens', () => {
+  test('uses verified Opus limits as a floor without hiding newer live limits', () => {
+    const withLimit = (maxOutputTokens: number) => ({
+      object: 'list' as const,
+      data: [{
+        id: 'claude-opus-4.8',
+        capabilities: {
+          limits: { max_output_tokens: maxOutputTokens },
+        },
+      }],
+    }) as unknown as ModelsResponse
+
+    expect(findModelMaxOutputTokens('claude-opus-4.8', withLimit(64000))).toBe(128000)
+    expect(findModelMaxOutputTokens('claude-opus-4.8', withLimit(256000))).toBe(256000)
   })
 })

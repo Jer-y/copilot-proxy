@@ -34,7 +34,10 @@ export function getAppDir(options: AppDirOptions = {}): string {
     return path.win32.join(dataHome, 'copilot-proxy')
   }
 
-  const dataHome = env.XDG_DATA_HOME || path.posix.join(homedir, '.local', 'share')
+  const configuredDataHome = env.XDG_DATA_HOME?.trim()
+  const dataHome = configuredDataHome && path.posix.isAbsolute(configuredDataHome)
+    ? configuredDataHome
+    : path.posix.join(homedir, '.local', 'share')
   return path.posix.join(dataHome, 'copilot-proxy')
 }
 

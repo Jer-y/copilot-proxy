@@ -5,6 +5,7 @@ import type { ChatCompletionResponse, ChatCompletionsPayload } from '~/services/
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
+import { isAbortError } from '~/lib/error'
 import { getModelConfig } from '~/lib/model-config'
 import { findModelWithFallback } from '~/lib/model-utils'
 import {
@@ -72,14 +73,7 @@ export async function handleCompletion(c: Context) {
     )
   }
 
-  try {
-    return await handleViaChatCompletions(c, payload)
-  }
-  catch (error) {
-    if (error instanceof Error && error.name === 'AbortError')
-      return c.body(null)
-    throw error
-  }
+  return await handleViaChatCompletions(c, payload)
 }
 
 /** Direct path: model supports chat-completions */
@@ -118,6 +112,10 @@ async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayl
       completed = terminalSeen && !stream.aborted
     }
     catch (error) {
+      if (terminalSeen && isAbortError(error)) {
+        completed = !stream.aborted
+        return
+      }
       await writeOpenAIStreamError(stream, error, {
         fallbackMessage: 'An unexpected error occurred while streaming the Copilot chat completion.',
         label: 'Chat completions stream passthrough',

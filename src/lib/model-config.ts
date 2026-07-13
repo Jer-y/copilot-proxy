@@ -22,7 +22,16 @@ export interface ModelConfig {
   supportsParallelToolCalls?: boolean
   /** Token-limit field accepted by the model on /chat/completions */
   chatCompletionTokenParameter?: 'max_tokens' | 'max_completion_tokens'
+  /** Dated official + Copilot request-boundary output limit used for proxy defaults */
+  verifiedMaxOutputTokens?: number
 }
+
+// Verified 2026-07-13 through the individual Copilot endpoint on POST /v1/messages;
+// the retained evidence did not identify the account's subscription entitlement.
+// Claude Opus 4.6/4.7/4.8 accept max_tokens=128000 and reject 128001, matching
+// the current official Anthropic model limits. Keep the raw /models snapshot
+// untouched; this value is a floor only for proxy-generated defaults.
+const VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS = 128000
 
 const MODEL_CONFIGS: Record<string, ModelConfig> = {
   // Claude models — use native Anthropic Messages passthrough for /v1/messages
@@ -70,6 +79,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
     supportsToolChoice: true,
     supportsParallelToolCalls: true,
+    verifiedMaxOutputTokens: VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS,
   },
   'claude-opus-4.7': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
@@ -79,6 +89,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     supportsToolChoice: false,
     supportsParallelToolCalls: true,
+    verifiedMaxOutputTokens: VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS,
   },
   'claude-opus-4.8': {
     supportedApis: ['anthropic-messages', 'chat-completions'],
@@ -88,6 +99,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     supportsToolChoice: false,
     supportsParallelToolCalls: true,
+    verifiedMaxOutputTokens: VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS,
   },
   'claude-haiku-4.5': {
     supportedApis: ['anthropic-messages', 'chat-completions'],

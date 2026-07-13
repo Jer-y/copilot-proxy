@@ -113,6 +113,32 @@ async function defaultFetchMock(url: string, init?: RequestInit) {
 }
 
 const fetchMock = mock(defaultFetchMock)
+const encoder = new TextEncoder()
+
+function createErroringSSE(
+  chunks: string[],
+  message: string,
+  errorName = 'Error',
+  errorDelayMs = 0,
+): ReadableStream<Uint8Array> {
+  let index = 0
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[index]))
+        index++
+        return
+      }
+
+      if (errorDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, errorDelayMs))
+      }
+      const error = new Error(message)
+      error.name = errorName
+      controller.error(error)
+    },
+  })
+}
 
 beforeEach(() => {
   fetchMock.mockReset()
@@ -127,6 +153,131 @@ beforeEach(() => {
 })
 
 describe('messages route upstream adaptation', () => {
+  test('native Anthropic streaming surfaces upstream AbortError as an error event', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      expect(url.endsWith('/v1/messages')).toBe(true)
+      let sentInitialEvents = false
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sentInitialEvents) {
+            sentInitialEvents = true
+            controller.enqueue(new TextEncoder().encode([
+              'event: message_start',
+              'data: {"type":"message_start","message":{"id":"msg_abort","type":"message","role":"assistant","content":[],"model":"claude-opus-4.8","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}',
+              '',
+              '',
+            ].join('\n')))
+            return
+          }
+
+          const error = new Error('Copilot upstream request aborted.')
+          error.name = 'AbortError'
+          controller.error(error)
+        },
+      })
+
+      return new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.8',
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const responseBody = await res.text()
+    expect(responseBody).toContain('event: message_start')
+    expect(responseBody).toContain('event: error')
+    expect(responseBody).toContain('Copilot upstream request aborted.')
+    expect(responseBody).not.toContain('event: message_stop')
+  })
+
+  test('native Anthropic streaming ignores AbortError after message_stop', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      expect(url.endsWith('/v1/messages')).toBe(true)
+      return new Response(createErroringSSE([
+        [
+          'event: message_start',
+          'data: {"type":"message_start","message":{"id":"msg_terminal_abort","type":"message","role":"assistant","content":[],"model":"claude-opus-4.8","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}',
+          '',
+          'event: message_delta',
+          'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+          '',
+          'event: message_stop',
+          'data: {"type":"message_stop"}',
+          '',
+          '',
+        ].join('\n'),
+      ], 'native Anthropic socket closed after message_stop', 'AbortError', 25), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.8',
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const responseBody = await res.text()
+    expect(responseBody).toContain('event: message_stop')
+    expect(responseBody).not.toContain('event: error')
+    expect(responseBody).not.toContain('native Anthropic socket closed after message_stop')
+  })
+
+  test('Responses-translated Messages streaming ignores AbortError after response.completed', async () => {
+    fetchMock.mockImplementationOnce(async (url: string) => {
+      expect(url.endsWith('/responses')).toBe(true)
+      return new Response(createErroringSSE([
+        [
+          'event: response.created',
+          'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_terminal_abort","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
+          '',
+          'event: response.completed',
+          'data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_terminal_abort","object":"response","model":"gpt-5.4","output":[],"status":"completed","error":null,"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}',
+          '',
+          '',
+        ].join('\n'),
+      ], 'Responses socket closed after response.completed', 'AbortError', 25), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const responseBody = await res.text()
+    expect(responseBody).toContain('event: message_stop')
+    expect(responseBody).not.toContain('event: error')
+    expect(responseBody).not.toContain('Responses socket closed after response.completed')
+  })
+
   test('Claude json_object requests are forwarded natively (proxy no longer translates to chat-completions)', async () => {
     fetchMock.mockImplementationOnce(async (url: string) => {
       if (!url.endsWith('/v1/messages')) {
@@ -432,7 +583,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.model).toBe('claude-opus-4-7')
   })
 
-  test('Claude Opus 4.7 strips advisor beta while forwarding context beta', async () => {
+  test('Claude Opus 4.7 rejects advisor tools instead of stripping them and returning 200', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: {
@@ -457,26 +608,44 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await res.json()).toEqual({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: 'Anthropic advisor_20260301 tools are not supported by the selected GitHub Copilot backend. The proxy cannot remove an advisor tool without changing the request semantics.',
+      },
+    })
+  })
+
+  test('Claude Opus 4.7 safely strips an advisor beta header when no advisor tool is declared', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'context-1m-2025-08-07, advisor-tool-2026-03-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-7',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Say hello.' }],
+      }),
+    })
+
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/v1/messages')
-
-    const forwardedPayload = JSON.parse(String(init?.body)) as {
-      model?: string
-      tools?: Array<{ name?: string, type?: string, input_schema?: unknown }>
-    }
-    expect(forwardedPayload.model).toBe('claude-opus-4.7')
-    expect(forwardedPayload.tools).toEqual([
-      {
-        name: 'noop',
-        input_schema: { type: 'object', properties: {} },
-      },
-    ])
-
     const headers = init.headers as Record<string, string>
     expect(headers['anthropic-beta']).toBe('context-1m-2025-08-07')
+    const forwardedPayload = JSON.parse(String(init?.body)) as {
+      model?: string
+      tools?: unknown
+    }
+    expect(forwardedPayload.model).toBe('claude-opus-4.7')
+    expect(forwardedPayload.tools).toBeUndefined()
   })
 
   test('Claude Opus 4.7 context beta forwards xhigh effort to native upstream model', async () => {
@@ -1019,6 +1188,54 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.message).toContain('base64')
   })
 
+  test('Responses-backed rich tool_result forwards text and base64 image as rich output parts', async () => {
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_image',
+            content: [
+              { type: 'text', text: 'Screenshot attached' },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+                },
+              },
+            ],
+          }],
+        }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/responses')
+    const headers = init.headers as Record<string, string>
+    expect(headers['copilot-vision-request']).toBe('true')
+    const forwardedPayload = JSON.parse(String(init.body)) as { input?: unknown }
+    expect(forwardedPayload.input).toEqual([{
+      type: 'function_call_output',
+      call_id: 'toolu_image',
+      output: [
+        { type: 'input_text', text: 'Screenshot attached' },
+        {
+          type: 'input_image',
+          image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+        },
+      ],
+    }])
+  })
+
   test('document blocks with invalid PDF data return extraction error', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -1447,7 +1664,7 @@ describe('messages route upstream adaptation', () => {
     expect(body.input_tokens).toBe(26)
   })
 
-  test('count_tokens normalizes model names and strips advisor beta feature', async () => {
+  test('count_tokens rejects advisor tools instead of counting a different request', async () => {
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
@@ -1467,15 +1684,12 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
-    const forwardedPayload = JSON.parse(String(init.body)) as { model?: string, tools?: unknown }
-    expect(forwardedPayload.model).toBe('claude-opus-4.6')
-    expect(forwardedPayload.tools).toBeUndefined()
-    const headers = init.headers as Record<string, string>
-    expect(headers['anthropic-beta']).toBe('claude-code-2025-01-01,fast-mode-2026-02-01')
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await res.json() as { type?: string, error?: { type?: string, message?: string } }
+    expect(body.type).toBe('error')
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('advisor_20260301 tools are not supported')
   })
 })
 

@@ -9,6 +9,7 @@ import {
   loadNativeServiceInstallState,
   removeNativeServiceInstallState,
   saveNativeServiceInstallState,
+  toNativeServiceConfig,
 } from '~/daemon/service-install-state'
 
 const tempDirs: string[] = []
@@ -58,6 +59,41 @@ describe('native service install control state', () => {
     })
   })
 
+  test('persists a safe complete config and instance identity for restart', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    const config = toNativeServiceConfig({
+      port: 4411,
+      host: '127.0.0.1',
+      verbose: true,
+      accountType: 'enterprise',
+      manual: false,
+      rateLimit: 9,
+      rateLimitWait: true,
+      headersTimeoutMs: 600_000,
+      bodyTimeoutMs: 900_000,
+      connectTimeoutMs: 15_000,
+      githubToken: 'must-not-be-persisted',
+      showToken: false,
+      proxyEnv: true,
+    })
+
+    saveNativeServiceInstallState({
+      dataDir: '/installed/data',
+      proxyEnv: true,
+      instanceToken: 'instance_token_20260713',
+      config,
+    }, filePath)
+
+    expect(loadNativeServiceInstallState(filePath)).toEqual({
+      dataDir: '/installed/data',
+      proxyEnv: true,
+      instanceToken: 'instance_token_20260713',
+      config,
+    })
+    expect(fs.readFileSync(filePath, 'utf8')).not.toContain('must-not-be-persisted')
+  })
+
   test('pins Linux control commands to the recorded XDG and definition paths', () => {
     const home = makeTempDir()
     const filePath = getNativeServiceControlStatePath({}, home)
@@ -98,6 +134,14 @@ describe('native service install control state', () => {
       dataDir: '/installed/data',
       serviceDefinitionPath: 'relative/unit.service',
     }))
+
+    expect(() => loadNativeServiceInstallState(filePath)).toThrow('control state is invalid')
+  })
+
+  test('rejects a relative persisted data directory', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    fs.writeFileSync(filePath, JSON.stringify({ dataDir: 'relative/data' }))
 
     expect(() => loadNativeServiceInstallState(filePath)).toThrow('control state is invalid')
   })

@@ -14,10 +14,11 @@ const LONG_START_STRING_OPTIONS = new Set([
   '--body-timeout-ms',
   '--connect-timeout-ms',
   '--_data-dir',
+  '--_instance-token',
 ])
 
 export function removeGithubTokenArguments(args: string[]): SanitizedGithubTokenArguments {
-  if (args[0] !== 'start')
+  if (args[0] !== 'start' && args[0] !== 'auth')
     return { args: [...args] }
 
   const sanitized: string[] = []
@@ -30,8 +31,8 @@ export function removeGithubTokenArguments(args: string[]): SanitizedGithubToken
       break
     }
 
-    if (LONG_START_STRING_OPTIONS.has(arg)
-      || (arg.length === 2 && STRING_START_ALIASES.has(arg[1]))) {
+    if (args[0] === 'start' && (LONG_START_STRING_OPTIONS.has(arg)
+      || (arg.length === 2 && STRING_START_ALIASES.has(arg[1])))) {
       sanitized.push(arg)
       if (args[index + 1] !== undefined)
         sanitized.push(args[++index])

@@ -82,6 +82,13 @@ describe('buildServiceStartArgs', () => {
     expect(args).not.toContain('--show-token')
     expect(args).not.toContain('--_supervisor')
   })
+
+  test('includes the persisted service instance token', () => {
+    expect(buildServiceStartArgs('/tmp/main.js', baseConfig, 'instance_token_20260713').slice(-2)).toEqual([
+      '--_instance-token',
+      'instance_token_20260713',
+    ])
+  })
 })
 
 describe('isEphemeralPackageRunnerPath', () => {

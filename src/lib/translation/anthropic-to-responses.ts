@@ -20,9 +20,11 @@ import type {
   AnthropicToResponsesStreamState,
   AnthropicUserContentBlock,
   AnthropicUserMessage,
+  ResponsesRequestContext,
 } from './types'
 import type {
   ResponsesFunctionCallItem,
+  ResponsesFunctionCallOutputContent,
   ResponsesFunctionCallOutputItem,
   ResponsesInputItem,
   ResponsesMessageInputItem,
@@ -403,33 +405,69 @@ function validateMaxOutputTokens(maxTokens: number | null | undefined): number |
 function serializeToolResultContent(
   content: AnthropicToolResultBlock['content'],
   isError: boolean,
-): string {
-  const serialize = (value: AnthropicToolResultBlock['content']): string => {
-    if (value === undefined) {
-      return ''
-    }
-    if (typeof value === 'string') {
-      return value
-    }
-
-    if (value.every(block => block.type === 'text')) {
-      return value.map(block => block.text).join('\n\n')
-    }
-
-    // Responses function_call_output currently accepts a string payload, not rich
-    // content parts, so preserve mixed/image tool results losslessly as JSON.
-    return JSON.stringify(value)
-  }
-
-  const output = serialize(content)
+): ResponsesFunctionCallOutputItem['output'] {
+  const stringOutput = serializeToolResultContentAsString(content)
   if (isError) {
+    // Copilot Responses does not accept Anthropic's top-level is_error marker.
+    // Keep the established string envelope plus status=incomplete compatibility
+    // path for error results, including rich content.
     return JSON.stringify({
       is_error: true,
-      content: output,
+      content: stringOutput,
     })
   }
 
-  return output
+  if (content === undefined || typeof content === 'string') {
+    return stringOutput
+  }
+
+  if (content.every(block => block.type === 'text')) {
+    return stringOutput
+  }
+
+  return content.map((block, index): ResponsesFunctionCallOutputContent => {
+    switch (block.type) {
+      case 'text':
+        return {
+          type: 'input_text',
+          text: block.text,
+        }
+      case 'image':
+        return {
+          type: 'input_image',
+          image_url: block.source.type === 'base64'
+            ? `data:${block.source.media_type};base64,${block.source.data}`
+            : block.source.url,
+        }
+      case 'document':
+      case 'search_result':
+      case 'tool_reference':
+        return throwAnthropicInvalidRequestError(
+          `Anthropic tool_result content block type "${block.type}" at index ${index} cannot be represented faithfully on the Responses translation path.`,
+        )
+      default:
+        return throwAnthropicInvalidRequestError(
+          `Unsupported Anthropic tool_result content block type "${(block as { type: string }).type}" at index ${index}.`,
+        )
+    }
+  })
+}
+
+function serializeToolResultContentAsString(
+  content: AnthropicToolResultBlock['content'],
+): string {
+  if (content === undefined) {
+    return ''
+  }
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (content.every(block => block.type === 'text')) {
+    return content.map(block => block.text).join('\n\n')
+  }
+
+  return JSON.stringify(content)
 }
 
 function translateUserBlockToResponsesContent(
@@ -490,7 +528,10 @@ function logIgnoredMessageBlockCacheControl(
 
 export function translateAnthropicResponseToResponses(
   response: AnthropicResponse,
-  options?: { requestedModel?: string },
+  options?: {
+    requestedModel?: string
+    requestContext?: ResponsesRequestContext
+  },
 ): ResponsesResponse {
   const createdAt = nowUnixSeconds()
   const output: Array<ResponsesOutputItem> = []
@@ -571,7 +612,7 @@ export function translateAnthropicResponseToResponses(
     status,
     error: null,
     incomplete_details: incomplete_details ?? null,
-    ...buildResponsesEnvelopeDefaults(),
+    ...buildResponsesEnvelopeDefaults(options?.requestContext),
     usage,
   }
 }
@@ -623,7 +664,7 @@ function mapAnthropicStopReasonToResponsesStatus(
   }
 }
 
-function buildResponsesEnvelopeDefaults(): Pick<
+function buildResponsesEnvelopeDefaults(requestContext?: ResponsesRequestContext): Pick<
   ResponsesResponse,
   | 'instructions'
   | 'max_output_tokens'
@@ -638,34 +679,50 @@ function buildResponsesEnvelopeDefaults(): Pick<
   | 'tool_choice'
   | 'tools'
 > {
+  const text = requestContext?.text
+  const reasoning = requestContext?.reasoning
+
   return {
-    // Anthropic responses do not provide equivalent request-echo fields.
-    // Keep a stable Responses envelope with explicit null/default values.
-    instructions: null,
-    max_output_tokens: null,
+    // Anthropic responses do not echo the original Responses request. Preserve
+    // the client-facing request context at the translation boundary instead.
+    instructions: requestContext?.instructions ?? null,
+    max_output_tokens: requestContext?.max_output_tokens ?? null,
     previous_response_id: null,
     store: false,
-    text: { format: { type: 'text' } },
-    reasoning: {
-      effort: null,
-      summary: null,
+    text: {
+      ...text,
+      format: text?.format ?? { type: 'text' },
     },
-    metadata: {},
-    temperature: 1,
-    top_p: 1,
-    parallel_tool_calls: true,
-    tool_choice: 'auto',
-    tools: [],
+    reasoning: reasoning === null
+      ? null
+      : {
+          effort: reasoning?.effort === undefined ? null : reasoning.effort,
+          summary: reasoning?.summary === undefined || reasoning.summary === 'none'
+            ? null
+            : reasoning.summary,
+        },
+    metadata: requestContext?.metadata === undefined ? {} : requestContext.metadata,
+    temperature: requestContext?.temperature === undefined ? 1 : requestContext.temperature,
+    top_p: requestContext?.top_p === undefined ? 1 : requestContext.top_p,
+    // Request-side null selects the API default; the Response contract exposes
+    // the resolved non-null values for these fields.
+    parallel_tool_calls: requestContext?.parallel_tool_calls ?? true,
+    tool_choice: requestContext?.tool_choice ?? 'auto',
+    tools: requestContext?.tools ?? [],
   }
 }
 
 // ─── T12: Anthropic Stream → Responses Stream ──────────────────
 
-export function createAnthropicToResponsesStreamState(options?: { requestedModel?: string }): AnthropicToResponsesStreamState {
+export function createAnthropicToResponsesStreamState(options?: {
+  requestedModel?: string
+  requestContext?: ResponsesRequestContext
+}): AnthropicToResponsesStreamState {
   const state: AnthropicToResponsesStreamState = {
     responseId: `resp_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
     model: '',
     requestedModel: options?.requestedModel,
+    requestContext: options?.requestContext,
     createdSent: false,
     messageStopSent: false,
     nextSequenceNumber: 0,
@@ -1118,7 +1175,7 @@ function buildAnthropicPartialResponse(
     status,
     error: null,
     incomplete_details: null,
-    ...buildResponsesEnvelopeDefaults(),
+    ...buildResponsesEnvelopeDefaults(state.requestContext),
   }
 }
 

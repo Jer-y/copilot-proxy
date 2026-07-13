@@ -410,15 +410,6 @@ function parseToolArguments(
   return onInvalid(`${context} must decode to a JSON object.`)
 }
 
-function stringifyUnknownContentPart(part: Record<string, unknown>): string {
-  try {
-    return JSON.stringify(part)
-  }
-  catch {
-    return String(part.type ?? '[unknown content part]')
-  }
-}
-
 function buildSystemString(
   instructions: string | null | undefined,
   prefixSystemParts: string[],
@@ -454,12 +445,9 @@ function pushUserContentBlocks(
         blocks.push(translateImagePartToAnthropicBlock(part))
         break
       default:
-        logLossyAnthropicCompatibility(
-          `Responses user content part ${part.type}`,
-          'No native Anthropic content block exists for this Responses content type; preserving it as a text JSON block.',
+        throwInvalidRequestError(
+          `Unsupported Responses user content part type "${part.type}" for anthropic-messages translation.`,
         )
-        blocks.push({ type: 'text', text: stringifyUnknownContentPart(part) })
-        break
     }
   }
 }
@@ -485,11 +473,9 @@ function pushAssistantContentBlocks(
       blocks.push({ type: 'text', text: part.text })
     }
     else {
-      logLossyAnthropicCompatibility(
-        `Responses assistant content part ${part.type}`,
-        'No native Anthropic assistant block exists for this Responses content type; preserving it as a text JSON block.',
+      throwInvalidRequestError(
+        `Unsupported Responses assistant content part type "${part.type}" for anthropic-messages translation.`,
       )
-      blocks.push({ type: 'text', text: stringifyUnknownContentPart(part) })
     }
   }
 }
@@ -735,9 +721,9 @@ function isMessageInputItem(item: ResponsesInputItem): item is ResponsesMessageI
 /**
  * Attempt to rehydrate a tool result output string back to structured content.
  *
- * The Anthropic→Responses direction (T7) uses `serializeToolResultContent()` which
- * JSON-encodes mixed/image tool_result blocks. This reverse path tries to parse
- * the JSON back to restore the original Anthropic content blocks.
+ * Normal mixed/image tool results now use native rich Responses output parts.
+ * This string fallback remains for legacy payloads and for the compatibility
+ * envelope used to preserve Anthropic is_error semantics.
  *
  * Only rehydrates if ALL parsed elements are known Anthropic tool_result content types
  * (text, image). Returns string as-is for unknown structures to avoid sending

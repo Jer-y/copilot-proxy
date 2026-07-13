@@ -69,4 +69,20 @@ describe('github token argv sanitization', () => {
       args: ['debug', '--github-token=opaque'],
     })
   })
+
+  test('extracts auth command tokens before the device flow starts', () => {
+    expect(removeGithubTokenArguments([
+      'auth',
+      '--github-token',
+      'ghu_auth_token',
+      '--verbose',
+    ])).toEqual({
+      args: ['auth', '--verbose'],
+      token: 'ghu_auth_token',
+    })
+    expect(removeGithubTokenArguments(['auth', '-vgcompact'])).toEqual({
+      args: ['auth', '-v'],
+      token: 'compact',
+    })
+  })
 })

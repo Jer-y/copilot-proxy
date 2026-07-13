@@ -1,4 +1,7 @@
 const COPILOT_STRIPPED_BETA_FEATURES = new Set([
+  // Copilot rejects this opt-in header. Requests that actually declare an
+  // advisor_20260301 tool are rejected before forwarding; the header alone has
+  // no request semantics to preserve and can be removed safely.
   'advisor-tool-2026-03-01',
 ])
 

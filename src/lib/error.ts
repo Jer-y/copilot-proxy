@@ -2,6 +2,7 @@ import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 
 import consola from 'consola'
+import { forwardUpstreamHeaders } from './upstream-headers'
 
 export class HTTPError extends Error {
   response: Response
@@ -47,6 +48,10 @@ export class JSONResponseError extends Error {
   }
 }
 
+export function isAbortError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 /**
  * Forward errors in OpenAI-compatible format.
  * Used by /v1/chat/completions and /v1/responses endpoints.
@@ -61,13 +66,7 @@ export async function forwardError(c: Context, error: unknown) {
   if (error instanceof HTTPError) {
     const status = error.response.status as ContentfulStatusCode
 
-    // Forward useful upstream headers
-    const retryAfter = error.response.headers.get('retry-after')
-    if (retryAfter)
-      c.header('retry-after', retryAfter)
-    const requestId = error.response.headers.get('x-request-id')
-    if (requestId)
-      c.header('x-request-id', requestId)
+    forwardUpstreamHeaders(c, error.response.headers)
 
     const errorText = await error.text()
     let errorJson: unknown
@@ -87,7 +86,12 @@ export async function forwardError(c: Context, error: unknown) {
         responseChars: errorText.length,
         contentType: 'non-json',
       })
-      return c.body(errorText, status)
+      return c.json({
+        error: {
+          message: errorText || error.message || 'The upstream request failed.',
+          type: mapHttpStatusToOpenAIErrorType(status),
+        },
+      }, status)
     }
   }
 
@@ -101,6 +105,19 @@ export async function forwardError(c: Context, error: unknown) {
         },
       },
       error.status,
+    )
+  }
+
+  if (isAbortError(error)) {
+    return c.json(
+      {
+        error: {
+          message: error.message,
+          type: 'api_error',
+          code: 'upstream_connection_aborted',
+        },
+      },
+      502,
     )
   }
 

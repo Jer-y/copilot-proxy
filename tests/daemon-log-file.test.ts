@@ -73,6 +73,38 @@ describe('daemon log file helpers', () => {
     expect(readLastLogLines(logPath, 2)).toBe('three\nfour')
   })
 
+  test('does not treat a trailing newline as an empty final log line', () => {
+    const dir = makeTempDir()
+    const logPath = path.join(dir, 'daemon.log')
+    fs.writeFileSync(logPath, 'one\ntwo\n')
+
+    expect(readLastLogLines(logPath, 1)).toBe('two')
+    expect(readLastLogLines(logPath, 2)).toBe('one\ntwo')
+  })
+
+  test('reads a final line larger than the reverse-read chunk', () => {
+    const dir = makeTempDir()
+    const logPath = path.join(dir, 'daemon.log')
+    const longLine = 'x'.repeat(70 * 1024)
+    fs.writeFileSync(logPath, `prefix\n${longLine}\n`)
+
+    expect(readLastLogLines(logPath, 1)).toBe(longLine)
+  })
+
+  test('decodes a multi-byte character that straddles the reverse-read chunk boundary', () => {
+    const dir = makeTempDir()
+    const logPath = path.join(dir, 'daemon.log')
+    const reverseReadChunkBytes = 64 * 1024
+    const tail = 'x'.repeat(reverseReadChunkBytes - 3)
+    const longLine = `before-😀${tail}`
+    fs.writeFileSync(logPath, `prefix\n${longLine}\n`)
+
+    // The final chunk starts after the first two bytes of the four-byte emoji:
+    // two remaining emoji bytes + ASCII tail + newline = exactly 64 KiB.
+    expect(readLastLogLines(logPath, 1)).toBe(longLine)
+    expect(readLastLogLines(logPath, 2)).toBe(`prefix\n${longLine}`)
+  })
+
   test('rotates while a daemon is still writing', () => {
     const dir = makeTempDir()
     const logPath = path.join(dir, 'daemon.log')

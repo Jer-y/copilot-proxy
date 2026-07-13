@@ -155,6 +155,51 @@ Interpretation rules:
 - Optional probes pass if they return either `supported` or a clean `unsupported`.
 - `auth_error`, `rate_limited`, `api_error`, `network_error`, and `unexpected_response` should be treated as environment or upstream-health failures, not product decisions.
 
+## Point-in-time evidence record: 2026-07-13
+
+This section is a dated decision record, not a durable support matrix. Re-run the exact probes before changing an upstream-gated behavior.
+
+- Checkout: dirty working tree based on Git commit `ca0a5d1ad039a9867441835ca63a4647f942501e`.
+- Copilot account routing: the proxy used its default `individual` configuration and the direct probes used `api.githubcopilot.com`. The retained evidence does not identify the account's subscription entitlement, so do not infer Business/Enterprise versus individual billing from the hostname alone.
+- Local proxy: current checkout listening on `http://127.0.0.1:4899` with verbose diagnostics. Raw logs and credentials were not retained.
+- Direct Copilot host: `https://api.githubcopilot.com`; every direct result below used a live token obtained from the local token boundary without printing or retaining it.
+- Evidence labels used below: **official-contract verified**, **live-upstream verified**, and **locally reproduced**. These probes are not a Codex or Claude Code client smoke.
+
+The client-facing request shapes were checked on 2026-07-13 against the current official [Anthropic model overview](https://platform.claude.com/docs/en/about-claude/models/overview), [Anthropic advisor tool guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool), [Anthropic tool-result guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls), and [OpenAI Create embeddings reference](https://developers.openai.com/api/reference/resources/embeddings/methods/create). The Anthropic model overview records a 128K synchronous Messages maximum output for Claude Opus 4.8, 4.7, and 4.6. The advisor guide defines the `advisor-tool-2026-03-01` beta and `advisor_20260301` tool shape. The tool-result guide permits nested `text` and base64 `image` blocks. The OpenAI reference permits `encoding_format` values `float` and `base64`.
+
+### Advisor tool: unsupported upstream and fail-closed locally
+
+- **Official-contract verified:** the request copied the official quick-start shape: executor `claude-sonnet-5`, `max_tokens: 4096`, beta header `advisor-tool-2026-03-01`, and `tools: [{type: "advisor_20260301", name: "advisor", model: "claude-fable-5"}]`.
+- **Live-upstream verified:** direct `POST https://api.githubcopilot.com/v1/messages` returned `400` with code `invalid_request_body` and observation `unsupported beta header(s): advisor-tool-2026-03-01`. Direct `POST https://api.githubcopilot.com/v1/messages/count_tokens` returned the same status, code, and observation for the same request family.
+- **Locally reproduced:** local `POST /v1/messages` and `POST /v1/messages/count_tokens` each returned an Anthropic-compatible `400 invalid_request_error`. Neither route removed the advisor tool and reported a misleading success.
+- **Decision:** reject requests that declare `advisor_20260301` before forwarding. A standalone advisor beta header may be removed only when no advisor-tool semantics are present.
+
+### Rich `tool_result` image: faithful Responses translation
+
+- **Official-contract verified:** Anthropic allows `tool_result.content` to be an array containing both a `text` block and a base64 `image` block.
+- **Live-upstream verified:** direct `POST https://api.githubcopilot.com/responses` with model `gpt-5.4`, `max_output_tokens: 1024`, a matching `function_call`, and `function_call_output.output` parts `[input_text, input_image]` using a 32-by-32 base64 PNG returned `200`, `status: completed`, and the semantic answer `MAGENTA`. The request included `copilot-vision-request: true`.
+- **Locally reproduced:** local `POST /v1/messages` with model `gpt-5.4`, `max_tokens: 1024`, matching `tool_use` history, and a `tool_result` containing text plus the same base64 PNG returned `200`, `stop_reason: end_turn`, and `MAGENTA`.
+- **Decision:** preserve rich tool output as Responses `input_text` and `input_image` parts, and enable the Copilot vision request header when an image occurs inside `tool_result`.
+
+### Claude Opus 128K synchronous Messages boundary
+
+The local checks used the Copilot model IDs shown below and an exact `max_tokens: 128000` non-streaming request with a short fixed-response semantic assertion. The direct checks repeated that request against Copilot and then changed only the boundary value to `128001`.
+
+| Copilot request model | Local `/v1/messages`, `128000` | Direct Copilot `/v1/messages`, `128000` | Direct Copilot `/v1/messages`, `128001` |
+| --- | --- | --- | --- |
+| `claude-opus-4.6` | `200`; requested model preserved; `end_turn`; fixed response matched | `200`; response model `claude-opus-4-6`; `end_turn`; fixed response matched | `400 invalid_request_error`; maximum reported as `128000` |
+| `claude-opus-4.7` | `200`; requested model preserved; `end_turn`; fixed response matched | `200`; response model `claude-opus-4-7`; `end_turn`; fixed response matched | `400 invalid_request_error`; maximum reported as `128000` |
+| `claude-opus-4.8` | `200`; requested model preserved; `end_turn`; fixed response matched | `200`; response model `claude-opus-4-8`; `end_turn`; fixed response matched | `400 invalid_request_error`; maximum reported as `128000` |
+
+This is both **live-upstream verified** and **locally reproduced**. Together with the official 128K model limits, it justifies using 128000 as the dated verified floor for proxy-generated defaults for these three models. It does not justify clamping an explicit client value locally; explicit values remain upstream-visible so the selected backend returns the authoritative boundary error.
+
+### Embeddings `encoding_format: base64`: proxy encoding fallback
+
+- **Official-contract verified:** OpenAI permits `encoding_format: "base64"` and scalar string input on `POST /v1/embeddings`.
+- **Live-upstream verified:** direct `POST https://api.githubcopilot.com/embeddings` with model `text-embedding-3-small`, array input, `encoding_format: "base64"`, and `dimensions: 8` returned `200`, but the embedding was an eight-element float array; the response also omitted the top-level `object` and `model` fields.
+- **Locally reproduced:** local `POST /v1/embeddings` with the official scalar-input shape and the same model, encoding, and dimension count returned `200`, an embedding string that decoded to 32 bytes, `object: "list"`, and model `text-embedding-3-small`.
+- **Decision:** forward `encoding_format` unchanged. If Copilot returns floats for a base64 request, encode them locally as packed little-endian Float32 bytes and normalize the client-facing envelope; if Copilot returns a valid base64 string in the future, preserve it. The local success is a proxy fallback and must not be reported as native Copilot base64 output.
+
 ## How to use the results
 
 Use the probe outcome to decide how aggressive the proxy should be:
@@ -609,8 +654,11 @@ of only checking one basic prompt. At minimum, cover each model with:
 - a `Read`-only local file read from `package.json`
 - `--json-schema` structured output and validation of the `structured_output`
   object in Claude Code's JSON result
-- an isolated temporary-directory `Read,Write,Edit` tool chain that creates,
-  edits, reads back, and externally verifies a file
+- an isolated temporary-directory file lifecycle that creates, edits, reads back,
+  and externally verifies a file. Use `Write` then `Edit` when the installed
+  Claude Code exposes both tools. Claude Code 2.1.197 exposes `Edit` and `Read`
+  but not `Write`, so its equivalent chain is `Edit` with an empty old value to
+  create the file, another `Edit` to update it, and then `Read`.
 - `--effort max` with a fixed-string response
 
 Use temporary `HOME` and temporary work directories for every run. Do not modify
@@ -622,7 +670,7 @@ for CLAUDE_MODEL_UNDER_TEST in $CLAUDE_MODELS_UNDER_TEST; do
   # 1. Basic no-tool fixed response
   # 2. Read-only package.json tool loop
   # 3. --json-schema structured_output validation
-  # 4. Temporary Read/Write/Edit file lifecycle
+  # 4. Temporary file lifecycle using the installed CLI's writable tool surface
   # 5. --effort max fixed response
   # Keep each HOME and writable work directory under /tmp.
   :

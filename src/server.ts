@@ -2,8 +2,10 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 
+import { NATIVE_SERVICE_INSTANCE_HEADER } from '~/daemon/native-service'
 import { withApprovalRequestContext } from '~/lib/approval'
 import { isRequestHostAllowed, isRequestOriginAllowed, resolveCorsOrigin } from '~/lib/security'
+import { state } from '~/lib/state'
 
 import { completionRoutes } from './routes/chat-completions/route'
 import { embeddingRoutes } from './routes/embeddings/route'
@@ -51,7 +53,11 @@ server.use(cors({
   exposeHeaders: ['x-request-id', 'retry-after'],
 }))
 
-server.get('/', c => c.text('Server running'))
+server.get('/', (c) => {
+  if (state.nativeServiceInstanceToken)
+    c.header(NATIVE_SERVICE_INSTANCE_HEADER, state.nativeServiceInstanceToken)
+  return c.text('Server running')
+})
 
 server.route('/chat/completions', completionRoutes)
 server.route('/models', modelRoutes)

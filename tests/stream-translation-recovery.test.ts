@@ -15,6 +15,7 @@ import {
   finalizeAnthropicStreamFromState,
   finalizeNativeAnthropicPassthroughState,
   finalizeTruncatedAnthropicStreamFromState,
+  handleAnthropicStreamFailure,
   shouldEmitNativeAnthropicTerminationError,
   updateNativeAnthropicPassthroughState,
   writeAnthropicEvents,
@@ -123,6 +124,57 @@ describe('canRecoverUpstreamTerminationAsMessage', () => {
     })
 
     expect(canRecoverUpstreamTerminationAsMessage(state)).toBe(true)
+  })
+})
+
+describe('handleAnthropicStreamFailure', () => {
+  test('surfaces an upstream AbortError as an Anthropic SSE error event', async () => {
+    const events: unknown[] = []
+    const error = new Error('Copilot upstream request aborted.')
+    error.name = 'AbortError'
+
+    await handleAnthropicStreamFailure({
+      completionTerm: 'completion event',
+      error,
+      errorLabel: 'test stream',
+      streamLabel: 'test stream',
+      state: { hasNonThinkingContent: false, hasThinkingContent: false },
+      unexpectedErrorMessage: 'unexpected',
+      writer: {
+        writeEvent: async (event) => {
+          events.push(event)
+        },
+      },
+      finalizeRecoveredEvents: () => [],
+      clientAborted: () => false,
+    })
+
+    expect(events).toEqual([{
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message: 'Copilot upstream request aborted.',
+      },
+    }])
+  })
+
+  test('stays silent only when the client stream actually aborted', async () => {
+    const writeEvent = mock(async () => {})
+    const error = new Error('write failed after disconnect')
+
+    await handleAnthropicStreamFailure({
+      completionTerm: 'completion event',
+      error,
+      errorLabel: 'test stream',
+      streamLabel: 'test stream',
+      state: { hasNonThinkingContent: false, hasThinkingContent: false },
+      unexpectedErrorMessage: 'unexpected',
+      writer: { writeEvent },
+      finalizeRecoveredEvents: () => [],
+      clientAborted: () => true,
+    })
+
+    expect(writeEvent).not.toHaveBeenCalled()
   })
 })
 

@@ -335,6 +335,9 @@ export const AnthropicMessagesPayloadSchema = z.object({
 export const EmbeddingRequestSchema = z.object({
   input: z.union([z.string(), z.array(z.string())]),
   model: z.string(),
+  dimensions: z.number().int().positive().optional(),
+  encoding_format: z.enum(['float', 'base64']).optional(),
+  user: z.string().optional(),
 }).passthrough()
 
 // ─── Responses (OpenAI Responses API) ─────────────────────────────

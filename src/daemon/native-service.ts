@@ -23,7 +23,10 @@ export interface NativeServiceReadinessOptions {
   probe?: () => boolean | Promise<boolean>
   delay?: (milliseconds: number) => Promise<void>
   now?: () => number
+  expectedInstanceToken?: string
 }
+
+export const NATIVE_SERVICE_INSTANCE_HEADER = 'x-copilot-proxy-instance-token'
 
 export async function waitForNativeServiceReadiness(
   config: Pick<DaemonConfig, 'host' | 'port'>,
@@ -34,7 +37,11 @@ export async function waitForNativeServiceReadiness(
   const requiredReadyChecks = options.requiredReadyChecks ?? 2
   const now = options.now ?? Date.now
   const delay = options.delay ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)))
-  const probe = options.probe ?? (() => probeCopilotProxyServer(config.host, config.port))
+  const probe = options.probe ?? (() => probeCopilotProxyServer(
+    config.host,
+    config.port,
+    options.expectedInstanceToken,
+  ))
   const deadline = now() + timeoutMs
   let consecutiveReadyChecks = 0
 
@@ -53,7 +60,11 @@ export async function waitForNativeServiceReadiness(
   return false
 }
 
-export async function probeCopilotProxyServer(host: string, port: number): Promise<boolean> {
+export async function probeCopilotProxyServer(
+  host: string,
+  port: number,
+  expectedInstanceToken?: string,
+): Promise<boolean> {
   const hostname = readinessProbeHostname(host)
   return await new Promise<boolean>((resolve) => {
     let settled = false
@@ -81,7 +92,9 @@ export async function probeCopilotProxyServer(host: string, port: number): Promi
         }
       })
       response.once('end', () => {
-        finish(response.statusCode === 200 && body.trim() === 'Server running')
+        const instanceMatches = expectedInstanceToken === undefined
+          || response.headers[NATIVE_SERVICE_INSTANCE_HEADER] === expectedInstanceToken
+        finish(response.statusCode === 200 && body.trim() === 'Server running' && instanceMatches)
       })
       response.once('error', () => finish(false))
     })

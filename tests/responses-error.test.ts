@@ -38,17 +38,27 @@ beforeEach(() => {
   state.models = undefined
 })
 
-function createErroringSSE(chunks: string[], message: string): ReadableStream<Uint8Array> {
+function createErroringSSE(
+  chunks: string[],
+  message: string,
+  errorName = 'Error',
+  errorDelayMs = 0,
+): ReadableStream<Uint8Array> {
   let index = 0
   return new ReadableStream<Uint8Array>({
-    pull(controller) {
+    async pull(controller) {
       if (index < chunks.length) {
         controller.enqueue(encoder.encode(chunks[index]))
         index++
         return
       }
 
-      controller.error(new Error(message))
+      if (errorDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, errorDelayMs))
+      }
+      const error = new Error(message)
+      error.name = errorName
+      controller.error(error)
     },
   })
 }
@@ -305,6 +315,106 @@ test('/v1/responses streaming surfaces upstream stream errors as SSE error event
   })
 })
 
+test('/v1/responses does not turn an upstream AbortError into an empty 200 response', async () => {
+  fetchMock.mockImplementation(async () => {
+    const error = new Error('upstream connection aborted')
+    error.name = 'AbortError'
+    throw error
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'Say hello.',
+    }),
+  })
+
+  expect(response.status).toBe(502)
+  expect(response.headers.get('content-type')).toContain('application/json')
+  expect(await response.json()).toEqual({
+    error: {
+      message: 'upstream connection aborted',
+      type: 'api_error',
+      code: 'upstream_connection_aborted',
+    },
+  })
+})
+
+test('/v1/responses streaming reports AbortError when the client stream is still open', async () => {
+  fetchMock.mockImplementation(async () => {
+    return new Response(createErroringSSE([
+      [
+        'event: response.created',
+        'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_abort_error","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
+        '',
+        '',
+      ].join('\n'),
+    ], 'upstream stream aborted', 'AbortError'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  const body = await response.text()
+  expect(response.status).toBe(200)
+  expect(body).toContain('event: response.created')
+  expect(getSSEEventData(body, 'error')).toEqual({
+    type: 'error',
+    code: 'stream_error',
+    message: 'upstream stream aborted',
+    param: null,
+    sequence_number: 1,
+  })
+  expect(body).not.toContain('data: [DONE]')
+})
+
+test('/v1/responses streaming ignores a transport AbortError after response.completed', async () => {
+  fetchMock.mockImplementation(async () => {
+    return new Response(createErroringSSE([
+      [
+        'event: response.created',
+        'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_terminal_abort","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
+        '',
+        'event: response.completed',
+        'data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_terminal_abort","object":"response","model":"gpt-5.4","output":[],"status":"completed","error":null}}',
+        '',
+        '',
+      ].join('\n'),
+    ], 'upstream socket closed after terminal event', 'AbortError', 25), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  const body = await response.text()
+  expect(response.status).toBe(200)
+  expect(body).toContain('event: response.completed')
+  expect(body).not.toContain('event: error')
+  expect(body).not.toContain('upstream socket closed after terminal event')
+})
+
 test('/v1/responses streaming emits an error when upstream closes before a terminal event', async () => {
   fetchMock.mockImplementation(async (url: string) => {
     if (!url.endsWith('/responses')) {
@@ -421,6 +531,258 @@ test('/v1/responses translated Anthropic streaming surfaces upstream stream erro
     param: null,
     sequence_number: 0,
   })
+})
+
+test('/v1/responses translated Anthropic stream ignores AbortError after message_stop', async () => {
+  fetchMock.mockImplementation(async (url: string) => {
+    if (!url.endsWith('/v1/messages')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+
+    return new Response(createErroringSSE([
+      [
+        'event: message_start',
+        'data: {"type":"message_start","message":{"id":"msg_terminal_abort","type":"message","role":"assistant","content":[],"model":"claude-opus-4.6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+        '',
+        'event: message_stop',
+        'data: {"type":"message_stop"}',
+        '',
+        '',
+      ].join('\n'),
+    ], 'Anthropic socket closed after message_stop', 'AbortError', 25), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.6',
+      store: false,
+      input: 'Say hello.',
+      stream: true,
+    }),
+  })
+
+  const body = await response.text()
+  expect(response.status).toBe(200)
+  expect(body).toContain('event: response.completed')
+  expect(body).not.toContain('event: response.failed')
+  expect(body).not.toContain('event: error')
+  expect(body).not.toContain('Anthropic socket closed after message_stop')
+})
+
+test('/v1/responses translated non-streaming responses echo verified request fields', async () => {
+  const schema = {
+    type: 'object',
+    properties: { value: { type: 'string' } },
+    required: ['value'],
+    additionalProperties: false,
+  }
+  const tools = [{
+    type: 'function',
+    name: 'lookup',
+    description: 'Look up a value.',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    strict: true,
+  }]
+
+  fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (!url.endsWith('/v1/messages')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+
+    const upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    expect(upstreamBody).toMatchObject({
+      temperature: 0.25,
+      top_p: 0.75,
+      output_config: {
+        effort: 'xhigh',
+        format: { type: 'json_schema', schema },
+      },
+      tool_choice: {
+        type: 'tool',
+        name: 'lookup',
+        disable_parallel_tool_use: true,
+      },
+    })
+
+    return Response.json({
+      id: 'msg_echo_fields',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4.6',
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 3, output_tokens: 1 },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.6',
+      store: false,
+      instructions: 'Reply with exactly ECHO_OK.',
+      max_output_tokens: 64,
+      metadata: { trace_id: 'trace_non_stream' },
+      temperature: 0.25,
+      top_p: 0.75,
+      parallel_tool_calls: false,
+      reasoning: { effort: 'xhigh', summary: 'none' },
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'answer',
+          schema,
+          strict: true,
+        },
+      },
+      tool_choice: { type: 'function', name: 'lookup' },
+      tools,
+      input: 'Say hello.',
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({
+    instructions: 'Reply with exactly ECHO_OK.',
+    max_output_tokens: 64,
+    metadata: { trace_id: 'trace_non_stream' },
+    temperature: 0.25,
+    top_p: 0.75,
+    parallel_tool_calls: false,
+    reasoning: { effort: 'xhigh', summary: null },
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'answer',
+        schema,
+        strict: true,
+      },
+    },
+    tool_choice: { type: 'function', name: 'lookup' },
+    tools,
+    previous_response_id: null,
+    store: false,
+  })
+})
+
+test('/v1/responses translated streams echo verified request fields in created and terminal events', async () => {
+  const schema = {
+    type: 'object',
+    properties: { value: { type: 'integer' } },
+    required: ['value'],
+    additionalProperties: false,
+  }
+  const tools = [{
+    type: 'function',
+    name: 'stream_lookup',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'integer' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  }]
+
+  fetchMock.mockImplementation(async (url: string) => {
+    if (!url.endsWith('/v1/messages')) {
+      throw new Error(`Unexpected upstream URL: ${url}`)
+    }
+    return new Response([
+      'event: message_start',
+      'data: {"type":"message_start","message":{"id":"msg_echo_stream","type":"message","role":"assistant","content":[],"model":"claude-opus-4.6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      '',
+      'event: content_block_stop',
+      'data: {"type":"content_block_stop","index":0}',
+      '',
+      'event: message_delta',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+      '',
+      'event: message_stop',
+      'data: {"type":"message_stop"}',
+      '',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  })
+
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.6',
+      store: false,
+      stream: true,
+      instructions: 'Reply with exactly STREAM_ECHO_OK.',
+      max_output_tokens: 80,
+      metadata: null,
+      temperature: null,
+      top_p: 0.6,
+      parallel_tool_calls: false,
+      reasoning: { effort: 'none', summary: 'none' },
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'stream_answer',
+          schema,
+          strict: true,
+        },
+      },
+      tool_choice: 'required',
+      tools,
+      input: 'Say hello.',
+    }),
+  })
+
+  const body = await response.text()
+  expect(response.status).toBe(200)
+  for (const eventName of ['response.created', 'response.in_progress', 'response.completed']) {
+    expect(getSSEEventData(body, eventName)).toMatchObject({
+      response: {
+        instructions: 'Reply with exactly STREAM_ECHO_OK.',
+        max_output_tokens: 80,
+        metadata: null,
+        temperature: null,
+        top_p: 0.6,
+        parallel_tool_calls: false,
+        reasoning: { effort: 'none', summary: null },
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'stream_answer',
+            schema,
+            strict: true,
+          },
+        },
+        tool_choice: 'required',
+        tools,
+        previous_response_id: null,
+        store: false,
+      },
+    })
+  }
 })
 
 test('/v1/responses translated Anthropic clean EOF emits response.failed without message_stop', async () => {
@@ -551,6 +913,36 @@ test('/v1/responses fills a missing OpenAI error type from the HTTP status', asy
   })
 })
 
+test('/v1/responses wraps non-JSON upstream errors and preserves safe headers', async () => {
+  fetchMock.mockImplementation(async () => {
+    return new Response('404 page not found', {
+      status: 404,
+      headers: {
+        'Content-Type': 'text/plain',
+        'Retry-After': '7',
+        'X-Request-Id': 'req_non_json',
+        'X-RateLimit-Remaining': '12',
+        'Set-Cookie': 'secret=not-forwarded',
+      },
+    })
+  })
+
+  const response = await server.request('/v1/responses/resp_missing')
+
+  expect(response.status).toBe(404)
+  expect(response.headers.get('content-type')).toContain('application/json')
+  expect(response.headers.get('retry-after')).toBe('7')
+  expect(response.headers.get('x-request-id')).toBe('req_non_json')
+  expect(response.headers.get('x-ratelimit-remaining')).toBe('12')
+  expect(response.headers.get('set-cookie')).toBeNull()
+  expect(await response.json()).toEqual({
+    error: {
+      message: '404 page not found',
+      type: 'invalid_request_error',
+    },
+  })
+})
+
 test('/v1/responses strips service_tier before forwarding upstream', async () => {
   fetchMock.mockImplementation(async () => {
     return new Response(JSON.stringify({
@@ -616,8 +1008,40 @@ test('/v1/responses rejects stateful fields before Anthropic translation reaches
   expect(fetchMock).toHaveBeenCalledTimes(0)
 })
 
+test('/v1/responses rejects unknown message content parts before Anthropic translation reaches upstream', async () => {
+  for (const role of ['user', 'assistant'] as const) {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        store: false,
+        input: [{
+          role,
+          content: [{ type: 'input_audio', audio: 'opaque' }],
+        }],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: {
+        type: 'invalid_request_error',
+        message: `Unsupported Responses ${role} content part type "input_audio" for anthropic-messages translation.`,
+      },
+    })
+  }
+
+  expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
 test('/v1/responses translated json_schema omits the Responses-only name on the Anthropic wire', async () => {
   const sentinel = 'HANDLER_PROMPT_SECRET_SENTINEL'
+  const schema = {
+    type: 'object',
+    properties: { value: { type: 'string' } },
+    required: ['value'],
+  }
   const debugLogs: string[] = []
   const originalDebug = consola.debug
   const originalLevel = consola.level
@@ -633,11 +1057,7 @@ test('/v1/responses translated json_schema omits the Responses-only name on the 
     }
     expect(upstreamBody.output_config.format).toEqual({
       type: 'json_schema',
-      schema: {
-        type: 'object',
-        properties: { value: { type: 'string' } },
-        required: ['value'],
-      },
+      schema,
     })
 
     return new Response(JSON.stringify({
@@ -667,16 +1087,23 @@ test('/v1/responses translated json_schema omits the Responses-only name on the 
           format: {
             type: 'json_schema',
             name: 'answer',
-            schema: {
-              type: 'object',
-              properties: { value: { type: 'string' } },
-              required: ['value'],
-            },
+            schema,
+            strict: true,
           },
         },
       }),
     })
     expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'answer',
+          schema,
+          strict: true,
+        },
+      },
+    })
   }
   finally {
     consola.debug = originalDebug

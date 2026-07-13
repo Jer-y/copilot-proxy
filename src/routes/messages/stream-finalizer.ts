@@ -21,6 +21,7 @@ export interface AnthropicStreamFailureOptions {
   writer: AnthropicEventWriter
   finalizeRecoveredEvents: () => Array<AnthropicStreamEventData>
   canRecoverTermination?: () => boolean
+  clientAborted?: () => boolean
   shouldEmitTerminationError?: () => boolean
   debugTranslatedEvents?: boolean
 }
@@ -196,7 +197,7 @@ export async function writeAnthropicEvents(
 export async function handleAnthropicStreamFailure(
   options: AnthropicStreamFailureOptions,
 ): Promise<void> {
-  if (options.error instanceof Error && options.error.name === 'AbortError') {
+  if (options.clientAborted?.()) {
     return
   }
 

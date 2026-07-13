@@ -7,7 +7,7 @@ import type { ResponsesPayload } from '~/services/copilot/create-responses'
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
-import { JSONResponseError } from '~/lib/error'
+import { isAbortError, JSONResponseError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import {
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
@@ -58,24 +58,17 @@ export async function handleResponses(c: Context) {
     models: state.models?.data,
   })
 
-  try {
-    switch (route.backend) {
-      case 'responses':
-        return await handleViaResponses(c, payload)
-      case 'anthropic-messages':
-        assertResponsesPayloadTranslatable(payload, throwInvalidResponsesRequest)
-        return await handleViaAnthropic(c, payload, effectiveModel, requestedModel)
-      case 'chat-completions':
-        // Unreachable: resolveRoute() never returns chat-completions for a Responses client.
-        throwInvalidResponsesRequest(
-          `Model ${payload.model} cannot be served via /responses (would require translating to /chat/completions, which is disallowed).`,
-        )
-    }
-  }
-  catch (error) {
-    if (error instanceof Error && error.name === 'AbortError')
-      return c.body(null)
-    throw error
+  switch (route.backend) {
+    case 'responses':
+      return await handleViaResponses(c, payload)
+    case 'anthropic-messages':
+      assertResponsesPayloadTranslatable(payload, throwInvalidResponsesRequest)
+      return await handleViaAnthropic(c, payload, effectiveModel, requestedModel)
+    case 'chat-completions':
+      // Unreachable: resolveRoute() never returns chat-completions for a Responses client.
+      throwInvalidResponsesRequest(
+        `Model ${payload.model} cannot be served via /responses (would require translating to /chat/completions, which is disallowed).`,
+      )
   }
 }
 
@@ -161,6 +154,10 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
       completed = terminalSeen && !stream.aborted
     }
     catch (error) {
+      if (terminalSeen && isAbortError(error)) {
+        completed = !stream.aborted
+        return
+      }
       await writeOpenAIStreamError(stream, error, {
         fallbackMessage: 'An unexpected error occurred while streaming the Copilot Responses response.',
         label: 'Responses stream passthrough',
@@ -197,17 +194,23 @@ async function handleViaAnthropic(
   effectiveModel: string,
   requestedModel: string,
 ) {
-  // Backfill/clamp max_output_tokens (Anthropic API requires max_tokens)
-  if (payload.max_output_tokens == null) {
-    payload.max_output_tokens = findModelMaxOutputTokens(effectiveModel, state.models) ?? 16384
+  const requestContext = {
+    instructions: payload.instructions ?? null,
+    max_output_tokens: payload.max_output_tokens ?? null,
+    metadata: payload.metadata,
+    parallel_tool_calls: payload.parallel_tool_calls,
+    reasoning: payload.reasoning,
+    temperature: payload.temperature,
+    text: payload.text,
+    tool_choice: payload.tool_choice,
+    tools: payload.tools,
+    top_p: payload.top_p,
   }
-  else {
-    const modelMax = findModelMaxOutputTokens(effectiveModel, state.models)
-    if (modelMax && payload.max_output_tokens > modelMax) {
-      consola.debug(`Clamping max_output_tokens from ${payload.max_output_tokens} to ${modelMax} for ${effectiveModel}`)
-      payload.max_output_tokens = modelMax
-    }
-  }
+
+  // Backfill max_output_tokens because Anthropic requires max_tokens. Preserve
+  // explicit client limits verbatim: live model-catalog limits can lag the
+  // request boundary accepted by the selected Copilot backend.
+  payload.max_output_tokens ??= findModelMaxOutputTokens(effectiveModel, state.models) ?? 16384
 
   const anthropicPayload = translateResponsesRequestToAnthropic(payload, { model: effectiveModel })
   if (consola.level >= 4) {
@@ -221,7 +224,10 @@ async function handleViaAnthropic(
     if (consola.level >= 4) {
       consola.debug('Non-streaming Anthropic response summary:', summarizeAnthropicResponse(result.body))
     }
-    const responsesResponse = translateAnthropicResponseToResponses(result.body, { requestedModel })
+    const responsesResponse = translateAnthropicResponseToResponses(result.body, {
+      requestedModel,
+      requestContext,
+    })
     forwardUpstreamHeaders(c, result.headers)
     return c.json(responsesResponse)
   }
@@ -231,7 +237,10 @@ async function handleViaAnthropic(
   forwardUpstreamHeaders(c, result.headers)
   const streamBody = result.body
   return streamSSE(c, async (stream) => {
-    const streamState = createAnthropicToResponsesStreamState({ requestedModel })
+    const streamState = createAnthropicToResponsesStreamState({
+      requestedModel,
+      requestContext,
+    })
     let completed = false
     let translationFailed = false
     stream.onAbort(() => result.cancel?.('responses client disconnected before translated Anthropic stream completed'))
@@ -297,6 +306,10 @@ async function handleViaAnthropic(
       completed = !stream.aborted
     }
     catch (error) {
+      if (streamState.messageStopSent && isAbortError(error)) {
+        completed = !stream.aborted
+        return
+      }
       await writeOpenAIStreamError(stream, error, {
         fallbackMessage: 'An unexpected error occurred while translating the Copilot Anthropic stream.',
         label: 'Anthropic to Responses stream translation',

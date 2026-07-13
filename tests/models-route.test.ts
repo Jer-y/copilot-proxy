@@ -130,7 +130,7 @@ describe('/v1/models', () => {
     const response = await server.request('/v1/models?client_version=abc')
     const body = await response.json() as { error: { message: string } }
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(400)
     expect(body.error.message).toBe('Invalid Codex client_version')
     expect(fetchMock).not.toHaveBeenCalled()
   })

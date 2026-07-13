@@ -58,6 +58,11 @@ export const auth = defineCommand({
       default: false,
       description: 'Use HTTP(S)_PROXY/NO_PROXY environment variables for authentication requests',
     },
+    'github-token': {
+      alias: 'g',
+      type: 'string',
+      description: 'Persist a GitHub token securely, then exit without starting the device flow',
+    },
   },
   run({ args }) {
     return runAuth({

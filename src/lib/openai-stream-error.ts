@@ -30,15 +30,11 @@ export async function writeOpenAIStreamError(
     responsesSequenceNumber?: number
   },
 ): Promise<void> {
-  if (error instanceof Error && error.name === 'AbortError') {
+  if (stream.aborted || stream.closed) {
     return
   }
 
   consola.error(`${options.label} failed:`, error)
-
-  if (stream.aborted || stream.closed) {
-    return
-  }
 
   await stream.writeSSE({
     event: 'error',

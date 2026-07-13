@@ -330,7 +330,7 @@ describeLive('Proxy live smoke', () => {
     test('text.format json_schema → returns schema-valid JSON string', async () => {
       const res = await sendJsonRequest('/v1/responses', {
         model: RESPONSES_MODEL,
-        input: 'What is 2+2? Return JSON with answer as a string.',
+        input: 'Return exactly the JSON object {"answer":"4"}.',
         max_output_tokens: 128,
         text: {
           format: {
@@ -340,7 +340,7 @@ describeLive('Proxy live smoke', () => {
             schema: {
               type: 'object',
               properties: {
-                answer: { type: 'string' },
+                answer: { type: 'string', const: '4' },
               },
               required: ['answer'],
               additionalProperties: false,

@@ -35,7 +35,7 @@ describe('Anthropic model normalization', () => {
 })
 
 describe('Anthropic beta header sanitization', () => {
-  test('strips advisor beta when the advisor tool is removed locally', () => {
+  test('strips an advisor beta header when no advisor tool semantics are present', () => {
     expect(sanitizeAnthropicBetaHeader('advisor-tool-2026-03-01')).toBeUndefined()
   })
 

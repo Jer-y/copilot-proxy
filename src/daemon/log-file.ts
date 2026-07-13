@@ -155,30 +155,56 @@ export function installRotatingProcessLog(logPath: string = PATHS.DAEMON_LOG): (
 
 export function readLastLogLines(logPath: string, lineCount: number): string {
   const count = Math.max(1, lineCount)
-  const stat = fs.statSync(logPath)
   const chunkSize = 64 * 1024
-  let position = stat.size
-  let content = ''
+  const chunks: Buffer[] = []
+  let bufferedBytes = 0
+  let newlineCount = 0
+  let endsWithNewline = false
+  const fd = fs.openSync(logPath, 'r')
 
-  while (position > 0 && countLines(content) <= count) {
-    const readSize = Math.min(chunkSize, position)
-    position -= readSize
-    const fd = fs.openSync(logPath, 'r')
-    try {
+  try {
+    let position = fs.fstatSync(fd).size
+    while (position > 0 && countBufferedLines(bufferedBytes, newlineCount, endsWithNewline) <= count) {
+      const readSize = Math.min(chunkSize, position)
+      position -= readSize
       const buffer = Buffer.alloc(readSize)
-      fs.readSync(fd, buffer, 0, readSize, position)
-      content = `${buffer.toString('utf8')}${content}`
-    }
-    finally {
-      fs.closeSync(fd)
+      const bytesRead = fs.readSync(fd, buffer, 0, readSize, position)
+      const chunk = bytesRead === readSize ? buffer : buffer.subarray(0, bytesRead)
+
+      if (bufferedBytes === 0 && chunk.length > 0)
+        endsWithNewline = chunk.at(-1) === 0x0A
+      for (const byte of chunk) {
+        if (byte === 0x0A)
+          newlineCount++
+      }
+
+      chunks.push(chunk)
+      bufferedBytes += chunk.length
     }
   }
+  finally {
+    fs.closeSync(fd)
+  }
 
-  return content.split('\n').slice(-count).join('\n')
+  // Decode only after the reverse-read chunks have been reassembled. Decoding
+  // each chunk independently corrupts a multi-byte UTF-8 character when its
+  // bytes straddle the 64 KiB read boundary.
+  const content = Buffer.concat(chunks.reverse(), bufferedBytes).toString('utf8')
+
+  const lines = content.split('\n')
+  if (lines.at(-1) === '')
+    lines.pop()
+  return lines.slice(-count).join('\n')
 }
 
-function countLines(value: string): number {
-  return value.length === 0 ? 0 : value.split('\n').length
+function countBufferedLines(
+  bufferedBytes: number,
+  newlineCount: number,
+  endsWithNewline: boolean,
+): number {
+  if (bufferedBytes === 0)
+    return 0
+  return newlineCount + (endsWithNewline ? 0 : 1)
 }
 
 function renameIfExists(from: string, to: string): void {
