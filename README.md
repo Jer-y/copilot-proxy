@@ -40,8 +40,8 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) APIs, with native Claude `/v1/messages` passthrough when the upstream supports it.
-- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for Copilot models that expose the Responses backend. Claude models are also reachable via `/v1/responses` through Anthropic Messages translation.
-- **Codex Ready**: Works with OpenAI Codex CLI/SDK by pointing its base URL to this proxy.
+- **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for Copilot models that expose the Responses backend. Claude requests are also reachable via `/v1/responses` when their request shape can be faithfully translated to Anthropic Messages.
+- **Codex Ready for Responses-backed models**: OpenAI Codex CLI/SDK works by pointing its base URL to this proxy when the selected Copilot model exposes the Responses backend. Codex-to-Claude translation is subject to the limitations below.
 - **Model-Aware Routing and Translation**: Requests are routed directly when the requested client API is supported; otherwise only `/v1/messages` and `/responses` may translate to each other. The proxy does not translate to or from `/chat/completions`. Also applies Claude prompt caching (`copilot_cache_control`), preserves adaptive-thinking / `output_config.effort` compatibility, and normalizes provider-specific model IDs when Copilot expects a different upstream name.
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Gateway Friendly**: Put [New API](https://github.com/QuantumNous/new-api) in front of this proxy to get one deployment that can serve many clients with New API-managed users, API keys, quotas, logs, rate limits, and billing.
@@ -300,6 +300,14 @@ Anthropic document URL sources are forwarded natively when the selected model us
 `--manual` fails closed: requests receive `503` when no interactive TTY is available or approval times out. Use it only with a foreground `start`; it is not suitable for `enable`, `start -d`, containers without a TTY, or other unattended services. Treat all diagnostic logs as sensitive. `--show-token` deliberately prints bearer tokens and must never be used with persisted or shared logs.
 
 When a `/v1/responses` request must be translated to a native Claude `/v1/messages` backend, it must explicitly set `store: false`; the proxy cannot emulate the Responses API's default server-side persistence or make a translated response ID retrievable. Initial system/developer input is kept as the top-level Anthropic system prompt. Mid-conversation system/developer input is preserved only in Anthropic-supported positions; an unrepresentable ordering is rejected instead of being reordered.
+
+> **Codex-to-Claude limitation:** With Codex CLI 0.144.1, the tested default configuration includes hosted/custom Responses tools that cannot be represented faithfully by Anthropic Messages. The proxy intentionally rejects that request locally with HTTP `400` instead of dropping tools or reporting a misleading success. The restricted real-machine smoke passed text and `exec_command` tool-loop coverage with the following overrides; this proves only that scoped configuration, not default Codex-to-Claude compatibility:
+>
+> ```sh
+> -c 'web_search="disabled"' \
+> -c 'features.multi_agent=false' \
+> -c 'features.remote_plugin=false'
+> ```
 
 ### Auth Command Options
 

@@ -40,8 +40,8 @@
 ## 功能特性
 
 - **OpenAI & Anthropic 兼容**：提供 OpenAI 兼容端点（`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`）与 Anthropic 兼容端点（`/v1/messages`），并在上游支持时优先走 Claude 原生 `/v1/messages`。
-- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于当前由 Copilot 暴露 Responses 后端的模型；Claude 模型也可通过 Anthropic Messages 翻译在 `/v1/responses` 上调用。
-- **Codex 可用**：将 OpenAI Codex CLI/SDK 的 base URL 指向本代理即可使用。
+- **Responses API 支持**：支持 OpenAI Responses API（`/v1/responses`），适用于 Copilot 暴露 Responses 后端的模型；请求形状能够忠实翻译为 Anthropic Messages 时，Claude 请求也可通过 `/v1/responses` 调用。
+- **Codex 可用（Responses 后端模型）**：当所选 Copilot 模型暴露 Responses 后端时，将 OpenAI Codex CLI/SDK 的 base URL 指向本代理即可使用。Codex 到 Claude 的翻译受下述限制。
 - **模型感知路由与翻译**：请求协议受模型支持时直通；否则仅 `/v1/messages` 与 `/responses` 之间可互译。代理不会与 `/chat/completions` 做互译。同时自动应用 Claude 提示缓存（`copilot_cache_control`），保留 `adaptive thinking` / `output_config.effort` 兼容，并在 Copilot 上游需要不同模型名时归一化 provider-specific 模型 ID。
 - **Claude Code 集成**：通过 `--claude-code` 一键生成配置命令，直接用 Copilot 作为 Claude Code 后端。
 - **适合接入网关**：可以把 [New API](https://github.com/QuantumNous/new-api) 放在本代理前面，实现一处部署、处处访问，由 New API 统一管理用户、API Key、额度、日志、限流与计费。
@@ -297,6 +297,14 @@ Legacy daemon 与原生系统服务会把受支持的 `COPILOT_PROXY_*`、代理
 `--manual` 采用 fail-closed：没有交互式 TTY 或审批超时时，请求返回 `503`。它只适合前台 `start`，不适用于 `enable`、`start -d`、无 TTY 容器或其他无人值守服务。所有诊断日志都应按敏感信息处理；`--show-token` 会主动打印 bearer token，绝不能与持久化或共享日志一起使用。
 
 当 `/v1/responses` 请求必须翻译到 Claude 原生 `/v1/messages` 后端时，请求必须显式设置 `store: false`；代理无法模拟 Responses API 默认的服务端持久化，也无法让翻译生成的 response ID 可被再次查询。会话开头的 system/developer input 会保留为 Anthropic 顶层 system prompt；会话中途的 system/developer input 只在 Anthropic 支持的位置原样保留，无法忠实表达的顺序会被明确拒绝，而不会重排。
+
+> **Codex 到 Claude 的限制：** 使用 Codex CLI 0.144.1 实测时，默认配置会携带 Anthropic Messages 无法忠实表达的 hosted/custom Responses 工具。代理会有意在本地返回 HTTP `400`，而不是丢弃工具或制造误导性的成功。受限实机测试仅在使用下列覆盖项后通过文本与 `exec_command` 工具闭环；这只证明该受限配置，不代表默认 Codex 到 Claude 兼容：
+>
+> ```sh
+> -c 'web_search="disabled"' \
+> -c 'features.multi_agent=false' \
+> -c 'features.remote_plugin=false'
+> ```
 
 ### auth 参数
 

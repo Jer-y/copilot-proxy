@@ -166,43 +166,383 @@ Use the probe outcome to decide how aggressive the proxy should be:
 
 ## Codex CLI smoke tests
 
-Use a real `codex` CLI smoke when changing Responses routing, Responses request adaptation, tool handling, hosted tools, structured output, image inputs, or Responses stream handling.
+Use a real `codex` CLI smoke when changing Responses routing, request adaptation, tool handling, hosted tools, structured output, image inputs, or Responses stream handling.
 
-Start the proxy on a disposable port first:
+### What counts as a real-machine Codex smoke
 
-```sh
-bun run ./src/main.ts start -p 4899
-```
+A qualifying smoke must use all of the following:
 
-Then run Codex with temporary local state and an explicit Responses provider:
+- the real `codex` executable installed on the machine
+- a proxy process started from the current checkout
+- a real GitHub Copilot credential, exact model ID, and account type
+- real TCP and SSE traffic through the local `/v1/responses` route to the real Copilot upstream
+- real local tool execution for tool-loop scenarios
 
-```sh
+In-process `server.request()` calls, direct calls to `createResponses`, `curl` requests without Codex, the live capability probe matrix, and stub/mock/fake upstreams remain useful at their own layers, but none of them substitutes for this client smoke. An HTTP `200` alone is also insufficient: validate the Codex terminal event and the observable result.
+
+Use Codex's `--json` event stream and `--output-last-message` for machine assertions, as documented in the [official non-interactive mode guide](https://learn.chatgpt.com/docs/non-interactive-mode). Do not rely on formatted terminal output or model self-report.
+
+### Preflight and isolated proxy lifecycle
+
+Run the following from the repository root in one Bash shell, keeping all blocks in that same shell. Set `CODEX_SMOKE_MODEL` to a current Responses-backed model that is also present in the installed Codex catalog with local-tool support; an unknown explicit model may run as a text-only client and invalidate the tool-loop case. On macOS, set `CODEX_TIMEOUT_BIN=gtimeout` if GNU `timeout` is installed through coreutils.
+
+```bash
+set -euo pipefail
+
+export CODEX_SMOKE_MODEL="${CODEX_SMOKE_MODEL:?set CODEX_SMOKE_MODEL to the exact model ID}"
+export CODEX_SMOKE_ACCOUNT_TYPE="${CODEX_SMOKE_ACCOUNT_TYPE:?set CODEX_SMOKE_ACCOUNT_TYPE to individual, business, or enterprise}"
+export CODEX_SMOKE_EXPECTED_BACKEND="${CODEX_SMOKE_EXPECTED_BACKEND:-responses}"
+export CODEX_SMOKE_PORT="${CODEX_SMOKE_PORT:-4899}"
+export CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-180}"
+export CODEX_TIMEOUT_BIN="${CODEX_TIMEOUT_BIN:-timeout}"
+
+case "$CODEX_SMOKE_ACCOUNT_TYPE" in
+  individual | business | enterprise) ;;
+  *) echo "Invalid CODEX_SMOKE_ACCOUNT_TYPE: $CODEX_SMOKE_ACCOUNT_TYPE" >&2; exit 1 ;;
+esac
+
+for command_name in codex curl jq lsof rg "$CODEX_TIMEOUT_BIN"; do
+  command -v "$command_name" >/dev/null
+done
+
 mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
-CODEX_SMOKE_HOME="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/codex-proxy-smoke.XXXXXX")"
-CODEX_SMOKE_WORK="$(mktemp -d /tmp/codex-proxy-smoke-work.XXXXXX)"
-RESPONSES_MODEL_UNDER_TEST=<responses-model-under-test>
+CODEX_SMOKE_ROOT="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/codex-proxy-smoke.XXXXXX")"
+CODEX_SMOKE_HOME="$CODEX_SMOKE_ROOT/codex-home"
+CODEX_SMOKE_WORK="$CODEX_SMOKE_ROOT/work"
+CODEX_SMOKE_PROXY_LOG="$CODEX_SMOKE_ROOT/proxy.log"
+mkdir -p "$CODEX_SMOKE_HOME" "$CODEX_SMOKE_WORK"
+git status --short >"$CODEX_SMOKE_ROOT/git-status.before"
 
-env CODEX_HOME="$CODEX_SMOKE_HOME" \
-OPENAI_API_KEY=dummy \
-codex --ask-for-approval never exec \
-  --ephemeral \
-  --ignore-rules \
-  --skip-git-repo-check \
-  --sandbox read-only \
-  --cd "$CODEX_SMOKE_WORK" \
-  --model "$RESPONSES_MODEL_UNDER_TEST" \
-  -c 'model_provider="copilot-proxy"' \
-  -c 'model_providers.copilot-proxy={name="Copilot Proxy", base_url="http://127.0.0.1:4899/v1", env_key="OPENAI_API_KEY", wire_api="responses"}' \
-  "Reply with exactly: proxy-ok"
+cleanup_codex_smoke() {
+  local exit_status=$?
+  trap - EXIT INT TERM
+  if [ -n "${CODEX_SMOKE_PROXY_PID:-}" ] && kill -0 "$CODEX_SMOKE_PROXY_PID" 2>/dev/null; then
+    kill "$CODEX_SMOKE_PROXY_PID" 2>/dev/null || true
+    for _ in {1..40}; do
+      if ! kill -0 "$CODEX_SMOKE_PROXY_PID" 2>/dev/null; then
+        break
+      fi
+      sleep 0.25
+    done
+    if kill -0 "$CODEX_SMOKE_PROXY_PID" 2>/dev/null; then
+      kill -KILL "$CODEX_SMOKE_PROXY_PID" 2>/dev/null || true
+    fi
+    wait "$CODEX_SMOKE_PROXY_PID" 2>/dev/null || true
+  fi
+  if lsof -nP -iTCP:"$CODEX_SMOKE_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Port $CODEX_SMOKE_PORT is still listening after cleanup." >&2
+    exit_status=1
+  fi
+  rm -rf "$CODEX_SMOKE_ROOT"
+  exit "$exit_status"
+}
+trap cleanup_codex_smoke EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if lsof -nP -iTCP:"$CODEX_SMOKE_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port $CODEX_SMOKE_PORT already has a TCP listener; choose an unused port." >&2
+  exit 1
+fi
+
+bun run ./src/main.ts start \
+  --host 127.0.0.1 \
+  --port "$CODEX_SMOKE_PORT" \
+  --account-type "$CODEX_SMOKE_ACCOUNT_TYPE" \
+  --verbose \
+  >"$CODEX_SMOKE_PROXY_LOG" 2>&1 &
+CODEX_SMOKE_PROXY_PID=$!
+
+CODEX_SMOKE_READY=0
+for _ in {1..60}; do
+  if ! kill -0 "$CODEX_SMOKE_PROXY_PID" 2>/dev/null; then
+    break
+  fi
+  if lsof -nP -a -p "$CODEX_SMOKE_PROXY_PID" -iTCP:"$CODEX_SMOKE_PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+    && curl -fsS --max-time 1 "http://127.0.0.1:$CODEX_SMOKE_PORT/" >/dev/null; then
+    CODEX_SMOKE_READY=1
+    break
+  fi
+  sleep 0.5
+done
+
+if [ "$CODEX_SMOKE_READY" -ne 1 ]; then
+  sed -n '1,200p' "$CODEX_SMOKE_PROXY_LOG" >&2
+  exit 1
+fi
+
+date -u +'%Y-%m-%dT%H:%M:%SZ'
+git rev-parse HEAD
+git status --short
+command -v codex
+codex --version
+env CODEX_HOME="$CODEX_SMOKE_HOME" codex debug models --bundled \
+  | jq -e --arg model "$CODEX_SMOKE_MODEL" \
+    'any(.models[]; .slug == $model and .supported_in_api == true)' >/dev/null
+printf 'account_type=%s\nmodel=%s\nexpected_backend=%s\nproxy_pid=%s\nproxy_port=%s\n' \
+  "$CODEX_SMOKE_ACCOUNT_TYPE" \
+  "$CODEX_SMOKE_MODEL" \
+  "$CODEX_SMOKE_EXPECTED_BACKEND" \
+  "$CODEX_SMOKE_PROXY_PID" \
+  "$CODEX_SMOKE_PORT"
 ```
 
-Expected behavior:
+The preflight must fail if the chosen port already has a TCP listener, and readiness must prove that the captured proxy PID owns the new listener. This prevents a smoke from accidentally passing against an older proxy. Keep the temporary `CODEX_HOME` under the user's cache directory rather than `/tmp`: current Codex releases warn and refuse to create PATH helper aliases under a temporary-directory home, which adds avoidable noise to the result. The bundled-model check validates only the local client's selected-model capability; it is not proxy catalog evidence. `--verbose` is required because upstream status, first-event, and stream-completion evidence is logged at debug level.
 
-- Codex uses the temporary `CODEX_HOME`; it does not read or modify the user's `~/.codex`.
-- `OPENAI_API_KEY=dummy` only satisfies Codex provider validation. The local proxy does not require this key.
-- The configured provider uses `wire_api="responses"` and calls `POST /v1/responses`.
-- The request normally uses SSE streaming and includes Codex's tool schemas and agent instructions.
-- The CLI should print exactly `proxy-ok`; proxy logs should show upstream `/responses` status `200` and stream completion.
+Define one isolated Codex invocation and one JSONL assertion helper in the same shell:
+
+```bash
+codex_smoke() {
+  local final_path=$1
+  local events_path=$2
+  local sandbox_mode=$3
+  local codex_status
+  local scenario_name
+  shift 3
+
+  set +e
+  "$CODEX_TIMEOUT_BIN" "${CODEX_SMOKE_TIMEOUT_SECONDS}s" \
+    env CODEX_HOME="$CODEX_SMOKE_HOME" \
+    OPENAI_API_KEY=dummy \
+    codex --ask-for-approval never exec \
+      --ephemeral \
+      --ignore-user-config \
+      --ignore-rules \
+      --strict-config \
+      --skip-git-repo-check \
+      --sandbox "$sandbox_mode" \
+      --color never \
+      --cd "$CODEX_SMOKE_WORK" \
+      --model "$CODEX_SMOKE_MODEL" \
+      --json \
+      --output-last-message "$final_path" \
+      -c 'model_provider="copilot-proxy"' \
+      -c "model_providers.copilot-proxy={name=\"Copilot Proxy\",base_url=\"http://127.0.0.1:$CODEX_SMOKE_PORT/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}" \
+      "$@" \
+    >"$events_path" \
+    </dev/null
+  codex_status=$?
+  set -e
+
+  scenario_name="${events_path##*/}"
+  scenario_name="${scenario_name%.jsonl}"
+  printf 'scenario=%s codex_exit=%s\n' "$scenario_name" "$codex_status" \
+    >>"$CODEX_SMOKE_ROOT/codex-exits.txt"
+  printf 'codex_exit=%s\n' "$codex_status"
+  if [ "$codex_status" -ne 0 ]; then
+    sed -n '1,200p' "$CODEX_SMOKE_PROXY_LOG" >&2
+  fi
+  return "$codex_status"
+}
+
+assert_codex_events() {
+  local events_path=$1
+  jq -s -e 'any(.[]; .type == "thread.started")' "$events_path" >/dev/null
+  jq -s -e 'any(.[]; .type == "turn.started")' "$events_path" >/dev/null
+  jq -s -e \
+    'any(.[]; .type == "item.completed" and .item.type == "agent_message")' \
+    "$events_path" >/dev/null
+  jq -s -e 'any(.[]; .type == "turn.completed")' "$events_path" >/dev/null
+  if jq -s -e 'any(.[]; .type == "error" or .type == "turn.failed")' "$events_path" >/dev/null; then
+    echo "Codex emitted an error or turn.failed event." >&2
+    return 1
+  fi
+}
+```
+
+`OPENAI_API_KEY=dummy` only satisfies Codex's custom-provider validation. The local proxy authenticates to Copilot with its normal credential and must not log or copy that token into smoke artifacts. `--json` writes JSONL to stdout while Codex diagnostics remain on stderr, so keep the streams separate; do not use `2>&1` when creating the events file.
+
+### Minimum real-machine gate
+
+#### 1. Streaming baseline
+
+```bash
+CODEX_BASELINE_EVENTS="$CODEX_SMOKE_ROOT/baseline.jsonl"
+CODEX_BASELINE_FINAL="$CODEX_SMOKE_ROOT/baseline-final.txt"
+
+codex_smoke \
+  "$CODEX_BASELINE_FINAL" \
+  "$CODEX_BASELINE_EVENTS" \
+  read-only \
+  'Reply with exactly: proxy-ok'
+
+assert_codex_events "$CODEX_BASELINE_EVENTS"
+test "$(cat "$CODEX_BASELINE_FINAL")" = 'proxy-ok'
+rg -q -- '--> POST /v1/responses 200' "$CODEX_SMOKE_PROXY_LOG"
+rg -q 'Upstream /responses headers received: .*status: 200, stream: true' "$CODEX_SMOKE_PROXY_LOG"
+rg -q 'Upstream /responses first SSE event:' "$CODEX_SMOKE_PROXY_LOG"
+rg -q "event: 'response.created'" "$CODEX_SMOKE_PROXY_LOG"
+rg -q "event: 'response.completed'" "$CODEX_SMOKE_PROXY_LOG"
+test "$(rg -c 'tools: [1-9][0-9]*' "$CODEX_SMOKE_PROXY_LOG")" -ge 1
+```
+
+For a Responses-backed model, require a local `POST /v1/responses`, at least one advertised tool under the selected Codex model/configuration, upstream `/responses` status `200`, `stream: true`, a first SSE event, a terminal `response.completed` event, and a terminal Codex event. Record upstream iterator completion when the client remains connected through EOF, but do not require it after a valid terminal event because Codex may close the stream immediately. The final message must match exactly; seeing only a process exit code or HTTP status is not enough.
+
+#### 2. Forced read-only tool loop
+
+This case verifies the agentic path that the fixed-string baseline cannot exercise: model tool call, real local command execution, tool result submission, a second Responses turn, and the final answer.
+
+```bash
+CODEX_TOOL_SENTINEL="codex-tool-loop-$(date +%s)-$$"
+printf '%s\n' "$CODEX_TOOL_SENTINEL" >"$CODEX_SMOKE_WORK/sentinel.txt"
+CODEX_TOOL_EVENTS="$CODEX_SMOKE_ROOT/tool-loop.jsonl"
+CODEX_TOOL_FINAL="$CODEX_SMOKE_ROOT/tool-loop-final.txt"
+CODEX_TOOL_LOG_START="$(wc -l <"$CODEX_SMOKE_PROXY_LOG")"
+
+codex_smoke \
+  "$CODEX_TOOL_FINAL" \
+  "$CODEX_TOOL_EVENTS" \
+  read-only \
+  'You must use the exec_command tool to read sentinel.txt. Do not guess or answer before reading it. Reply with only the exact file contents.'
+
+assert_codex_events "$CODEX_TOOL_EVENTS"
+jq -s -e \
+  'any(.[]; .type == "item.completed" and .item.type == "command_execution" and .item.status == "completed" and .item.exit_code == 0)' \
+  "$CODEX_TOOL_EVENTS" >/dev/null
+test "$(cat "$CODEX_TOOL_FINAL")" = "$CODEX_TOOL_SENTINEL"
+
+tail -n "+$((CODEX_TOOL_LOG_START + 1))" \
+  "$CODEX_SMOKE_PROXY_LOG" \
+  >"$CODEX_SMOKE_ROOT/tool-loop-proxy.log"
+test "$(rg -c 'Responses API request summary' "$CODEX_SMOKE_ROOT/tool-loop-proxy.log")" -ge 2
+test "$(rg -c 'functionCalls: [1-9][0-9]*' "$CODEX_SMOKE_ROOT/tool-loop-proxy.log")" -ge 1
+test "$(rg -c 'functionCallOutputs: [1-9][0-9]*' "$CODEX_SMOKE_ROOT/tool-loop-proxy.log")" -ge 1
+test "$(rg -c "event: 'response.completed'" "$CODEX_SMOKE_ROOT/tool-loop-proxy.log")" -ge 2
+```
+
+The second request must carry the matching tool-call history and `function_call_output`. Assert terminal `response.completed` events rather than requiring the upstream iterator to reach EOF for every turn: Codex may close the client stream immediately after the terminal event. When auditing exact fields, capture and inspect them at the proxy boundary; do not ask the model whether it received or sent them.
+
+### Surface-specific real-machine cases
+
+Run the minimum gate for every Responses behavior change, then add the matching scenario below. A schema merely being present in the first request does not prove that the feature works.
+
+| Changed surface | Required real Codex scenario | Semantic evidence |
+| --- | --- | --- |
+| Tool handling or `apply_patch` | Isolated `workspace-write` file lifecycle | Codex invokes a real tool, the follow-up request contains the result, and the file is verified outside Codex |
+| Structured output | `--output-schema <schema>` | Final output parses and satisfies the schema |
+| Image input | `--image <known-local-fixture>` | The real Codex image request succeeds and the answer proves the known image fact |
+| Web search | A prompt that requires an actual search | Codex JSONL contains a web-search event and the result uses returned evidence |
+| MCP | A disposable real MCP server with a deterministic tool | Codex JSONL contains the MCP call/result and the final answer uses the returned value |
+| Responses-to-Anthropic translation | The exact Claude model and intended Codex configuration | Proxy logs prove `/v1/responses` translated to the real `/v1/messages` upstream and the terminal SSE is client-compatible |
+| Streaming cancellation | Interrupt the real Codex process after the first upstream SSE event | Codex exits within a bound, the captured proxy request does not finish with route status `500`, the proxy listener remains healthy, and an immediate baseline rerun succeeds |
+
+For an `apply_patch` or writable-tool change, use only a temporary Git repository and verify the file from the shell:
+
+```bash
+CODEX_SMOKE_WORK="$CODEX_SMOKE_ROOT/write-work"
+mkdir -p "$CODEX_SMOKE_WORK"
+git -C "$CODEX_SMOKE_WORK" init -q
+printf 'before\n' >"$CODEX_SMOKE_WORK/edit-me.txt"
+
+codex_smoke \
+  "$CODEX_SMOKE_ROOT/write-final.txt" \
+  "$CODEX_SMOKE_ROOT/write.jsonl" \
+  workspace-write \
+  'Use apply_patch to replace the complete contents of edit-me.txt with a single line containing after. Read the file back, then reply with exactly: write-ok'
+
+assert_codex_events "$CODEX_SMOKE_ROOT/write.jsonl"
+jq -s -e \
+  'any(.[]; .type == "item.completed" and .item.type == "file_change" and .item.status == "completed")' \
+  "$CODEX_SMOKE_ROOT/write.jsonl" >/dev/null
+test "$(cat "$CODEX_SMOKE_ROOT/write-final.txt")" = 'write-ok'
+test "$(cat "$CODEX_SMOKE_WORK/edit-me.txt")" = 'after'
+```
+
+For structured output, validate the artifact rather than accepting a plausible-looking response:
+
+```bash
+cat >"$CODEX_SMOKE_ROOT/schema.json" <<'JSON'
+{
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["proxy-ok"] }
+  },
+  "required": ["status"],
+  "additionalProperties": false
+}
+JSON
+
+CODEX_SMOKE_WORK="$CODEX_SMOKE_ROOT/structured-work"
+mkdir -p "$CODEX_SMOKE_WORK"
+codex_smoke \
+  "$CODEX_SMOKE_ROOT/structured-final.json" \
+  "$CODEX_SMOKE_ROOT/structured.jsonl" \
+  read-only \
+  --output-schema "$CODEX_SMOKE_ROOT/schema.json" \
+  'Return status proxy-ok.'
+
+assert_codex_events "$CODEX_SMOKE_ROOT/structured.jsonl"
+jq -e '.status == "proxy-ok"' "$CODEX_SMOKE_ROOT/structured-final.json" >/dev/null
+```
+
+For a Claude translation change, test the default Codex tool set first. Do not silently disable hosted or custom tools just to obtain a green text response. If the intended supported configuration requires overrides, record the default result and then run the restricted positive case, listing every override. A restricted success proves only that scoped configuration, not general Codex-to-Claude compatibility.
+
+### Model-catalog boundary
+
+As verified with `codex-cli 0.144.1` on 2026-07-13, `codex debug models` with a custom provider prints Codex's bundled catalog and does not request that provider's `/v1/models?client_version=...` endpoint. Re-check this behavior after Codex upgrades. Until an actual Codex surface is observed making that request, validate the route separately and label it a route smoke, not a Codex real-machine smoke:
+
+```bash
+CODEX_CLIENT_VERSION="$(codex --version | awk '{print $2}')"
+curl -fsS \
+  "http://127.0.0.1:$CODEX_SMOKE_PORT/v1/models?client_version=$CODEX_CLIENT_VERSION" \
+  | jq -e '.models | type == "array" and length > 0' >/dev/null
+```
+
+### Evidence record and cleanup
+
+Record the UTC date, Git SHA and dirty state, `codex` path and version, Copilot account type, exact model ID, expected backend, scenario IDs, configuration overrides, Codex exit status, terminal event, semantic assertion, local route, upstream endpoint/status, and stream completion when the client remains connected through EOF. Emit a redacted summary before cleanup; retain that summary in the surrounding job or terminal log when it supports an upstream-gated decision. Never retain authorization headers, tokens, raw proxy logs, or unredacted user content.
+
+The minimum gate can emit a machine-readable summary without preserving its raw temporary artifacts:
+
+```bash
+emit_codex_smoke_summary() {
+  local git_dirty
+  if [ -s "$CODEX_SMOKE_ROOT/git-status.before" ]; then
+    git_dirty=true
+  else
+    git_dirty=false
+  fi
+
+  printf 'date_utc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  printf 'git_sha=%s\n' "$(git rev-parse HEAD)"
+  printf 'git_dirty=%s\n' "$git_dirty"
+  printf 'codex_path=%s\n' "$(command -v codex)"
+  printf 'codex_version=%s\n' "$(codex --version)"
+  printf 'account_type=%s\n' "$CODEX_SMOKE_ACCOUNT_TYPE"
+  printf 'model=%s\n' "$CODEX_SMOKE_MODEL"
+  printf 'expected_backend=%s\n' "$CODEX_SMOKE_EXPECTED_BACKEND"
+  printf 'proxy_pid=%s\n' "$CODEX_SMOKE_PROXY_PID"
+  printf 'proxy_port=%s\n' "$CODEX_SMOKE_PORT"
+  cat "$CODEX_SMOKE_ROOT/codex-exits.txt"
+  printf 'baseline_turn_completed=true\n'
+  printf 'baseline_final_match=true\n'
+  printf 'tool_command_completed=true\n'
+  printf 'tool_final_match=true\n'
+  printf 'local_responses_200=%s\n' \
+    "$(rg -c -- '--> POST /v1/responses 200' "$CODEX_SMOKE_PROXY_LOG")"
+  printf 'upstream_responses_200=%s\n' \
+    "$(rg -c 'Upstream /responses headers received: .*status: 200' "$CODEX_SMOKE_PROXY_LOG")"
+  printf 'terminal_response_completed=%s\n' \
+    "$(rg -c "event: 'response.completed'" "$CODEX_SMOKE_PROXY_LOG")"
+  printf 'upstream_stream_completed=%s\n' \
+    "$(rg -c 'Upstream /responses stream completed:' "$CODEX_SMOKE_PROXY_LOG")"
+}
+
+emit_codex_smoke_summary
+```
+
+Add equivalent scenario-specific assertion fields when running writable tools, structured output, images, web search, MCP, translation, or cancellation cases.
+
+Before leaving the shell, verify that the repository did not change:
+
+```bash
+git status --short >"$CODEX_SMOKE_ROOT/git-status.after"
+cmp -s \
+  "$CODEX_SMOKE_ROOT/git-status.before" \
+  "$CODEX_SMOKE_ROOT/git-status.after"
+```
+
+Exiting the shell runs the trap, sends `TERM` only to the captured proxy PID, escalates to `KILL` after a bounded wait, verifies that the selected port is no longer listening, and removes the temporary `CODEX_HOME`, work directories, JSONL, final outputs, and logs. Do not modify or delete the user's real `~/.codex` state.
 
 ## Claude Code CLI smoke tests
 
