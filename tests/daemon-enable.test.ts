@@ -1,7 +1,7 @@
 import type { DaemonConfig } from '../src/daemon/config'
 
 import { describe, expect, test } from 'bun:test'
-import { buildServiceStartArgs, isEphemeralPackageRunnerPath, resolveNativeServiceInstallLocations, rollbackEnableStateAfterFailure } from '../src/daemon/enable'
+import { buildServiceStartArgs, isEphemeralPackageRunnerPath, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
 import { readinessProbeHostname, waitForNativeServiceReadiness } from '../src/daemon/native-service'
 import { PATHS } from '../src/lib/paths'
 
@@ -131,27 +131,105 @@ describe('native service install locations', () => {
 })
 
 describe('enable transaction rollback', () => {
-  test('restores persisted state only after the platform rollback succeeds', async () => {
+  test('restores the real previous activation state even without v0.8 install metadata', async () => {
     const calls: string[] = []
+    const previousState = {
+      installed: true,
+      enabled: true,
+      running: true,
+    }
 
-    expect(await rollbackEnableStateAfterFailure(
-      () => {
+    expect(await rollbackEnableTransaction(previousState, {
+      restorePreviousPersistedState: () => {
+        calls.push('persisted:previous')
+        return true
+      },
+      restoreReplacementPersistedState: () => {
+        calls.push('persisted:replacement')
+        return true
+      },
+      rollbackPlatformDefinition: () => {
         calls.push('platform')
         return true
       },
-      () => { calls.push('persisted') },
-    )).toBe(true)
-    expect(calls).toEqual(['platform', 'persisted'])
+      restorePreviousAutoStartState: (state) => {
+        calls.push(`activation:${state.enabled}:${state.running}`)
+        return true
+      },
+    })).toBe(true)
+    expect(calls).toEqual([
+      'platform',
+      'persisted:previous',
+      'activation:true:true',
+    ])
   })
 
-  test('keeps control state when the platform rollback fails', async () => {
-    let restoreCalls = 0
+  test('restores replacement metadata when the platform definition rollback fails', async () => {
+    const calls: string[] = []
 
-    expect(await rollbackEnableStateAfterFailure(
-      () => false,
-      () => { restoreCalls++ },
-    )).toBe(false)
-    expect(restoreCalls).toBe(0)
+    expect(await rollbackEnableTransaction({ installed: true, enabled: false, running: false }, {
+      restorePreviousPersistedState: () => {
+        calls.push('persisted:previous')
+        return true
+      },
+      restoreReplacementPersistedState: () => {
+        calls.push('persisted:replacement')
+        return true
+      },
+      rollbackPlatformDefinition: () => {
+        calls.push('platform')
+        return false
+      },
+      restorePreviousAutoStartState: () => {
+        calls.push('activation')
+        return true
+      },
+    })).toBe(false)
+    expect(calls).toEqual([
+      'platform',
+      'persisted:replacement',
+    ])
+  })
+
+  test('keeps previous metadata ownership when its restore fails after definition rollback', async () => {
+    const calls: string[] = []
+    expect(await rollbackEnableTransaction({ installed: true, enabled: true, running: false }, {
+      restorePreviousPersistedState: () => {
+        calls.push('persisted:previous')
+        return false
+      },
+      restoreReplacementPersistedState: () => {
+        calls.push('persisted:replacement')
+        return true
+      },
+      rollbackPlatformDefinition: () => {
+        calls.push('platform')
+        return true
+      },
+      restorePreviousAutoStartState: () => {
+        calls.push('activation')
+        return true
+      },
+    })).toBe(false)
+    expect(calls).toEqual(['platform', 'persisted:previous'])
+  })
+
+  test('reports an incomplete rollback when previous activation cannot be restored', async () => {
+    expect(await rollbackEnableTransaction({ installed: true, enabled: true, running: true }, {
+      restorePreviousPersistedState: () => true,
+      restoreReplacementPersistedState: () => true,
+      rollbackPlatformDefinition: () => true,
+      restorePreviousAutoStartState: () => false,
+    })).toBe(false)
+  })
+
+  test('contains a thrown activation restore and reports the rollback incomplete', async () => {
+    expect(await rollbackEnableTransaction({ installed: true, enabled: true, running: true }, {
+      restorePreviousPersistedState: () => true,
+      restoreReplacementPersistedState: () => true,
+      rollbackPlatformDefinition: () => true,
+      restorePreviousAutoStartState: () => { throw new Error('restore failed') },
+    })).toBe(false)
   })
 })
 

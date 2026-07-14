@@ -80,6 +80,27 @@ describe('translateAnthropicRequestToResponses', () => {
     ])
   })
 
+  test('top-level search_result is rejected when the selected model requires Responses translation', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'search_result',
+          source: 'https://example.com/reference',
+          title: 'Reference',
+          content: [{ type: 'text', text: 'Grounded fact.' }],
+          citations: { enabled: true },
+        }],
+      }],
+    }
+
+    expect(() => translateAnthropicRequestToResponses(payload)).toThrow(
+      'Anthropic user content block type "search_result" cannot be represented faithfully',
+    )
+  })
+
   test('max_tokens below the Responses minimum is rejected instead of increased', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',
@@ -1047,7 +1068,7 @@ describe('translateResponsesRequestToAnthropic', () => {
     expect(result.output_config).toEqual({ effort: 'xhigh' })
   })
 
-  test('replayed Responses reasoning input items are ignored on native Anthropic requests', () => {
+  test('replayed Responses reasoning input items are rejected on native Anthropic requests', () => {
     const payload: ResponsesPayload = {
       model: 'claude-opus-4.6',
       store: false,
@@ -1061,13 +1082,23 @@ describe('translateResponsesRequestToAnthropic', () => {
       ],
     }
 
-    const result = translateResponsesRequestToAnthropic(payload)
-    expect(result.messages).toEqual([
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'Continue.' }],
-      },
-    ])
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      'Responses reasoning input items cannot be represented on the Anthropic Messages translation path.',
+    )
+  })
+
+  test('unexpected Responses message roles are rejected defensively', () => {
+    const payload: ResponsesPayload = {
+      model: 'claude-opus-4.6',
+      store: false,
+      input: [
+        { role: 'bogus', content: 'Do not drop this.' } as never,
+      ],
+    }
+
+    expect(() => translateResponsesRequestToAnthropic(payload)).toThrow(
+      'Unsupported Responses message role "bogus"; expected one of user, assistant, system, or developer.',
+    )
   })
 
   test('unknown user and assistant content parts are rejected instead of reinterpreted as text', () => {

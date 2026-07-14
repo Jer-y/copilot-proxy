@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { validateAccountType, validatePort, validateRateLimit, validateTimeoutMs } from '~/lib/cli-validators'
+import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 describe('validatePort', () => {
   test('valid port returns number', () => {
@@ -78,6 +79,20 @@ describe('validateTimeoutMs', () => {
 
   test('positive integer is valid', () => {
     expect(validateTimeoutMs('600000')).toEqual({ valid: true, value: 600000 })
+  })
+
+  test('accepts the largest JavaScript timer delay', () => {
+    expect(validateTimeoutMs(String(MAX_TIMER_DELAY_MS))).toEqual({
+      valid: true,
+      value: MAX_TIMER_DELAY_MS,
+    })
+  })
+
+  test('rejects delays that runtimes would coerce to 1ms', () => {
+    expect(validateTimeoutMs(String(MAX_TIMER_DELAY_MS + 1))).toEqual({
+      valid: false,
+      value: undefined,
+    })
   })
 
   test('negative integer is invalid', () => {

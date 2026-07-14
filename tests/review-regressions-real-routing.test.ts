@@ -131,7 +131,7 @@ async function post(path: string, payload: unknown): Promise<Response> {
 }
 
 describe('review-confirmed real route regressions', () => {
-  test('Responses to Anthropic translation ignores replayed reasoning input items', async () => {
+  test('Responses to Anthropic translation rejects replayed reasoning input items', async () => {
     const response = await post('/v1/responses', {
       model: 'claude-opus-4.6',
       store: false,
@@ -145,15 +145,35 @@ describe('review-confirmed real route regressions', () => {
       ],
     })
 
+    expect(response.status).toBe(400)
+    expect(upstreamCalls).toHaveLength(0)
+    expect(await response.json()).toMatchObject({
+      error: {
+        type: 'invalid_request_error',
+        message: expect.stringContaining('reasoning input items cannot be represented'),
+      },
+    })
+  })
+
+  test('Responses-backed models forward replayed reasoning input items unchanged', async () => {
+    const reasoningItem = {
+      type: 'reasoning',
+      id: 'rs_direct',
+      summary: [],
+      encrypted_content: 'opaque-upstream-state',
+    }
+    const userMessage = { role: 'user', content: 'continue' }
+
+    const response = await post('/v1/responses', {
+      model: 'gpt-5.4',
+      store: false,
+      input: [reasoningItem, userMessage],
+    })
+
     expect(response.status).toBe(200)
     expect(upstreamCalls).toHaveLength(1)
-    expect(upstreamCalls[0]?.url.endsWith('/v1/messages')).toBe(true)
-    expect(upstreamCalls[0]?.body?.messages).toEqual([
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'continue' }],
-      },
-    ])
+    expect(upstreamCalls[0]?.url.endsWith('/responses')).toBe(true)
+    expect(upstreamCalls[0]?.body?.input).toEqual([reasoningItem, userMessage])
   })
 
   test('Anthropic custom tools with type=custom translate to Responses function tools', async () => {

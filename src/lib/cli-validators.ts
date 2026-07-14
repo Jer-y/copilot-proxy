@@ -1,3 +1,5 @@
+import { MAX_TIMER_DELAY_MS } from './http-timeouts'
+
 const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise'] as const
 
 export type AccountType = (typeof VALID_ACCOUNT_TYPES)[number]
@@ -38,6 +40,7 @@ export function validateTimeoutMs(raw: string | undefined): { valid: boolean, va
   if (
     Number.isNaN(timeoutMs)
     || timeoutMs < 0
+    || timeoutMs > MAX_TIMER_DELAY_MS
     || !Number.isSafeInteger(timeoutMs)
     || String(timeoutMs) !== raw
   ) {

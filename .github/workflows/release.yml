@@ -12,7 +12,9 @@ env:
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  # npm's latest dist-tag and the GHCR major/minor tags are shared across
+  # versions, so different release tags must never publish concurrently.
+  group: release-publish
   cancel-in-progress: false
 
 jobs:
@@ -24,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
@@ -39,6 +42,14 @@ jobs:
       - name: Verify tag matches package version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
 
+      - name: Verify release commit is reachable from origin/main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Verify release version is newer than npm latest
+        run: |
+          published_version="$(npm view @jer-y/copilot-proxy dist-tags.latest)"
+          bun run ./scripts/verify-release-version.ts "$(node -p "require('./package.json').version")" "$published_version"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -50,6 +61,7 @@ jobs:
           bun run typecheck
           bun run test:coverage
           bun run build
+          bun run test:node:http
 
       - name: Smoke-test the minimum supported Node.js runtime
         run: node dist/main.js debug --json
@@ -57,8 +69,44 @@ jobs:
       - name: Verify npm package contents
         run: npm pack --dry-run
 
-  npm-publish:
+  native-service-adapters:
+    name: Release native service adapter (${{ matrix.os }})
     needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            adapter_test: tests/darwin-autostart.test.ts
+          - os: windows-latest
+            adapter_test: tests/win32-autostart.test.ts
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.6
+          no-cache: true
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Exercise the native service adapter on its host OS
+        run: bun test ${{ matrix.adapter_test }} tests/daemon-enable.test.ts tests/service-install-state.test.ts tests/main-entrypoint.test.ts
+
+  npm-publish:
+    needs: [validate, native-service-adapters]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -92,7 +140,7 @@ jobs:
         run: npm publish --access public --provenance
 
   docker-publish:
-    needs: validate
+    needs: [validate, native-service-adapters]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

@@ -29,9 +29,10 @@ COPY --from=builder --chown=bun:bun /app/dist ./dist
 EXPOSE 4399
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --spider -q http://127.0.0.1:4399/ || exit 1
+  CMD /entrypoint.sh --healthcheck
 
 COPY --chown=bun:bun entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY --chown=bun:bun scripts/resolve-container-port.sh /resolve-container-port.sh
+RUN chmod +x /entrypoint.sh /resolve-container-port.sh
 USER bun
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1624,6 +1624,88 @@ describe('messages route upstream adaptation', () => {
     expect(body.error.message).toContain('json_object')
   })
 
+  test('native generation and count_tokens preserve top-level search_result blocks', async () => {
+    const payload = {
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'search_result',
+          source: 'https://example.com/reference',
+          title: 'Reference',
+          content: [{ type: 'text', text: 'Paris is the capital of France.' }],
+          citations: { enabled: true },
+        }, {
+          type: 'text',
+          text: 'Answer with a citation.',
+        }],
+      }],
+    }
+
+    for (const path of ['/v1/messages', '/v1/messages/count_tokens']) {
+      const res = await server.request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      expect(res.status).toBe(200)
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [generationUrl, generationInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const [countUrl, countInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit]
+    expect(generationUrl).toBe('https://api.githubcopilot.com/v1/messages')
+    expect(countUrl).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
+
+    for (const init of [generationInit, countInit]) {
+      const forwarded = JSON.parse(String(init.body)) as typeof payload
+      expect(forwarded.messages[0]?.content[0]).toEqual(payload.messages[0]?.content[0])
+    }
+  })
+
+  test('native count_tokens applies the same adaptive-thinking normalization as generation', async () => {
+    const res = await server.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.6',
+        max_tokens: 64,
+        thinking: { type: 'adaptive', budget_tokens_max: 4096 },
+        messages: [{ role: 'user', content: 'Count this.' }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
+    const forwarded = JSON.parse(String(init.body)) as { thinking?: Record<string, unknown> }
+    expect(forwarded.thinking).toEqual({ type: 'adaptive' })
+  })
+
+  test('count_tokens rejects Responses-backed models instead of counting a different wire request', async () => {
+    const res = await server.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.6-sol',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Count this.' }],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(0)
+    expect(await res.json()).toEqual({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: expect.stringContaining('/responses/input_tokens'),
+      },
+    })
+  })
+
   test('count_tokens expands text documents exactly like the native messages route', async () => {
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',

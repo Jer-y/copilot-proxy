@@ -1,3 +1,5 @@
+import type { NativeServiceActivationState } from '~/daemon/native-service'
+
 import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -20,6 +22,66 @@ export interface UninstallAutoStartOptions {
   disable?: () => void
   removeDefinition?: () => void
   reload?: () => void
+}
+
+export interface SystemdAutoStartStateOptions {
+  isInstalled?: () => boolean
+  readProperty?: (property: string) => string
+  enable?: () => boolean
+  disable?: () => boolean
+  restart?: () => boolean
+  reload?: () => boolean
+  stop?: () => boolean
+}
+
+const SYSTEMD_ENABLED_STATES = new Set(['enabled', 'enabled-runtime', 'linked', 'linked-runtime', 'alias'])
+const SYSTEMD_RUNNING_STATES = new Set(['active', 'activating', 'reloading'])
+
+export function captureAutoStartState(
+  options: Pick<SystemdAutoStartStateOptions, 'isInstalled' | 'readProperty'> = {},
+): NativeServiceActivationState {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  if (!isInstalled())
+    return { installed: false, enabled: false, running: false }
+
+  const readProperty = options.readProperty ?? readSystemdProperty
+  const activeState = readProperty('ActiveState')
+  const unitFileState = readProperty('UnitFileState')
+  if (!activeState || !unitFileState)
+    throw new Error('Cannot determine the existing systemd service state')
+
+  return {
+    installed: true,
+    enabled: SYSTEMD_ENABLED_STATES.has(unitFileState),
+    running: SYSTEMD_RUNNING_STATES.has(activeState),
+  }
+}
+
+export function restoreAutoStartState(
+  state: NativeServiceActivationState,
+  options: Omit<SystemdAutoStartStateOptions, 'readProperty'> = {},
+): boolean {
+  const reload = options.reload ?? (() => runSystemctl(['daemon-reload'], 'Failed to reload the restored systemd definition'))
+  if (!reload())
+    return false
+  if (!state.installed)
+    return true
+
+  const enable = options.enable ?? (() => runSystemctl(['enable', SERVICE_PATH], 'Failed to restore enabled systemd state'))
+  const disable = options.disable ?? (() => runSystemctl(['disable', SERVICE_NAME], 'Failed to restore disabled systemd state'))
+  const restart = options.restart ?? restartAutoStartService
+  const stop = options.stop ?? stopAutoStartService
+  const restoreEnablement = state.enabled ? enable : disable
+
+  if (state.running) {
+    if (!restoreEnablement())
+      return false
+    return restart()
+  }
+
+  if (!stop())
+    return false
+  return restoreEnablement()
 }
 
 export function shellQuote(s: string): string {
@@ -178,7 +240,6 @@ function rollbackServiceFile(previous: ExistingServiceFile | undefined): boolean
         return false
       fs.rmSync(SERVICE_PATH, { force: true })
     }
-    execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
     return true
   }
   catch (error) {
@@ -215,16 +276,20 @@ function disableSystemdServiceForRollback(): boolean {
 
 function querySystemdProperty(property: string, originalError: unknown): string | undefined {
   try {
-    return execFileSync(
-      'systemctl',
-      ['--user', 'show', SERVICE_NAME, `--property=${property}`, '--value'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim()
+    return readSystemdProperty(property)
   }
   catch {
     consola.error('Cannot confirm systemd rollback safety after a control failure:', originalError instanceof Error ? originalError.message : originalError)
     return undefined
   }
+}
+
+function readSystemdProperty(property: string): string {
+  return execFileSync(
+    'systemctl',
+    ['--user', 'show', SERVICE_NAME, `--property=${property}`, '--value'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  ).trim()
 }
 
 export function commitAutoStartInstall(): void {

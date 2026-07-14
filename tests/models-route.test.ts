@@ -3,12 +3,13 @@ import type { Model, ModelsResponse } from '~/services/copilot/get-models'
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 import { state } from '~/lib/state'
+import { CODEX_CATALOG_MAX_FAILURE_KEYS, CODEX_CATALOG_MAX_IN_FLIGHT, CODEX_CATALOG_MAX_PENDING_KEYS, resetCodexCatalogStateForTesting } from '~/routes/models/codex-compat'
 import { server } from '~/server'
 
 let originalModels: ModelsResponse | undefined
 const originalFetch = globalThis.fetch
 
-async function defaultFetchImplementation(): Promise<Response> {
+async function defaultFetchImplementation(_input?: Parameters<typeof fetch>[0]): Promise<Response> {
   return Response.json({
     models: [
       makeBundledCodexModel('gpt-5.5'),
@@ -26,6 +27,7 @@ type ModelOverrides = Partial<Omit<Model, 'capabilities'>> & {
 }
 
 beforeEach(() => {
+  resetCodexCatalogStateForTesting()
   originalModels = state.models
   state.models = {
     object: 'list',
@@ -162,6 +164,107 @@ describe('/v1/models', () => {
     expect(first.status).toBe(500)
     expect(second.status).toBe(500)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('bounds active and pending catalog fetches while preserving in-flight key de-duplication', async () => {
+    let activeFetches = 0
+    let maxActiveFetches = 0
+    let releaseFetches: () => void = () => {}
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetches = resolve
+    })
+    fetchMock.mockImplementation(async () => {
+      activeFetches++
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches)
+      try {
+        await fetchGate
+        return Response.json({
+          models: [makeBundledCodexModel('gpt-5.5')],
+        })
+      }
+      finally {
+        activeFetches--
+      }
+    })
+
+    const uniqueVersions = Array.from({ length: CODEX_CATALOG_MAX_PENDING_KEYS }, (_, index) => `9.0.${index}`)
+    const requests = uniqueVersions.map(version => server.request(`/v1/models?client_version=${version}`))
+    await waitFor(() => fetchMock.mock.calls.length === CODEX_CATALOG_MAX_IN_FLIGHT)
+
+    const duplicateRequest = server.request(`/v1/models?client_version=${uniqueVersions[0]}`)
+    const overflowResponse = await server.request('/v1/models?client_version=9.0.999')
+
+    expect(overflowResponse.status).toBe(429)
+    expect(overflowResponse.headers.get('retry-after')).toBe('5')
+    expect(await overflowResponse.json()).toMatchObject({
+      error: {
+        type: 'rate_limit_error',
+        code: 'catalog_fetch_queue_full',
+      },
+    })
+
+    releaseFetches()
+    const responses = await Promise.all([...requests, duplicateRequest])
+
+    expect(responses.every(response => response.status === 200)).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(uniqueVersions.length)
+    expect(maxActiveFetches).toBe(CODEX_CATALOG_MAX_IN_FLIGHT)
+  })
+
+  test('keeps failure negative-cache entries independent from successful catalog FIFO churn', async () => {
+    const failedVersion = '8.8.8'
+    let failedVersionFetches = 0
+    fetchMock.mockImplementation(async (input?: Parameters<typeof fetch>[0]) => {
+      if (String(input).includes(`rust-v${failedVersion}/`)) {
+        failedVersionFetches++
+        return new Response('missing tag', {
+          status: 404,
+          statusText: 'Not Found',
+        })
+      }
+      return Response.json({
+        models: [makeBundledCodexModel('gpt-5.5')],
+      })
+    })
+
+    const firstFailure = await server.request(`/v1/models?client_version=${failedVersion}`)
+    expect(firstFailure.status).toBe(500)
+
+    for (let index = 0; index < 24; index++) {
+      const response = await server.request(`/v1/models?client_version=8.9.${index}`)
+      expect(response.status).toBe(200)
+    }
+
+    const cachedFailure = await server.request(`/v1/models?client_version=${failedVersion}`)
+    expect(cachedFailure.status).toBe(500)
+    expect(failedVersionFetches).toBe(1)
+  })
+
+  test('bounds failure-cache keys without evicting existing negative entries early', async () => {
+    fetchMock.mockImplementation(async () => new Response('missing tag', {
+      status: 404,
+      statusText: 'Not Found',
+    }))
+
+    for (let index = 0; index < CODEX_CATALOG_MAX_FAILURE_KEYS; index++) {
+      const response = await server.request(`/v1/models?client_version=7.0.${index}`)
+      expect(response.status).toBe(500)
+    }
+
+    const overflow = await server.request('/v1/models?client_version=7.0.999')
+    expect(overflow.status).toBe(429)
+    expect(Number(overflow.headers.get('retry-after'))).toBeGreaterThan(0)
+    expect(await overflow.json()).toMatchObject({
+      error: {
+        type: 'rate_limit_error',
+        code: 'catalog_failure_cache_full',
+      },
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(CODEX_CATALOG_MAX_FAILURE_KEYS)
+
+    const existingFailure = await server.request('/v1/models?client_version=7.0.0')
+    expect(existingFailure.status).toBe(500)
+    expect(fetchMock).toHaveBeenCalledTimes(CODEX_CATALOG_MAX_FAILURE_KEYS)
   })
 
   test('filters response-capable Copilot models that are missing from the bundled Codex catalog', async () => {
@@ -308,5 +411,14 @@ function makeBundledCodexModel(slug: string, overrides: Record<string, unknown> 
     supports_image_detail_original: true,
     supports_search_tool: true,
     ...overrides,
+  }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1_000
+  while (!predicate()) {
+    if (Date.now() >= deadline)
+      throw new Error('Timed out waiting for catalog fetches')
+    await new Promise(resolve => setTimeout(resolve, 5))
   }
 }

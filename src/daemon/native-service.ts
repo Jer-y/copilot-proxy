@@ -8,8 +8,17 @@ export interface NativeServiceLogOptions {
   lines: number
 }
 
+export interface NativeServiceActivationState {
+  installed: boolean
+  enabled: boolean
+  loaded?: boolean
+  running: boolean
+}
+
 export interface NativeServiceCommands {
+  captureAutoStartState: () => NativeServiceActivationState
   isAutoStartInstalled: () => boolean
+  restoreAutoStartState: (state: NativeServiceActivationState) => boolean
   stopAutoStartService: () => boolean
   restartAutoStartService: () => boolean
   showAutoStartStatus: () => boolean

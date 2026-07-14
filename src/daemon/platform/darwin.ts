@@ -1,3 +1,5 @@
+import type { NativeServiceActivationState } from '~/daemon/native-service'
+
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,6 +25,86 @@ export interface UninstallAutoStartOptions {
   stop?: () => boolean
   unload?: () => void
   removeDefinition?: () => void
+}
+
+export interface LaunchdAutoStartStateOptions {
+  isInstalled?: () => boolean
+  inspect?: () => { loaded: boolean, running: boolean }
+  isEnabled?: () => boolean
+  isLoaded?: () => boolean
+  isRunning?: () => boolean
+  enable?: () => boolean
+  disable?: () => boolean
+  load?: () => void
+  unload?: () => void
+  stop?: () => boolean
+  restart?: () => boolean
+}
+
+export function captureAutoStartState(
+  options: Pick<LaunchdAutoStartStateOptions, 'inspect' | 'isEnabled' | 'isInstalled'> = {},
+): NativeServiceActivationState {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  if (!isInstalled())
+    return { installed: false, enabled: false, running: false }
+
+  const state = (options.inspect ?? inspectLaunchdJob)()
+  return {
+    installed: true,
+    enabled: (options.isEnabled ?? isLaunchdJobEnabled)(),
+    loaded: state.loaded,
+    running: state.running,
+  }
+}
+
+export function restoreAutoStartState(
+  state: NativeServiceActivationState,
+  options: Omit<LaunchdAutoStartStateOptions, 'inspect' | 'isEnabled' | 'isInstalled'> = {},
+): boolean {
+  if (!state.installed)
+    return true
+
+  const isLoaded = options.isLoaded ?? isLaunchdJobLoaded
+  const isRunning = options.isRunning ?? (() => inspectLaunchdJob().running)
+  const enable = options.enable ?? (() => runLaunchctlStateCommand(buildLaunchctlEnableArgs(process.getuid?.())))
+  const disable = options.disable ?? (() => runLaunchctlStateCommand(buildLaunchctlDisableArgs(process.getuid?.())))
+  const load = options.load ?? (() => {
+    execFileSync('launchctl', ['load', PLIST_PATH], { stdio: 'pipe' })
+  })
+  const unload = options.unload ?? (() => {
+    execFileSync('launchctl', ['unload', PLIST_PATH], { stdio: 'pipe' })
+  })
+  const stop = options.stop ?? stopAutoStartService
+  const restart = options.restart ?? restartAutoStartService
+  const shouldBeLoaded = state.loaded ?? state.running
+
+  try {
+    if (!shouldBeLoaded) {
+      if (!isLoaded())
+        return state.enabled ? enable() : disable()
+      if (isRunning() && !stop())
+        return false
+      unload()
+      return state.enabled ? enable() : disable()
+    }
+
+    if (!isLoaded()) {
+      // A persistently disabled job cannot be loaded. Enable it temporarily,
+      // then restore the previous disabled override after activation state.
+      if (!enable())
+        return false
+      load()
+    }
+    if (state.running && !restart())
+      return false
+    if (!state.running && isRunning() && !stop())
+      return false
+    return state.enabled ? enable() : disable()
+  }
+  catch (error) {
+    consola.error('Failed to restore previous launchd enabled/running state:', error instanceof Error ? error.message : error)
+    return false
+  }
 }
 
 function xmlEscape(s: string): string {
@@ -265,6 +347,18 @@ export function buildLaunchctlEnableArgs(uid?: number): string[] {
   return ['enable', launchdTarget(uid)]
 }
 
+export function buildLaunchctlDisableArgs(uid?: number): string[] {
+  return ['disable', launchdTarget(uid)]
+}
+
+export function isLaunchdJobEnabledOutput(output: string): boolean {
+  const escapedLabel = LABEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`"?${escapedLabel}"?\\s*=>\\s*(true|false)`, 'i').exec(output)
+  // launchd lists only explicit overrides. An absent label uses the plist's
+  // default enabled state.
+  return match?.[1].toLowerCase() !== 'true'
+}
+
 function launchdTarget(uid?: number): string {
   return typeof uid === 'number' ? `gui/${uid}/${LABEL}` : LABEL
 }
@@ -293,6 +387,39 @@ function isLaunchdJobLoaded(): boolean {
   if (query.state === 'unknown')
     throw new Error(`Cannot determine launchd job state: ${query.detail}`)
   return query.state === 'loaded'
+}
+
+function inspectLaunchdJob(): { loaded: boolean, running: boolean } {
+  const query = queryLaunchdJob()
+  if (query.state === 'unknown')
+    throw new Error(`Cannot determine launchd job state: ${query.detail}`)
+  return {
+    loaded: query.state === 'loaded',
+    running: query.state === 'loaded' && isLaunchdJobRunningOutput(query.output),
+  }
+}
+
+function isLaunchdJobEnabled(): boolean {
+  const uid = process.getuid?.()
+  if (typeof uid !== 'number')
+    throw new Error('Cannot determine the launchd GUI domain without a user id')
+  const output = execFileSync(
+    'launchctl',
+    ['print-disabled', `gui/${uid}`],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  return isLaunchdJobEnabledOutput(output)
+}
+
+function runLaunchctlStateCommand(args: string[]): boolean {
+  try {
+    execFileSync('launchctl', args, { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    consola.error('Failed to restore previous launchd enabled state:', error instanceof Error ? error.message : error)
+    return false
+  }
 }
 
 function queryLaunchdJob():

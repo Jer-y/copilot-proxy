@@ -3,6 +3,7 @@ import path from 'node:path'
 
 import consola from 'consola'
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
+import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { PATHS } from '~/lib/paths'
 import { DEFAULT_HOST } from '~/lib/security'
 
@@ -214,16 +215,24 @@ function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | nul
     return null
   if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400))
     return null
-  if (data.headersTimeoutMs !== undefined && (typeof data.headersTimeoutMs !== 'number' || !Number.isInteger(data.headersTimeoutMs) || data.headersTimeoutMs < 0))
+  if (isInvalidTimeout(data.headersTimeoutMs))
     return null
-  if (data.bodyTimeoutMs !== undefined && (typeof data.bodyTimeoutMs !== 'number' || !Number.isInteger(data.bodyTimeoutMs) || data.bodyTimeoutMs < 0))
+  if (isInvalidTimeout(data.bodyTimeoutMs))
     return null
-  if (data.connectTimeoutMs !== undefined && (typeof data.connectTimeoutMs !== 'number' || !Number.isInteger(data.connectTimeoutMs) || data.connectTimeoutMs < 0))
+  if (isInvalidTimeout(data.connectTimeoutMs))
     return null
   if (data.githubToken !== undefined && typeof data.githubToken !== 'string')
     return null
 
   return data as unknown as DaemonConfig
+}
+
+function isInvalidTimeout(value: unknown): boolean {
+  return value !== undefined
+    && (typeof value !== 'number'
+      || !Number.isInteger(value)
+      || value < 0
+      || value > MAX_TIMER_DELAY_MS)
 }
 
 function backupDaemonConfigFile(): string | undefined {

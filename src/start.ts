@@ -11,6 +11,7 @@ import { serve } from 'srvx'
 import invariant from 'tiny-invariant'
 
 import { validateAccountType, validateHost, validatePort, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
+import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
 import { PATHS } from './lib/paths'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
@@ -372,21 +373,21 @@ export const start = defineCommand({
 
     const headersTimeoutResult = validateTimeoutMs(args['headers-timeout-ms'])
     if (!headersTimeoutResult.valid) {
-      consola.error(`Invalid headers-timeout-ms: ${args['headers-timeout-ms']} (must be 0 or greater)`)
+      consola.error(`Invalid headers-timeout-ms: ${args['headers-timeout-ms']} (must be between 0 and ${MAX_TIMER_DELAY_MS})`)
       process.exit(1)
     }
     const headersTimeoutMs = headersTimeoutResult.value
 
     const bodyTimeoutResult = validateTimeoutMs(args['body-timeout-ms'])
     if (!bodyTimeoutResult.valid) {
-      consola.error(`Invalid body-timeout-ms: ${args['body-timeout-ms']} (must be 0 or greater)`)
+      consola.error(`Invalid body-timeout-ms: ${args['body-timeout-ms']} (must be between 0 and ${MAX_TIMER_DELAY_MS})`)
       process.exit(1)
     }
     const bodyTimeoutMs = bodyTimeoutResult.value
 
     const connectTimeoutResult = validateTimeoutMs(args['connect-timeout-ms'])
     if (!connectTimeoutResult.valid) {
-      consola.error(`Invalid connect-timeout-ms: ${args['connect-timeout-ms']} (must be 0 or greater)`)
+      consola.error(`Invalid connect-timeout-ms: ${args['connect-timeout-ms']} (must be between 0 and ${MAX_TIMER_DELAY_MS})`)
       process.exit(1)
     }
     const connectTimeoutMs = connectTimeoutResult.value

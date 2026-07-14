@@ -198,7 +198,11 @@ test('turns upstream 413 into a clearer payload-too-large error', async () => {
       },
     }), {
       status: 413,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Retry-After': '9',
+        'X-Request-Id': 'req_payload_too_large',
+      },
     }),
   )
 
@@ -223,6 +227,8 @@ test('turns upstream 413 into a clearer payload-too-large error', async () => {
 
     const jsonError = error as JSONResponseError
     expect(jsonError.status).toBe(413)
+    expect(jsonError.headers?.get('retry-after')).toBe('9')
+    expect(jsonError.headers?.get('x-request-id')).toBe('req_payload_too_large')
     expect(jsonError.payload).toEqual({
       error: {
         message: expect.stringContaining('Upstream /responses rejected the request with 413 Payload Too Large.'),

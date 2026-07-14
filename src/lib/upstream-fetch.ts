@@ -3,8 +3,10 @@ import process from 'node:process'
 import { UpstreamTimeoutError } from './error'
 import {
   DEFAULT_COPILOT_BODY_TIMEOUT_MS,
+  DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
   DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
   DEFAULT_GITHUB_FETCH_TIMEOUT_MS,
+  MAX_TIMER_DELAY_MS,
 } from './http-timeouts'
 import { PROXY_ENV_KEYS, resolveProxyForUrlFromEnvironment } from './proxy-environment'
 
@@ -26,6 +28,9 @@ let copilotFetchTimeoutConfig: CopilotFetchTimeoutConfig = {}
 let runtimeProxyEnvironment: NodeJS.ProcessEnv | undefined
 
 export function configureCopilotFetchTimeouts(config: CopilotFetchTimeoutConfig): void {
+  assertValidTimerDelay('headersTimeoutMs', config.headersTimeoutMs)
+  assertValidTimerDelay('bodyTimeoutMs', config.bodyTimeoutMs)
+  assertValidTimerDelay('connectTimeoutMs', config.connectTimeoutMs)
   copilotFetchTimeoutConfig = { ...config }
   runtimeProxyEnvironment = config.proxyEnv
     ? Object.fromEntries(
@@ -66,9 +71,56 @@ export function fetchCopilot(
   // even when the user configured a different value or explicitly disabled
   // the dispatcher timeout with 0.
   if (typeof Bun === 'undefined')
-    return fetchWithRuntimeProxy(input, init)
+    return fetchCopilotUnderNode(input, init)
 
   return fetchCopilotUnderBun(input, init)
+}
+
+export async function fetchCopilotUnderNode(
+  input: FetchInput,
+  init: RequestInit = {},
+): Promise<Response> {
+  const target = describeRequest(input)
+  let response: Response
+  try {
+    response = await fetchWithRuntimeProxy(input, init)
+  }
+  catch (error) {
+    throw normalizeUndiciTimeoutError(error, target)
+  }
+
+  if (!response.body)
+    return response
+
+  return wrapResponseBodyWithMappedErrors(
+    response,
+    error => normalizeUndiciTimeoutError(error, target),
+  )
+}
+
+export function normalizeUndiciTimeoutError(error: unknown, target: string): unknown {
+  const timeoutCode = findUndiciTimeoutCode(error)
+  if (!timeoutCode)
+    return error
+
+  const phase = timeoutCode === 'UND_ERR_HEADERS_TIMEOUT'
+    ? 'headers'
+    : timeoutCode === 'UND_ERR_BODY_TIMEOUT'
+      ? 'body'
+      : 'connect'
+  const timeoutMs = phase === 'headers'
+    ? copilotFetchTimeoutConfig.headersTimeoutMs ?? DEFAULT_COPILOT_HEADERS_TIMEOUT_MS
+    : phase === 'body'
+      ? copilotFetchTimeoutConfig.bodyTimeoutMs ?? DEFAULT_COPILOT_BODY_TIMEOUT_MS
+      : copilotFetchTimeoutConfig.connectTimeoutMs ?? DEFAULT_COPILOT_CONNECT_TIMEOUT_MS
+
+  const normalized = new UpstreamTimeoutError(
+    `Upstream ${phase} timed out after ${timeoutMs}ms: ${target}`,
+    timeoutMs,
+    target,
+  )
+  normalized.cause = error
+  return normalized
 }
 
 export function fetchGitHub(
@@ -87,6 +139,7 @@ export async function fetchWithTimeout(
   init: RequestInit = {},
   options: Required<FetchWithTimeoutOptions>,
 ): Promise<Response> {
+  assertValidTimerDelay('timeoutMs', options.timeoutMs)
   if (options.timeoutMs === 0)
     return fetchWithRuntimeProxy(input, init)
 
@@ -274,6 +327,87 @@ function wrapResponseBodyWithTimeout(
     statusText: response.statusText,
     headers: response.headers,
   })
+}
+
+function wrapResponseBodyWithMappedErrors(
+  response: Response,
+  mapError: (error: unknown) => unknown,
+): Response {
+  const source = response.body
+  if (!source)
+    return response
+
+  const reader = source.getReader()
+  let terminal = false
+
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (terminal)
+        return
+
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          terminal = true
+          reader.releaseLock()
+          controller.close()
+          return
+        }
+        controller.enqueue(value)
+      }
+      catch (error) {
+        terminal = true
+        reader.releaseLock()
+        controller.error(mapError(error))
+      }
+    },
+    async cancel(reason) {
+      terminal = true
+      try {
+        await reader.cancel(reason)
+      }
+      finally {
+        reader.releaseLock()
+      }
+    },
+  })
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
+function findUndiciTimeoutCode(
+  error: unknown,
+): 'UND_ERR_HEADERS_TIMEOUT' | 'UND_ERR_BODY_TIMEOUT' | 'UND_ERR_CONNECT_TIMEOUT' | undefined {
+  const seen = new Set<object>()
+  let current = error
+
+  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+    seen.add(current)
+    const code = 'code' in current ? current.code : undefined
+    if (
+      code === 'UND_ERR_HEADERS_TIMEOUT'
+      || code === 'UND_ERR_BODY_TIMEOUT'
+      || code === 'UND_ERR_CONNECT_TIMEOUT'
+    ) {
+      return code
+    }
+    current = 'cause' in current ? current.cause : undefined
+  }
+
+  return undefined
+}
+
+function assertValidTimerDelay(name: string, value: number | undefined): void {
+  if (value === undefined)
+    return
+
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_TIMER_DELAY_MS) {
+    throw new RangeError(`${name} must be an integer between 0 and ${MAX_TIMER_DELAY_MS}`)
+  }
 }
 
 function describeRequest(input: FetchInput): string {

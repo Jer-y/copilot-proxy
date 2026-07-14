@@ -93,7 +93,7 @@ async function expectAnthropicPayloadTooLarge(path: string): Promise<void> {
   }
 
   expect(json.type).toBe('error')
-  expect(json.error.type).toBe('invalid_request_error')
+  expect(json.error.type).toBe('request_too_large')
   expect(json.error.message).toContain('body_bytes=9999')
   expect(json.error.message).toContain('max_body_bytes=192')
 }

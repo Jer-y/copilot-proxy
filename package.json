@@ -42,6 +42,7 @@
     "start": "NODE_ENV=production bun run ./src/main.ts start",
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov && bun run ./scripts/check-critical-coverage.ts",
     "test:live:copilot": "bun test tests/live/copilot-capabilities.test.ts",
+    "test:node:http": "bun run ./scripts/run-node-http-listener-smoke.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

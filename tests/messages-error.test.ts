@@ -108,6 +108,54 @@ describe('messages error paths', () => {
     }
   })
 
+  test('Responses-backed upstream 413 becomes an Anthropic request_too_large error with safe headers', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    globalThis.fetch = mock(async (url: string) => {
+      expect(url.endsWith('/responses')).toBe(true)
+      return new Response(JSON.stringify({
+        error: {
+          message: 'failed to parse oversized request',
+          type: 'invalid_request_error',
+        },
+      }), {
+        status: 413,
+        headers: {
+          'Content-Type': 'application/json',
+          'Retry-After': '11',
+          'X-Request-Id': 'req_messages_too_large',
+          'X-RateLimit-Remaining': '7',
+          'Set-Cookie': 'secret=not-forwarded',
+        },
+      })
+    }) as unknown as typeof fetch
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.6-sol',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Oversized history.' }],
+      }),
+    })
+
+    expect(res.status).toBe(413)
+    expect(res.headers.get('retry-after')).toBe('11')
+    expect(res.headers.get('x-request-id')).toBe('req_messages_too_large')
+    expect(res.headers.get('x-ratelimit-remaining')).toBe('7')
+    expect(res.headers.get('set-cookie')).toBeNull()
+    expect(await res.json()).toEqual({
+      type: 'error',
+      error: {
+        type: 'request_too_large',
+        message: expect.stringContaining('Upstream /responses rejected the request with 413 Payload Too Large.'),
+      },
+      request_id: 'req_messages_too_large',
+    })
+  })
+
   test('invalid JSON body returns 400 with invalid_request_error', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -281,6 +329,28 @@ describe('messages error paths', () => {
       type: 'tool_reference',
       tool_name: 'deferred_tool',
     })
+  })
+
+  test('official top-level search_result content is accepted for native passthrough', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-4.8',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'search_result',
+          source: 'https://example.com/reference',
+          title: 'Reference',
+          content: [{ type: 'text', text: 'Grounded fact.' }],
+          citations: { enabled: true },
+        }, {
+          type: 'text',
+          text: 'Answer from the result.',
+        }],
+      }],
+    })
+
+    expect(result.success).toBe(true)
   })
 
   test('official nullable Anthropic request fields pass native schema validation', () => {

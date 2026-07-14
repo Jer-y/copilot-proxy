@@ -3,6 +3,7 @@ import type { State } from '~/lib/state'
 import { describe, expect, test } from 'bun:test'
 
 import { HTTPError } from '~/lib/error'
+import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { checkRateLimit } from '~/lib/rate-limit'
 
 function makeState(overrides?: Partial<State>): State {
@@ -49,6 +50,13 @@ describe('checkRateLimit', () => {
       expect(error).toBeInstanceOf(HTTPError)
       const httpError = error as HTTPError
       expect(httpError.response.status).toBe(429)
+      expect(httpError.response.headers.get('retry-after')).toBe('9999')
+      expect(await httpError.json()).toEqual({
+        error: {
+          message: 'Rate limit exceeded',
+          type: 'rate_limit_error',
+        },
+      })
     }
   })
 
@@ -117,5 +125,27 @@ describe('checkRateLimit', () => {
     expect(state.lastRequestTimestamp!).toBeGreaterThan(firstReservedTimestamp)
 
     await Promise.all([first, second])
+  })
+
+  test('rejects an over-full wait queue without consuming another slot', async () => {
+    const requiredGapMs = 86_400 * 1000
+    const lastReservedTimestamp = Date.now() + (24 * requiredGapMs)
+    const state = makeState({
+      rateLimitSeconds: 86_400,
+      rateLimitWait: true,
+      lastRequestTimestamp: lastReservedTimestamp,
+    })
+
+    const error = await checkRateLimit(state).catch((error: unknown) => error)
+
+    expect(error).toBeInstanceOf(HTTPError)
+    const httpError = error as HTTPError
+    expect(httpError.response.status).toBe(429)
+    expect(httpError.response.headers.get('retry-after')).toBeTruthy()
+    expect(await httpError.json()).toMatchObject({
+      error: { code: 'rate_limit_queue_full' },
+    })
+    expect(state.lastRequestTimestamp).toBe(lastReservedTimestamp)
+    expect(requiredGapMs * 25).toBeGreaterThan(MAX_TIMER_DELAY_MS)
   })
 })

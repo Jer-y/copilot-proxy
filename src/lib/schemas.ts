@@ -128,6 +128,7 @@ const AnthropicUserMessageSchema = z.object({
       AnthropicTextBlockSchema,
       AnthropicImageBlockSchema,
       AnthropicDocumentBlockSchema,
+      AnthropicSearchResultBlockSchema,
       AnthropicToolResultBlockSchema,
     ])),
   ]),
@@ -343,7 +344,7 @@ export const EmbeddingRequestSchema = z.object({
 // ─── Responses (OpenAI Responses API) ─────────────────────────────
 
 const ResponsesMessageInputSchema = z.object({
-  role: z.string(),
+  role: z.enum(['user', 'assistant', 'system', 'developer']),
   content: z.union([z.string(), z.array(z.unknown())]),
 }).passthrough()
 

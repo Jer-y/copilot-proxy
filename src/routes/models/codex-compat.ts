@@ -2,6 +2,7 @@ import type { Model } from '~/services/copilot/get-models'
 
 import consola from 'consola'
 
+import { HTTPError } from '~/lib/error'
 import { getModelConfig } from '~/lib/model-config'
 import { throwOpenAIInvalidRequestError } from '~/lib/openai-compat'
 import { fetchWithTimeout } from '~/lib/upstream-fetch'
@@ -23,9 +24,21 @@ const CODEX_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[\d.a-z-]+)?$/i
 const CODEX_CATALOG_FETCH_TIMEOUT_MS = 5_000
 const CODEX_CATALOG_CACHE_MAX_ENTRIES = 16
 const CODEX_CATALOG_FAILURE_CACHE_MS = 30_000
+export const CODEX_CATALOG_MAX_IN_FLIGHT = 4
+export const CODEX_CATALOG_MAX_PENDING_KEYS = 16
+export const CODEX_CATALOG_MAX_FAILURE_KEYS = 32
 // Codex derives the compact threshold at 90% of the usable context window.
 const CODEX_AUTO_COMPACT_PROMPT_WINDOW_RATIO = 0.9
-const codexCatalogCache = new Map<string, Promise<CodexModelsResponse>>()
+const codexCatalogCache = new Map<string, CodexModelsResponse>()
+const codexCatalogFailureCache = new Map<string, CodexCatalogFailure>()
+const codexCatalogInFlight = new Map<string, Promise<CodexModelsResponse>>()
+const codexCatalogFetchWaiters: Array<() => void> = []
+let activeCodexCatalogFetches = 0
+
+interface CodexCatalogFailure {
+  error: unknown
+  expiresAt: number
+}
 
 export function isCodexModelsRequest(url: URL): boolean {
   return url.searchParams.has('client_version')
@@ -105,21 +118,154 @@ function toCodexModelInfo(model: Model, bundledModel: CodexModelInfo | undefined
 }
 
 async function fetchCodexBundledCatalog(clientVersion: string): Promise<CodexModelsResponse> {
-  let cachedCatalog = codexCatalogCache.get(clientVersion)
-  if (!cachedCatalog) {
-    cachedCatalog = fetchCodexBundledCatalogUncached(clientVersion).catch((error: unknown) => {
-      const timer = setTimeout(() => {
-        if (codexCatalogCache.get(clientVersion) === cachedCatalog)
-          codexCatalogCache.delete(clientVersion)
-      }, CODEX_CATALOG_FAILURE_CACHE_MS)
-      timer.unref?.()
-      throw error
-    })
-    pruneCodexCatalogCache()
-    codexCatalogCache.set(clientVersion, cachedCatalog)
+  const cachedCatalog = codexCatalogCache.get(clientVersion)
+  if (cachedCatalog)
+    return cachedCatalog
+
+  const cachedFailure = getCachedCodexCatalogFailure(clientVersion)
+  if (cachedFailure)
+    throw cachedFailure
+
+  const existingRequest = codexCatalogInFlight.get(clientVersion)
+  if (existingRequest)
+    return await existingRequest
+
+  pruneExpiredCodexCatalogFailures()
+  if (codexCatalogInFlight.size >= CODEX_CATALOG_MAX_PENDING_KEYS) {
+    throwCodexCatalogCapacityError(
+      'Codex catalog fetch queue is full.',
+      'catalog_fetch_queue_full',
+      Math.ceil(CODEX_CATALOG_FETCH_TIMEOUT_MS / 1000),
+    )
+  }
+  // Reserve enough failure-cache capacity for every admitted in-flight key.
+  // This keeps the negative cache bounded even if all queued requests fail.
+  if (codexCatalogFailureCache.size + codexCatalogInFlight.size >= CODEX_CATALOG_MAX_FAILURE_KEYS) {
+    throwCodexCatalogCapacityError(
+      'Codex catalog failure cache is full.',
+      'catalog_failure_cache_full',
+      getCodexCatalogFailureRetryAfterSeconds(),
+    )
   }
 
-  return await cachedCatalog
+  const request = withCodexCatalogFetchSlot(
+    () => fetchCodexBundledCatalogUncached(clientVersion),
+  ).then((catalog) => {
+    cacheSuccessfulCodexCatalog(clientVersion, catalog)
+    return catalog
+  }).catch((error: unknown) => {
+    cacheCodexCatalogFailure(clientVersion, error)
+    throw error
+  }).finally(() => {
+    if (codexCatalogInFlight.get(clientVersion) === request)
+      codexCatalogInFlight.delete(clientVersion)
+  })
+  codexCatalogInFlight.set(clientVersion, request)
+
+  return await request
+}
+
+function cacheSuccessfulCodexCatalog(clientVersion: string, catalog: CodexModelsResponse): void {
+  pruneCodexCatalogCache()
+  codexCatalogCache.set(clientVersion, catalog)
+}
+
+function cacheCodexCatalogFailure(clientVersion: string, error: unknown): void {
+  const failure: CodexCatalogFailure = {
+    error,
+    expiresAt: Date.now() + CODEX_CATALOG_FAILURE_CACHE_MS,
+  }
+  codexCatalogFailureCache.set(clientVersion, failure)
+  const timer = setTimeout(() => {
+    if (codexCatalogFailureCache.get(clientVersion) === failure)
+      codexCatalogFailureCache.delete(clientVersion)
+  }, CODEX_CATALOG_FAILURE_CACHE_MS)
+  timer.unref?.()
+}
+
+function getCachedCodexCatalogFailure(clientVersion: string): unknown {
+  const failure = codexCatalogFailureCache.get(clientVersion)
+  if (!failure)
+    return undefined
+  if (failure.expiresAt <= Date.now()) {
+    codexCatalogFailureCache.delete(clientVersion)
+    return undefined
+  }
+  return failure.error
+}
+
+function pruneExpiredCodexCatalogFailures(): void {
+  const now = Date.now()
+  for (const [clientVersion, failure] of codexCatalogFailureCache) {
+    if (failure.expiresAt <= now)
+      codexCatalogFailureCache.delete(clientVersion)
+  }
+}
+
+function getCodexCatalogFailureRetryAfterSeconds(): number {
+  const earliestExpiry = Math.min(
+    ...Array.from(codexCatalogFailureCache.values(), failure => failure.expiresAt),
+  )
+  return Number.isFinite(earliestExpiry)
+    ? Math.max(1, Math.ceil((earliestExpiry - Date.now()) / 1000))
+    : Math.ceil(CODEX_CATALOG_FAILURE_CACHE_MS / 1000)
+}
+
+function throwCodexCatalogCapacityError(
+  reason: string,
+  code: 'catalog_failure_cache_full' | 'catalog_fetch_queue_full',
+  retryAfterSeconds: number,
+): never {
+  const message = `${reason} Retry after ${retryAfterSeconds} seconds.`
+  throw new HTTPError(
+    message,
+    Response.json({
+      error: {
+        message,
+        type: 'rate_limit_error',
+        code,
+      },
+    }, {
+      status: 429,
+      headers: { 'Retry-After': String(retryAfterSeconds) },
+    }),
+  )
+}
+
+export function resetCodexCatalogStateForTesting(): void {
+  if (activeCodexCatalogFetches !== 0 || codexCatalogFetchWaiters.length !== 0 || codexCatalogInFlight.size !== 0)
+    throw new Error('Cannot reset Codex catalog state while fetches are pending')
+  codexCatalogCache.clear()
+  codexCatalogFailureCache.clear()
+}
+
+async function withCodexCatalogFetchSlot<T>(fetchCatalog: () => Promise<T>): Promise<T> {
+  await acquireCodexCatalogFetchSlot()
+  try {
+    return await fetchCatalog()
+  }
+  finally {
+    releaseCodexCatalogFetchSlot()
+  }
+}
+
+function acquireCodexCatalogFetchSlot(): Promise<void> {
+  if (activeCodexCatalogFetches < CODEX_CATALOG_MAX_IN_FLIGHT) {
+    activeCodexCatalogFetches++
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    codexCatalogFetchWaiters.push(() => {
+      activeCodexCatalogFetches++
+      resolve()
+    })
+  })
+}
+
+function releaseCodexCatalogFetchSlot(): void {
+  activeCodexCatalogFetches--
+  codexCatalogFetchWaiters.shift()?.()
 }
 
 function pruneCodexCatalogCache(): void {

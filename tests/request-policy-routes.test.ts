@@ -93,6 +93,24 @@ async function expectSecondInvalidRequestRateLimited(path: string): Promise<void
     body: '<<<not json>>>',
   })
   expect(second.status).toBe(429)
+  expect(second.headers.get('retry-after')).toBe('9999')
+  if (path.startsWith('/v1/messages')) {
+    expect(await second.json()).toEqual({
+      type: 'error',
+      error: {
+        type: 'rate_limit_error',
+        message: 'Rate limit exceeded',
+      },
+    })
+  }
+  else {
+    expect(await second.json()).toEqual({
+      error: {
+        type: 'rate_limit_error',
+        message: 'Rate limit exceeded',
+      },
+    })
+  }
   expect(fetchMock).toHaveBeenCalledTimes(0)
 }
 

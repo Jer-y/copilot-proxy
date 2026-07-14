@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
 
-import { buildSystemdUnit, commitAutoStartInstall, getSystemdUserServiceDir, rollbackAutoStartInstall, shellQuote, shellQuoteForHelp, uninstallAutoStart } from '~/daemon/platform/linux'
+import { buildSystemdUnit, captureAutoStartState, commitAutoStartInstall, getSystemdUserServiceDir, restoreAutoStartState, rollbackAutoStartInstall, shellQuote, shellQuoteForHelp, uninstallAutoStart } from '~/daemon/platform/linux'
 
 const LINUX_SOURCE = new URL('../src/daemon/platform/linux.ts', import.meta.url)
 
@@ -58,6 +58,97 @@ describe('systemd user service path', () => {
   test('enables the persisted absolute unit path for custom XDG homes', () => {
     const source = readFileSync(LINUX_SOURCE, 'utf8')
     expect(source).toContain('[\'--user\', \'enable\', SERVICE_PATH]')
+  })
+})
+
+describe('systemd replacement state', () => {
+  test('captures enabled and running state before replacing an existing unit', () => {
+    expect(captureAutoStartState({
+      isInstalled: () => true,
+      readProperty: property => property === 'ActiveState' ? 'active' : 'enabled',
+    })).toEqual({ installed: true, enabled: true, running: true })
+  })
+
+  test('restores a previously disabled but running unit', () => {
+    const calls: string[] = []
+    expect(restoreAutoStartState(
+      { installed: true, enabled: false, running: true },
+      {
+        disable: () => {
+          calls.push('disable')
+          return true
+        },
+        enable: () => {
+          calls.push('enable')
+          return true
+        },
+        restart: () => {
+          calls.push('restart')
+          return true
+        },
+        reload: () => {
+          calls.push('reload')
+          return true
+        },
+        stop: () => {
+          calls.push('stop')
+          return true
+        },
+      },
+    )).toBe(true)
+    expect(calls).toEqual(['reload', 'disable', 'restart'])
+  })
+
+  test('restores a previously enabled but stopped unit without starting it', () => {
+    const calls: string[] = []
+    expect(restoreAutoStartState(
+      { installed: true, enabled: true, running: false },
+      {
+        disable: () => {
+          calls.push('disable')
+          return true
+        },
+        enable: () => {
+          calls.push('enable')
+          return true
+        },
+        restart: () => {
+          calls.push('restart')
+          return true
+        },
+        reload: () => {
+          calls.push('reload')
+          return true
+        },
+        stop: () => {
+          calls.push('stop')
+          return true
+        },
+      },
+    )).toBe(true)
+    expect(calls).toEqual(['reload', 'stop', 'enable'])
+  })
+
+  test('treats a restored-file daemon-reload failure as activation failure', () => {
+    const calls: string[] = []
+    expect(restoreAutoStartState(
+      { installed: true, enabled: true, running: true },
+      {
+        enable: () => {
+          calls.push('enable')
+          return true
+        },
+        reload: () => {
+          calls.push('reload')
+          return false
+        },
+        restart: () => {
+          calls.push('restart')
+          return true
+        },
+      },
+    )).toBe(false)
+    expect(calls).toEqual(['reload'])
   })
 })
 

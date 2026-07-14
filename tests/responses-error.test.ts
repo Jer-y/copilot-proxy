@@ -1035,6 +1035,59 @@ test('/v1/responses rejects unknown message content parts before Anthropic trans
   expect(fetchMock).toHaveBeenCalledTimes(0)
 })
 
+test('/v1/responses rejects replayed reasoning before Anthropic translation reaches upstream', async () => {
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.8',
+      store: false,
+      input: [
+        {
+          type: 'reasoning',
+          id: 'rs_replay',
+          summary: [],
+          encrypted_content: 'opaque-reasoning-state',
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+    }),
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toMatchObject({
+    error: {
+      type: 'invalid_request_error',
+      message: expect.stringContaining('reasoning input items cannot be represented'),
+    },
+  })
+  expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
+test('/v1/responses rejects message roles outside the official four-value enum', async () => {
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4.8',
+      store: false,
+      input: [
+        { role: 'user', content: 'Keep this.' },
+        { role: 'bogus', content: 'Do not silently drop this.' },
+      ],
+    }),
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toMatchObject({
+    error: {
+      type: 'invalid_request_error',
+      message: expect.stringContaining('Request validation failed'),
+    },
+  })
+  expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
 test('/v1/responses translated json_schema omits the Responses-only name on the Anthropic wire', async () => {
   const sentinel = 'HANDLER_PROMPT_SECRET_SENTINEL'
   const schema = {

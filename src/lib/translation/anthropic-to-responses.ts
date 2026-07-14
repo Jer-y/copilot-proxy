@@ -487,8 +487,12 @@ function translateUserBlockToResponsesContent(
     case 'text':
       return { type: 'input_text' as const, text: block.text }
     case 'document':
-      throwAnthropicInvalidRequestError(
+      return throwAnthropicInvalidRequestError(
         'Unexpanded document block reached Responses translation layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
+      )
+    case 'search_result':
+      return throwAnthropicInvalidRequestError(
+        `Anthropic user content block type "${block.type}" cannot be represented faithfully on the Responses translation path. Use a model routed directly through /v1/messages.`,
       )
   }
 }

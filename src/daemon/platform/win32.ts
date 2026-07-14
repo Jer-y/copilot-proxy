@@ -1,3 +1,5 @@
+import type { NativeServiceActivationState } from '~/daemon/native-service'
+
 import { Buffer } from 'node:buffer'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -29,6 +31,56 @@ export interface ScheduledTaskControlOptions {
   endTask?: () => void
   waitForStop?: () => boolean
   runTask?: () => void
+}
+
+export interface ScheduledTaskStateOptions {
+  isInstalled?: () => boolean
+  readEnabled?: () => boolean
+  readState?: () => string
+  enable?: () => boolean
+  disable?: () => boolean
+  restart?: () => boolean
+  stop?: () => boolean
+}
+
+export function captureAutoStartState(
+  options: Pick<ScheduledTaskStateOptions, 'isInstalled' | 'readEnabled' | 'readState'> = {},
+): NativeServiceActivationState {
+  const isInstalled = options.isInstalled ?? isAutoStartInstalled
+  if (!isInstalled())
+    return { installed: false, enabled: false, running: false }
+
+  const taskState = (options.readState ?? queryScheduledTaskState)().toLowerCase()
+  return {
+    installed: true,
+    enabled: (options.readEnabled ?? queryScheduledTaskEnabled)(),
+    running: taskState === 'running',
+  }
+}
+
+export function restoreAutoStartState(
+  state: NativeServiceActivationState,
+  options: Omit<ScheduledTaskStateOptions, 'isInstalled' | 'readEnabled' | 'readState'> = {},
+): boolean {
+  if (!state.installed)
+    return true
+
+  const enable = options.enable ?? (() => runTaskStateCommand('/enable'))
+  const disable = options.disable ?? (() => runTaskStateCommand('/disable'))
+  const restart = options.restart ?? restartAutoStartService
+  const stop = options.stop ?? stopAutoStartService
+
+  if (state.running) {
+    // Task Scheduler cannot run a disabled task. Start it while enabled, then
+    // restore the disabled flag if that unusual state existed previously.
+    if (!enable() || !restart())
+      return false
+    return state.enabled || disable()
+  }
+
+  if (!stop())
+    return false
+  return state.enabled ? enable() : disable()
 }
 
 function escapeXmlAttr(s: string): string {
@@ -477,21 +529,53 @@ function waitForScheduledTaskStop(): boolean {
 
 function isScheduledTaskRunning(): boolean {
   try {
-    const state = execFileSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `(Get-ScheduledTask -TaskName '${TASK_NAME}').State.ToString()`,
-      ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim()
-    return state.toLowerCase() === 'running'
+    return queryScheduledTaskState().toLowerCase() === 'running'
   }
   catch {
     // Conservatively attempt graceful IPC if task state cannot be queried.
     return true
+  }
+}
+
+function queryScheduledTaskState(): string {
+  return execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-ScheduledTask -TaskName '${TASK_NAME}').State.ToString()`,
+    ],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  ).trim()
+}
+
+function queryScheduledTaskEnabled(): boolean {
+  const output = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-ScheduledTask -TaskName '${TASK_NAME}').Settings.Enabled.ToString()`,
+    ],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  ).trim().toLowerCase()
+  if (output === 'true')
+    return true
+  if (output === 'false')
+    return false
+  throw new Error(`Unexpected Task Scheduler enabled state: ${output || '<empty>'}`)
+}
+
+function runTaskStateCommand(flag: '/disable' | '/enable'): boolean {
+  try {
+    execFileSync('schtasks', ['/change', '/tn', TASK_NAME, flag], { stdio: 'pipe' })
+    return true
+  }
+  catch (error) {
+    consola.error(`Failed to restore scheduled task ${flag.slice(1)} state:`, error instanceof Error ? error.message : error)
+    return false
   }
 }
 

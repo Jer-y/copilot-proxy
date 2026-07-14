@@ -247,7 +247,9 @@ function translateResponsesInputToAnthropicMessages(
 
   for (const item of input) {
     if ('type' in item && item.type === 'reasoning') {
-      continue
+      throwInvalidRequestError(
+        'Responses reasoning input items cannot be represented on the Anthropic Messages translation path. Use a model routed directly through /responses instead.',
+      )
     }
 
     if (isFunctionCallItem(item)) {
@@ -313,6 +315,11 @@ function translateResponsesInputToAnthropicMessages(
       pushAssistantContentBlocks(item.content, pendingAssistantBlocks)
       continue
     }
+
+    const unsupportedRole = (item as { role?: unknown }).role
+    throwInvalidRequestError(
+      `Unsupported Responses message role "${String(unsupportedRole)}"; expected one of user, assistant, system, or developer.`,
+    )
   }
 
   flushAssistant()

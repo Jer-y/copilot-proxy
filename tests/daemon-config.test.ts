@@ -4,6 +4,7 @@ import path from 'node:path'
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { loadDaemonConfig, loadDaemonConfigWithRecovery, MAX_DAEMON_CONFIG_BACKUPS, saveDaemonConfig } from '../src/daemon/config'
+import { MAX_TIMER_DELAY_MS } from '../src/lib/http-timeouts'
 import { PATHS } from '../src/lib/paths'
 
 afterEach(() => {
@@ -198,6 +199,15 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
   test('returns null for config with non-integer connect timeout values', () => {
     saveDaemonConfig(sampleConfig)
     fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, connectTimeoutMs: 1.5 }))
+    expect(loadDaemonConfig()).toBeNull()
+  })
+
+  test('returns null for config with timeout values above the runtime timer limit', () => {
+    saveDaemonConfig(sampleConfig)
+    fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({
+      ...sampleConfig,
+      bodyTimeoutMs: MAX_TIMER_DELAY_MS + 1,
+    }))
     expect(loadDaemonConfig()).toBeNull()
   })
 

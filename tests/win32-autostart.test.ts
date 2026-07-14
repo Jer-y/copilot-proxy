@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
-import { buildTaskXml, commitAutoStartInstall, restartAutoStartService, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/win32'
+import { buildTaskXml, captureAutoStartState, commitAutoStartInstall, restartAutoStartService, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/win32'
 
 const WIN32_SOURCE = new URL('../src/daemon/platform/win32.ts', import.meta.url)
 
@@ -121,6 +121,73 @@ describe('buildTaskXml', () => {
 
   test('does not contain DisallowStartOnRemoteAppSession (requires v1.3+)', () => {
     expect(getHeadlessXml()).not.toContain('DisallowStartOnRemoteAppSession')
+  })
+})
+
+describe('Task Scheduler replacement state', () => {
+  test('captures disabled and running task states before replacement', () => {
+    expect(captureAutoStartState({
+      isInstalled: () => true,
+      readEnabled: () => false,
+      readState: () => 'Running',
+    })).toEqual({ installed: true, enabled: false, running: true })
+    expect(captureAutoStartState({
+      isInstalled: () => true,
+      readEnabled: () => true,
+      readState: () => 'Running',
+    })).toEqual({ installed: true, enabled: true, running: true })
+  })
+
+  test('restarts a previously running task and restores its disabled flag', () => {
+    const calls: string[] = []
+    expect(restoreAutoStartState(
+      { installed: true, enabled: false, running: true },
+      {
+        enable: () => {
+          calls.push('enable')
+          return true
+        },
+        disable: () => {
+          calls.push('disable')
+          return true
+        },
+        restart: () => {
+          calls.push('restart')
+          return true
+        },
+        stop: () => {
+          calls.push('stop')
+          return true
+        },
+      },
+    )).toBe(true)
+    expect(calls).toEqual(['enable', 'restart', 'disable'])
+  })
+
+  test('keeps a previously enabled but stopped task stopped', () => {
+    const calls: string[] = []
+    expect(restoreAutoStartState(
+      { installed: true, enabled: true, running: false },
+      {
+        enable: () => {
+          calls.push('enable')
+          return true
+        },
+        disable: () => {
+          calls.push('disable')
+          return true
+        },
+        restart: () => {
+          calls.push('restart')
+          return true
+        },
+        stop: () => {
+          calls.push('stop')
+          return true
+        },
+      },
+    )).toBe(true)
+    expect(calls).toEqual(['stop', 'enable'])
   })
 })
 

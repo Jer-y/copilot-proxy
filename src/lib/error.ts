@@ -40,11 +40,13 @@ export class UpstreamTimeoutError extends Error {
 export class JSONResponseError extends Error {
   status: ContentfulStatusCode
   payload: unknown
+  headers?: Headers
 
-  constructor(message: string, status: ContentfulStatusCode, payload: unknown) {
+  constructor(message: string, status: ContentfulStatusCode, payload: unknown, headers?: Headers) {
     super(message)
     this.status = status
     this.payload = payload
+    this.headers = headers ? new Headers(headers) : undefined
   }
 }
 
@@ -60,6 +62,8 @@ export async function forwardError(c: Context, error: unknown) {
   consola.error('Error occurred:', summarizeErrorForLog(error))
 
   if (error instanceof JSONResponseError) {
+    if (error.headers)
+      forwardUpstreamHeaders(c, error.headers)
     return c.json(error.payload as never, error.status)
   }
 
@@ -199,6 +203,21 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
   consola.error('Error occurred:', summarizeErrorForLog(error))
 
   if (error instanceof JSONResponseError) {
+    if (error.headers)
+      forwardUpstreamHeaders(c, error.headers)
+
+    if (error.status === 413) {
+      const requestId = error.headers?.get('x-request-id')
+      return c.json({
+        type: 'error',
+        error: {
+          type: 'request_too_large',
+          message: getJSONResponseErrorMessage(error),
+        },
+        ...(requestId ? { request_id: requestId } : {}),
+      } as never, error.status)
+    }
+
     return c.json(error.payload as never, error.status)
   }
 
@@ -244,6 +263,7 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
             type: errorType,
             message: typeof message === 'string' ? message : JSON.stringify(message),
           },
+          ...(requestId ? { request_id: requestId } : {}),
         },
         status,
       )
@@ -261,6 +281,7 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
             type: mapHttpStatusToAnthropicErrorType(status),
             message: errorText,
           },
+          ...(requestId ? { request_id: requestId } : {}),
         },
         status,
       )
@@ -319,12 +340,28 @@ function summarizeErrorForLog(error: unknown): Record<string, unknown> {
   return { kind: typeof error }
 }
 
+function getJSONResponseErrorMessage(error: JSONResponseError): string {
+  if (error.payload && typeof error.payload === 'object') {
+    const payload = error.payload as Record<string, unknown>
+    if (payload.error && typeof payload.error === 'object') {
+      const nestedError = payload.error as Record<string, unknown>
+      if (typeof nestedError.message === 'string')
+        return nestedError.message
+    }
+    if (typeof payload.message === 'string')
+      return payload.message
+  }
+
+  return error.message
+}
+
 function mapHttpStatusToAnthropicErrorType(status: number): string {
   switch (status) {
     case 400: return 'invalid_request_error'
     case 401: return 'authentication_error'
     case 403: return 'permission_error'
     case 404: return 'not_found_error'
+    case 413: return 'request_too_large'
     case 429: return 'rate_limit_error'
     case 529: return 'overloaded_error'
     default: return status >= 500 ? 'api_error' : 'invalid_request_error'

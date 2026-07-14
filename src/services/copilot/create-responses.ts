@@ -84,7 +84,7 @@ export async function createResponses(
           type: upstreamError?.type ?? 'invalid_request_error',
           code: upstreamError?.code || 'payload_too_large',
         },
-      })
+      }, response.headers)
     }
 
     consola.error('Failed to create responses', response)

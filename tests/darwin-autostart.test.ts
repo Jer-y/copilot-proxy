@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildLaunchctlEnableArgs, buildLaunchctlKickstartArgs, commitAutoStartInstall, isLaunchdJobRunningOutput, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/darwin'
+import { buildLaunchctlDisableArgs, buildLaunchctlEnableArgs, buildLaunchctlKickstartArgs, captureAutoStartState, commitAutoStartInstall, isLaunchdJobEnabledOutput, isLaunchdJobRunningOutput, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/darwin'
 
 describe('launchd restart', () => {
   test('targets the GUI domain for reliable loaded-agent restarts', () => {
@@ -26,9 +26,82 @@ describe('launchd restart', () => {
     ])
   })
 
+  test('targets the same GUI domain when restoring a disabled override', () => {
+    expect(buildLaunchctlDisableArgs(501)).toEqual([
+      'disable',
+      'gui/501/com.copilot-proxy',
+    ])
+  })
+
   test('recognizes launchctl running state without relying on localized list output', () => {
     expect(isLaunchdJobRunningOutput('state = running\n')).toBe(true)
     expect(isLaunchdJobRunningOutput('state = exited\n')).toBe(false)
+  })
+
+  test('reads the persistent disabled override independently of loaded state', () => {
+    expect(isLaunchdJobEnabledOutput('disabled services = {\n"com.copilot-proxy" => true\n}')).toBe(false)
+    expect(isLaunchdJobEnabledOutput('disabled services = {\n"com.copilot-proxy" => false\n}')).toBe(true)
+    expect(isLaunchdJobEnabledOutput('disabled services = {\n}')).toBe(true)
+  })
+})
+
+describe('launchd replacement state', () => {
+  test('captures the loaded and running state independently of install metadata', () => {
+    expect(captureAutoStartState({
+      isInstalled: () => true,
+      isEnabled: () => false,
+      inspect: () => ({ loaded: true, running: true }),
+    })).toEqual({ installed: true, enabled: false, loaded: true, running: true })
+  })
+
+  test('reloads and restarts a previously running job, then restores its disabled override', () => {
+    const calls: string[] = []
+    let loaded = false
+    expect(restoreAutoStartState(
+      { installed: true, enabled: false, loaded: true, running: true },
+      {
+        disable: () => {
+          calls.push('disable')
+          return true
+        },
+        enable: () => {
+          calls.push('enable')
+          return true
+        },
+        isLoaded: () => loaded,
+        isRunning: () => false,
+        load: () => {
+          calls.push('load')
+          loaded = true
+        },
+        restart: () => {
+          calls.push('restart')
+          return true
+        },
+      },
+    )).toBe(true)
+    expect(calls).toEqual(['enable', 'load', 'restart', 'disable'])
+  })
+
+  test('keeps a previously unloaded job unloaded', () => {
+    const calls: string[] = []
+    expect(restoreAutoStartState(
+      { installed: true, enabled: false, loaded: false, running: false },
+      {
+        disable: () => {
+          calls.push('disable')
+          return true
+        },
+        isLoaded: () => true,
+        isRunning: () => true,
+        stop: () => {
+          calls.push('stop')
+          return true
+        },
+        unload: () => { calls.push('unload') },
+      },
+    )).toBe(true)
+    expect(calls).toEqual(['stop', 'unload', 'disable'])
   })
 })
 

@@ -3,6 +3,7 @@ import type { State } from './state'
 import consola from 'consola'
 
 import { HTTPError } from './error'
+import { MAX_TIMER_DELAY_MS } from './http-timeouts'
 import { sleep } from './utils'
 
 export async function checkRateLimit(state: State) {
@@ -33,7 +34,22 @@ export async function checkRateLimit(state: State) {
     )
     throw new HTTPError(
       'Rate limit exceeded',
-      Response.json({ message: 'Rate limit exceeded' }, { status: 429 }),
+      createRateLimitResponse('Rate limit exceeded', waitTimeSeconds),
+    )
+  }
+
+  // Node and Bun coerce setTimeout delays above MAX_TIMER_DELAY_MS to 1ms.
+  // Reject an over-full wait queue before reserving another slot so a burst of
+  // queued requests cannot turn into immediate upstream traffic. Existing
+  // reservations remain intact and continue to preserve their ordering.
+  if (waitTimeMs > MAX_TIMER_DELAY_MS) {
+    throw new HTTPError(
+      'Rate limit wait queue is full',
+      createRateLimitResponse(
+        'Rate limit wait queue is full',
+        waitTimeSeconds,
+        'rate_limit_queue_full',
+      ),
     )
   }
 
@@ -48,4 +64,17 @@ export async function checkRateLimit(state: State) {
   await sleep(waitTimeMs)
 
   consola.info('Rate limit wait completed, proceeding with request')
+}
+
+function createRateLimitResponse(message: string, retryAfterSeconds: number, code?: string): Response {
+  return Response.json({
+    error: {
+      message,
+      type: 'rate_limit_error',
+      ...(code && { code }),
+    },
+  }, {
+    status: 429,
+    headers: { 'Retry-After': String(retryAfterSeconds) },
+  })
 }
