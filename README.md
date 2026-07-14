@@ -47,6 +47,8 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot 
 - **Gateway Friendly**: Put [New API](https://github.com/QuantumNous/new-api) in front of this proxy to get one deployment that can serve many clients with New API-managed users, API keys, quotas, logs, rate limits, and billing.
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
+- **Bounded Upstream Concurrency**: Optionally cap shared Copilot concurrency and bound the wait queue with `--max-concurrency`, `--max-queue`, and `--queue-timeout-ms`.
+- **Token-Aware Self-Healing**: A request-time upstream `401`, or GitHub's correlation-ID-bearing plain-text `403 Forbidden`, triggers one single-flight short-lived token refresh and one guarded replay. Persistent rejection opens a cooldown circuit instead of creating a refresh storm.
 - **Upstream Resilience Controls**: Use built-in longer Copilot upstream timeouts, tune header/body/connect timeout overrides, and emit Anthropic SSE keepalive `ping` events while waiting for the first translated stream event.
 - **Manual Request Approval**: Approve or deny each request in an interactive foreground TTY; unavailable or timed-out prompts fail closed (`--manual`).
 - **Token Visibility**: Option to display GitHub and Copilot tokens during authentication and refresh for debugging (`--show-token`).
@@ -209,6 +211,10 @@ Recommended setup:
 4. Put any placeholder upstream key in New API if the channel form requires one. copilot-proxy authenticates to GitHub Copilot itself and does not need New API to forward a real upstream provider key.
 5. Give users New API API keys and the New API base URL. Clients should not need direct access to copilot-proxy, `/token`, or the persisted GitHub token.
 
+Keep New API retries disabled for upstream `403` and `429` responses. A retry or failover to another channel backed by the same Copilot identity still hits the same upstream risk bucket and can amplify a temporary restriction. Let copilot-proxy perform its single guarded token recovery; when its recovery circuit is open it returns `503`, `Retry-After`, and `X-Copilot-Proxy-Recovery-State` without sending another GitHub request.
+
+For a shared deployment, configure a final identity-wide concurrency bound on copilot-proxy in addition to New API's per-user limits, for example `--max-concurrency 4 --max-queue 50 --queue-timeout-ms 30000`. These are local protective settings, not documented GitHub service limits; tune them from your own observed workload.
+
 When New API reaches the container using the `copilot-proxy` service name, set `COPILOT_PROXY_ALLOWED_HOSTS=copilot-proxy` on copilot-proxy. Add only the exact internal hostnames clients actually use.
 
 For Claude-compatible clients, use New API's Claude-compatible access layer if your deployment exposes it, or let New API convert/route to the OpenAI-compatible copilot-proxy channel according to your New API channel configuration. For Codex CLI, validate that your New API deployment forwards `/v1/models?client_version=...` query strings unchanged if you want Codex-compatible model catalog and context-window metadata; copilot-proxy supports that catalog path directly.
@@ -267,6 +273,9 @@ The following command line options are available for the `start` command:
 | --manual       | Approve each request in an interactive foreground TTY                         | false      | none  |
 | --rate-limit   | Rate limit in seconds between requests                                        | none       | -r    |
 | --wait         | Wait instead of error when rate limit is hit                                  | false      | -w    |
+| --max-concurrency | Maximum concurrent Copilot upstream requests; disabled when omitted        | none       | none  |
+| --max-queue    | Maximum requests waiting for a concurrency slot (`0` disables queueing)        | 50*        | none  |
+| --queue-timeout-ms | Maximum concurrency-queue wait in milliseconds (`0` disables waiting)     | 30000*     | none  |
 | --headers-timeout-ms | Upstream HTTP response headers timeout in milliseconds (`0` disables timeout) | auto*  | none  |
 | --body-timeout-ms | Upstream HTTP response body timeout in milliseconds (`0` disables timeout) | auto*      | none  |
 | --connect-timeout-ms | Upstream HTTP connect timeout in milliseconds (`0` disables timeout) | auto*      | none  |
@@ -276,7 +285,7 @@ The following command line options are available for the `start` command:
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
 | --daemon       | Run as a legacy app-managed background daemon                                 | false      | -d    |
 
-`auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.
+The `50*` and `30000*` queue defaults apply only after `--max-concurrency` enables the limiter. `auto*` means that on Node.js, requests to `githubcopilot.com` use built-in defaults of `900000ms` headers timeout, `900000ms` body timeout, and `30000ms` connect timeout when no explicit override is provided. Other origins keep Node/undici defaults unless you override them explicitly.
 
 ### Local Security Defaults
 
@@ -330,7 +339,7 @@ When a `/v1/responses` request must be translated to a native Claude `/v1/messag
 
 ## API Endpoints
 
-The OpenAI-compatible Chat Completions, Models, Embeddings, and Responses routes accept both the listed `/v1/...` path and the corresponding unprefixed path. Anthropic Messages is available only under `/v1/messages`; `/usage` and `/token` are unprefixed auxiliary routes.
+The OpenAI-compatible Chat Completions, Models, Embeddings, and Responses routes accept both the listed `/v1/...` path and the corresponding unprefixed path. Anthropic Messages is available only under `/v1/messages`; `/usage`, `/token`, `/livez`, and `/readyz` are unprefixed auxiliary routes.
 
 ### OpenAI Compatible Endpoints
 
@@ -367,6 +376,8 @@ Endpoints for monitoring your Copilot usage and quotas.
 | ------------ | ------ | ------------------------------------------------------------ |
 | `GET /usage` | `GET`  | Get detailed Copilot usage statistics and quota information. |
 | `GET /token` | `GET`  | Get the current Copilot token for local diagnostics. Disabled unless `COPILOT_PROXY_EXPOSE_TOKEN=1`, then restricted to loopback and same-origin reads. |
+| `GET /livez` | `GET`  | Process liveness only; does not claim that the Copilot upstream is available. |
+| `GET /readyz` | `GET` | Passive readiness and non-secret token, recovery-circuit, model-cache, and concurrency status. Returns `503` while the global recovery circuit is not closed. |
 
 ## Example Usage
 
@@ -393,6 +404,9 @@ npx @jer-y/copilot-proxy@latest start --rate-limit 30
 
 # Wait instead of error when rate limit is hit
 npx @jer-y/copilot-proxy@latest start --rate-limit 30 --wait
+
+# Bound shared Copilot concurrency and its local wait queue
+npx @jer-y/copilot-proxy@latest start --max-concurrency 4 --max-queue 50 --queue-timeout-ms 30000
 
 # Persist a GitHub token, then start without the secret argument
 npx @jer-y/copilot-proxy@latest start --github-token ghp_YOUR_TOKEN_HERE
@@ -434,6 +448,9 @@ sudo loginctl enable-linger "$USER"
 # Register and start a native auto-start service (systemd/launchd/Task Scheduler)
 copilot-proxy enable
 
+# Or persist bounded concurrency directly in the native service
+copilot-proxy enable --max-concurrency 4 --max-queue 50 --queue-timeout-ms 30000
+
 # Check service status
 copilot-proxy status
 
@@ -456,7 +473,7 @@ copilot-proxy disable
 copilot-proxy start -d
 ```
 
-`enable` rejects `_npx`, `pnpm dlx`, `yarn dlx`, and `bunx` cache paths because a long-lived service would break as soon as that cache is cleaned. A global installation or a stable source checkout is required for native auto-start.
+`enable` rejects `_npx`, `pnpm dlx`, `yarn dlx`, and `bunx` cache paths because a long-lived service would break as soon as that cache is cleaned. A global installation or a stable source checkout is required for native auto-start. Re-running `enable` preserves the previously installed native configuration when no legacy daemon configuration is present; explicit concurrency options override it. Use `copilot-proxy enable --clear-concurrency-limit` to remove persisted concurrency and queue settings.
 
 ## Using the Usage Viewer
 
@@ -567,6 +584,8 @@ See [docs/copilot-capability-validation.md](docs/copilot-capability-validation.m
   - `--manual`: Enables fail-closed approval for each request in an interactive foreground TTY. It rejects requests if the prompt cannot be shown or times out.
   - `--rate-limit <seconds>`: Enforces a minimum time interval between requests. For example, `copilot-proxy start --rate-limit 30` will ensure there's at least a 30-second gap between requests.
   - `--wait`: Use this with `--rate-limit`. It makes the server wait for the cooldown period to end instead of rejecting the request with an error. This is useful for clients that don't automatically retry on rate limit errors.
+  - `--max-concurrency <count>`: Caps simultaneous upstream work for the shared Copilot identity. `--max-queue` and `--queue-timeout-ms` bound local waiting; overflow is returned without touching GitHub.
+- Automatic authentication recovery is deliberately bounded: the proxy refreshes only the short-lived Copilot token, replays at most once before any downstream bytes are sent, and stops retrying when a fresh-token canary is still rejected. Do not build a service-restart or token-refresh loop around persistent `403` responses.
 - If you have a GitHub business or enterprise plan account with Copilot, use the `--account-type` flag (e.g., `--account-type business`). See the [official documentation](https://docs.github.com/en/enterprise-cloud@latest/copilot/managing-copilot/managing-github-copilot-in-your-organization/managing-access-to-github-copilot-in-your-organization/managing-github-copilot-access-to-your-organizations-network#configuring-copilot-subscription-based-network-routing-for-your-enterprise-or-organization) for more details.
 
 ## Acknowledgments

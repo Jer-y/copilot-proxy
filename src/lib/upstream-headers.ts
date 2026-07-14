@@ -6,6 +6,9 @@ const FORWARDED_RESPONSE_HEADERS = new Set([
   'cache-creation-input-tokens',
   'cache-read-input-tokens',
   'retry-after',
+  'x-copilot-proxy-recovery-state',
+  'x-copilot-service-request-id',
+  'x-github-request-id',
   'x-request-id',
 ])
 

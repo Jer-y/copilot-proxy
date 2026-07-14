@@ -2,6 +2,7 @@ import consola from 'consola'
 
 interface StreamTimingOptions {
   endpoint: string
+  onIteratorExit?: (reason?: unknown) => Promise<void> | void
   requestStartedAt: number
 }
 
@@ -60,6 +61,15 @@ export async function* instrumentCopilotEventStream<T extends CopilotStreamEvent
     throw error
   }
   finally {
+    try {
+      await options.onIteratorExit?.('Copilot SSE iterator exited')
+    }
+    catch (error) {
+      consola.debug(`Upstream ${options.endpoint} stream cleanup failed:`, {
+        durationMs: Date.now() - options.requestStartedAt,
+        error,
+      })
+    }
     if (!failed) {
       consola.debug(`Upstream ${options.endpoint} stream completed:`, {
         durationMs: Date.now() - options.requestStartedAt,

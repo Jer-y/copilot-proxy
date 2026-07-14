@@ -2,6 +2,8 @@ import { HTTPError } from '~/lib/error'
 
 const SAFE_ERROR_RESPONSE_HEADERS = [
   'retry-after',
+  'x-copilot-service-request-id',
+  'x-github-request-id',
   'x-request-id',
 ] as const
 

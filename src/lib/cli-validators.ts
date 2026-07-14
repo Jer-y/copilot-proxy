@@ -31,6 +31,18 @@ export function validateRateLimit(raw: string | undefined): { valid: boolean, va
   return { valid: true, value: rateLimit }
 }
 
+export function validateMaxConcurrency(raw: string | undefined): { valid: boolean, value: number | undefined } {
+  return validateOptionalInteger(raw, value => value > 0)
+}
+
+export function validateMaxQueue(raw: string | undefined): { valid: boolean, value: number | undefined } {
+  return validateOptionalInteger(raw, value => value >= 0)
+}
+
+export function validateQueueTimeoutMs(raw: string | undefined): { valid: boolean, value: number | undefined } {
+  return validateTimeoutMs(raw)
+}
+
 export function validateTimeoutMs(raw: string | undefined): { valid: boolean, value: number | undefined } {
   if (raw === undefined) {
     return { valid: true, value: undefined }
@@ -52,4 +64,18 @@ export function validateTimeoutMs(raw: string | undefined): { valid: boolean, va
 
 export function validateAccountType(value: string): value is AccountType {
   return (VALID_ACCOUNT_TYPES as readonly string[]).includes(value)
+}
+
+function validateOptionalInteger(
+  raw: string | undefined,
+  validateRange: (value: number) => boolean,
+): { valid: boolean, value: number | undefined } {
+  if (raw === undefined)
+    return { valid: true, value: undefined }
+
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || !validateRange(value) || String(value) !== raw)
+    return { valid: false, value: undefined }
+
+  return { valid: true, value }
 }

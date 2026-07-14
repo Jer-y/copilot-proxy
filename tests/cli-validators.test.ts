@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { validateAccountType, validatePort, validateRateLimit, validateTimeoutMs } from '~/lib/cli-validators'
+import { validateAccountType, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from '~/lib/cli-validators'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 describe('validatePort', () => {
@@ -65,6 +65,30 @@ describe('validateAccountType', () => {
   })
   test('unknown type is invalid', () => {
     expect(validateAccountType('team')).toBe(false)
+  })
+})
+
+describe('concurrency option validators', () => {
+  test('validates an optional positive max concurrency', () => {
+    expect(validateMaxConcurrency(undefined)).toEqual({ valid: true, value: undefined })
+    expect(validateMaxConcurrency('1')).toEqual({ valid: true, value: 1 })
+    expect(validateMaxConcurrency('32')).toEqual({ valid: true, value: 32 })
+    expect(validateMaxConcurrency('0')).toEqual({ valid: false, value: undefined })
+    expect(validateMaxConcurrency('1.5')).toEqual({ valid: false, value: undefined })
+  })
+
+  test('allows zero to disable queueing and rejects unsafe queue sizes', () => {
+    expect(validateMaxQueue(undefined)).toEqual({ valid: true, value: undefined })
+    expect(validateMaxQueue('0')).toEqual({ valid: true, value: 0 })
+    expect(validateMaxQueue('50')).toEqual({ valid: true, value: 50 })
+    expect(validateMaxQueue('-1')).toEqual({ valid: false, value: undefined })
+    expect(validateMaxQueue(String(Number.MAX_SAFE_INTEGER + 1))).toEqual({ valid: false, value: undefined })
+  })
+
+  test('allows zero queue wait and enforces the runtime timer maximum', () => {
+    expect(validateQueueTimeoutMs('0')).toEqual({ valid: true, value: 0 })
+    expect(validateQueueTimeoutMs('30000')).toEqual({ valid: true, value: 30_000 })
+    expect(validateQueueTimeoutMs(String(MAX_TIMER_DELAY_MS + 1))).toEqual({ valid: false, value: undefined })
   })
 })
 

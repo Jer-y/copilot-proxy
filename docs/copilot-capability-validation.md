@@ -209,6 +209,29 @@ Use the probe outcome to decide how aggressive the proxy should be:
 - If a probe is `unsupported`, keep the local parsing improvement but omit, downgrade, or explicitly surface the upstream-aligned unsupported error for that surface.
 - If a probe fails for environmental reasons, rerun the suite before making routing or translation decisions.
 
+## Authentication-recovery and overload validation
+
+Request-time authentication recovery is narrower than general retry logic. Validate it deterministically at a mocked Copilot boundary before using live credentials:
+
+- A first upstream `401`, or the observed GitHub opaque rejection (`403`, plain-text `Forbidden`, correlation request ID present, no `Retry-After`), may perform exactly one single-flight short-lived token refresh and one replay.
+- The replay must rebuild `Authorization` and `x-request-id`. Thirty-two concurrent failures for one endpoint/model must still produce one token exchange and one canary decision.
+- Structured permission/model/organization `403`, local proxy `403`, `429`, 5xx, timeout, reset, and failures after a 2xx/SSE event must produce zero authentication replays.
+- A fresh-token replay that is still rejected opens the scoped cooldown circuit. Two persistently rejected endpoint/model scopes may open the global circuit; while open, `/readyz` is `503` and new work must not reach GitHub.
+- When `--max-concurrency` is enabled, prove that the lease remains active until a non-stream body or SSE stream completes/cancels, and that queue overflow returns locally without an upstream fetch.
+
+The deterministic route gate is:
+
+```sh
+bun test \
+  tests/copilot-auth-recovery.test.ts \
+  tests/auth-recovery-routes.test.ts \
+  tests/concurrency-limiter.test.ts \
+  tests/health-routes.test.ts \
+  tests/request-signal-regression.test.ts
+```
+
+For a real-machine recovery smoke, invalidate only the in-memory short-lived Copilot token in a disposable proxy process; never corrupt or replace the persisted GitHub credential. Then run one real Codex request through `/v1/responses` and one real Claude request through `/v1/messages`. Success requires a single refresh, a new upstream request ID, one terminal client response, no duplicated stream events, and a closed recovery circuit. Persistent GitHub risk enforcement must be recorded and cooled down, not induced repeatedly or bypassed by token/account/IP rotation.
+
 ## Codex CLI smoke tests
 
 Use a real `codex` CLI smoke when changing Responses routing, request adaptation, tool handling, hosted tools, structured output, image inputs, or Responses stream handling.

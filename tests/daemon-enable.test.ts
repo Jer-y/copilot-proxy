@@ -1,7 +1,7 @@
 import type { DaemonConfig } from '../src/daemon/config'
 
 import { describe, expect, test } from 'bun:test'
-import { buildServiceStartArgs, isEphemeralPackageRunnerPath, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
+import { buildServiceStartArgs, isEphemeralPackageRunnerPath, resolveNativeServiceEnableConfig, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
 import { readinessProbeHostname, waitForNativeServiceReadiness } from '../src/daemon/native-service'
 import { PATHS } from '../src/lib/paths'
 
@@ -43,6 +43,9 @@ describe('buildServiceStartArgs', () => {
       manual: true,
       rateLimit: 9,
       rateLimitWait: true,
+      maxConcurrency: 12,
+      maxQueue: 50,
+      queueTimeoutMs: 30000,
       headersTimeoutMs: 600000,
       bodyTimeoutMs: 900000,
       connectTimeoutMs: 15000,
@@ -69,6 +72,12 @@ describe('buildServiceStartArgs', () => {
       '--rate-limit',
       '9',
       '--wait',
+      '--max-concurrency',
+      '12',
+      '--max-queue',
+      '50',
+      '--queue-timeout-ms',
+      '30000',
       '--headers-timeout-ms',
       '600000',
       '--body-timeout-ms',
@@ -88,6 +97,109 @@ describe('buildServiceStartArgs', () => {
       '--_instance-token',
       'instance_token_20260713',
     ])
+  })
+})
+
+describe('resolveNativeServiceEnableConfig', () => {
+  test('reuses the installed native config when no legacy config exists', () => {
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig: {
+        ...baseConfig,
+        host: '172.17.0.1',
+        accountType: 'enterprise',
+        maxConcurrency: 12,
+        maxQueue: 24,
+        queueTimeoutMs: 5000,
+      },
+    })).toEqual({
+      ...baseConfig,
+      host: '172.17.0.1',
+      accountType: 'enterprise',
+      maxConcurrency: 12,
+      maxQueue: 24,
+      queueTimeoutMs: 5000,
+    })
+  })
+
+  test('uses the installed native config ahead of stale legacy config after migration', () => {
+    expect(resolveNativeServiceEnableConfig({
+      savedConfig: { ...baseConfig, host: '127.0.0.2' },
+      installedConfig: {
+        ...baseConfig,
+        host: '172.17.0.1',
+        maxConcurrency: 12,
+      },
+    })).toEqual({
+      ...baseConfig,
+      host: '172.17.0.1',
+      maxConcurrency: 12,
+    })
+  })
+
+  test('applies explicit concurrency overrides and supports clearing them', () => {
+    const installedConfig = {
+      ...baseConfig,
+      maxConcurrency: 12,
+      maxQueue: 24,
+      queueTimeoutMs: 5000,
+    }
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig,
+      maxConcurrency: '8',
+      maxQueue: '16',
+      queueTimeoutMs: '2500',
+    })).toMatchObject({
+      maxConcurrency: 8,
+      maxQueue: 16,
+      queueTimeoutMs: 2500,
+    })
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig,
+      clearConcurrencyLimit: true,
+    })).toEqual(baseConfig)
+  })
+
+  test('does not restore stale legacy concurrency settings on a later enable', () => {
+    const staleLegacyConfig = {
+      ...baseConfig,
+      maxConcurrency: 12,
+      maxQueue: 24,
+      queueTimeoutMs: 5000,
+    }
+    const clearedConfig = resolveNativeServiceEnableConfig({
+      savedConfig: staleLegacyConfig,
+      installedConfig: staleLegacyConfig,
+      clearConcurrencyLimit: true,
+    })
+    expect(resolveNativeServiceEnableConfig({
+      savedConfig: staleLegacyConfig,
+      installedConfig: clearedConfig,
+    })).toEqual(baseConfig)
+
+    const overriddenConfig = resolveNativeServiceEnableConfig({
+      savedConfig: staleLegacyConfig,
+      installedConfig: baseConfig,
+      maxConcurrency: '8',
+      maxQueue: '16',
+      queueTimeoutMs: '2500',
+    })
+    expect(resolveNativeServiceEnableConfig({
+      savedConfig: staleLegacyConfig,
+      installedConfig: overriddenConfig,
+    })).toMatchObject({
+      maxConcurrency: 8,
+      maxQueue: 16,
+      queueTimeoutMs: 2500,
+    })
+  })
+
+  test('rejects invalid and conflicting concurrency overrides', () => {
+    expect(() => resolveNativeServiceEnableConfig({ maxConcurrency: '0' })).toThrow('--max-concurrency')
+    expect(() => resolveNativeServiceEnableConfig({ maxQueue: '1' })).toThrow('require maxConcurrency')
+    expect(() => resolveNativeServiceEnableConfig({
+      maxConcurrency: '4',
+      clearConcurrencyLimit: true,
+    })).toThrow('cannot be combined')
   })
 })
 

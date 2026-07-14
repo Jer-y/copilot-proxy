@@ -95,7 +95,12 @@ describe('HTTP 200 upstream response validation', () => {
   test('Responses error envelopes become 502 and retain safe upstream headers', async () => {
     responseFactory = () => jsonResponse(
       { error: { message: 'upstream failed despite HTTP 200' } },
-      { 'retry-after': '9', 'x-request-id': 'responses-request-id' },
+      {
+        'retry-after': '9',
+        'x-copilot-service-request-id': 'responses-service-request-id',
+        'x-github-request-id': 'responses-github-request-id',
+        'x-request-id': 'responses-request-id',
+      },
     )
 
     const response = await post('/v1/responses', {
@@ -104,6 +109,8 @@ describe('HTTP 200 upstream response validation', () => {
     })
 
     expect(response.headers.get('retry-after')).toBe('9')
+    expect(response.headers.get('x-copilot-service-request-id')).toBe('responses-service-request-id')
+    expect(response.headers.get('x-github-request-id')).toBe('responses-github-request-id')
     expect(response.headers.get('x-request-id')).toBe('responses-request-id')
     await expectOpenAIInvalidUpstreamResponse(response)
   })
@@ -138,7 +145,12 @@ describe('HTTP 200 upstream response validation', () => {
   test('Anthropic error envelopes become Anthropic-shaped 502 responses', async () => {
     responseFactory = () => jsonResponse(
       { type: 'error', error: { type: 'api_error', message: 'fake success' } },
-      { 'retry-after': '4', 'x-request-id': 'messages-request-id' },
+      {
+        'retry-after': '4',
+        'x-copilot-service-request-id': 'messages-service-request-id',
+        'x-github-request-id': 'messages-github-request-id',
+        'x-request-id': 'messages-request-id',
+      },
     )
 
     const response = await post('/v1/messages', {
@@ -149,6 +161,8 @@ describe('HTTP 200 upstream response validation', () => {
 
     expect(response.status).toBe(502)
     expect(response.headers.get('retry-after')).toBe('4')
+    expect(response.headers.get('x-copilot-service-request-id')).toBe('messages-service-request-id')
+    expect(response.headers.get('x-github-request-id')).toBe('messages-github-request-id')
     expect(response.headers.get('x-request-id')).toBe('messages-request-id')
     expect(await response.json()).toMatchObject({
       type: 'error',

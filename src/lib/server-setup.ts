@@ -2,6 +2,7 @@ import type { RunServerOptions } from '~/start'
 import process from 'node:process'
 import consola from 'consola'
 
+import { AsyncConcurrencyLimiter, resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { ensurePaths } from '~/lib/paths'
 import { initializeNodeHttpClient } from '~/lib/proxy'
 import { state } from '~/lib/state'
@@ -51,6 +52,17 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
+  const concurrencyConfig = resolveConcurrencyLimitConfig({
+    maxConcurrency: options.maxConcurrency,
+    maxQueue: options.maxQueue,
+    queueTimeoutMs: options.queueTimeoutMs,
+  })
+  state.concurrencyLimiter = concurrencyConfig
+    ? new AsyncConcurrencyLimiter(concurrencyConfig)
+    : undefined
+  if (concurrencyConfig) {
+    consola.info('Configured Copilot upstream concurrency control:', concurrencyConfig)
+  }
 
   await ensurePaths()
   await cacheVSCodeVersion()

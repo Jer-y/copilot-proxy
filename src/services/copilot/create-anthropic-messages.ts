@@ -20,6 +20,7 @@ import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
+import { fetchAuthenticatedCopilot } from './authenticated-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
 import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
@@ -45,11 +46,16 @@ export async function createAnthropicMessages(
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
   const upstreamController = createUpstreamRequestController(options?.signal)
-  const response = await fetchCopilot(`${copilotBaseUrl(state)}/v1/messages`, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(payload, options),
-    body,
+  const response = await fetchAuthenticatedCopilot({
+    endpoint: '/v1/messages',
+    model: payload.model,
     signal: upstreamController.signal,
+    request: () => fetchCopilot(`${copilotBaseUrl(state)}/v1/messages`, {
+      method: 'POST',
+      headers: buildAnthropicRequestHeaders(payload, options),
+      body,
+      signal: upstreamController.signal,
+    }),
   })
   logUpstreamHeadersReceived({
     endpoint: '/v1/messages',
@@ -70,6 +76,7 @@ export async function createAnthropicMessages(
     )
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/v1/messages',
+      onIteratorExit: reason => upstreamController.cancel(response, reason),
       requestStartedAt,
     })
     return {
@@ -100,11 +107,16 @@ export async function createAnthropicCountTokens(
     throw new Error('Copilot token not found')
 
   const requestStartedAt = Date.now()
-  const response = await fetchCopilot(`${copilotBaseUrl(state)}/v1/messages/count_tokens`, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(payload, options),
-    body: JSON.stringify(payload),
+  const response = await fetchAuthenticatedCopilot({
+    endpoint: '/v1/messages/count_tokens',
+    model: payload.model,
     signal: options?.signal,
+    request: () => fetchCopilot(`${copilotBaseUrl(state)}/v1/messages/count_tokens`, {
+      method: 'POST',
+      headers: buildAnthropicRequestHeaders(payload, options),
+      body: JSON.stringify(payload),
+      signal: options?.signal,
+    }),
   })
   logUpstreamHeadersReceived({
     endpoint: '/v1/messages/count_tokens',

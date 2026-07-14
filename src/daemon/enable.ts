@@ -1,5 +1,6 @@
 import type { DaemonConfig } from '~/daemon/config'
 import type { NativeServiceActivationState, NativeServiceCommands } from '~/daemon/native-service'
+import type { NativeServiceConfig } from '~/daemon/service-install-state'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -14,6 +15,8 @@ import { isDaemonRunning } from '~/daemon/pid'
 import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
 import { loadNativeServiceInstallState, NATIVE_SERVICE_DEFINITION_PATH_ENV, removeNativeServiceInstallState, saveNativeServiceInstallState, toNativeServiceConfig } from '~/daemon/service-install-state'
 import { stopDaemon } from '~/daemon/stop'
+import { validateMaxConcurrency, validateMaxQueue, validateQueueTimeoutMs } from '~/lib/cli-validators'
+import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { getUserHomeDir, PATHS } from '~/lib/paths'
 
 export function buildServiceStartArgs(
@@ -43,6 +46,12 @@ export function buildServiceStartArgs(
     args.push('--rate-limit', String(config.rateLimit))
   if (config.rateLimitWait)
     args.push('--wait')
+  if (config.maxConcurrency !== undefined)
+    args.push('--max-concurrency', String(config.maxConcurrency))
+  if (config.maxQueue !== undefined)
+    args.push('--max-queue', String(config.maxQueue))
+  if (config.queueTimeoutMs !== undefined)
+    args.push('--queue-timeout-ms', String(config.queueTimeoutMs))
   if (config.headersTimeoutMs !== undefined)
     args.push('--headers-timeout-ms', String(config.headersTimeoutMs))
   if (config.bodyTimeoutMs !== undefined)
@@ -55,6 +64,59 @@ export function buildServiceStartArgs(
     args.push('--_instance-token', instanceToken)
 
   return args
+}
+
+interface NativeServiceEnableConfigOptions {
+  savedConfig?: DaemonConfig
+  installedConfig?: NativeServiceConfig
+  maxConcurrency?: string
+  maxQueue?: string
+  queueTimeoutMs?: string
+  clearConcurrencyLimit?: boolean
+}
+
+export function resolveNativeServiceEnableConfig(
+  options: NativeServiceEnableConfigOptions,
+): DaemonConfig {
+  const config: DaemonConfig = {
+    ...(options.installedConfig
+      ?? options.savedConfig
+      ?? DEFAULT_SERVICE_CONFIG),
+  }
+
+  const hasConcurrencyOverride = options.maxConcurrency !== undefined
+    || options.maxQueue !== undefined
+    || options.queueTimeoutMs !== undefined
+  if (options.clearConcurrencyLimit && hasConcurrencyOverride) {
+    throw new TypeError('--clear-concurrency-limit cannot be combined with concurrency limit options')
+  }
+
+  if (options.clearConcurrencyLimit) {
+    delete config.maxConcurrency
+    delete config.maxQueue
+    delete config.queueTimeoutMs
+    return config
+  }
+
+  const maxConcurrency = validateMaxConcurrency(options.maxConcurrency)
+  if (!maxConcurrency.valid)
+    throw new TypeError('--max-concurrency must be a positive integer')
+  const maxQueue = validateMaxQueue(options.maxQueue)
+  if (!maxQueue.valid)
+    throw new TypeError('--max-queue must be a non-negative integer')
+  const queueTimeoutMs = validateQueueTimeoutMs(options.queueTimeoutMs)
+  if (!queueTimeoutMs.valid)
+    throw new TypeError('--queue-timeout-ms must be an integer between 0 and the platform timer limit')
+
+  if (options.maxConcurrency !== undefined)
+    config.maxConcurrency = maxConcurrency.value
+  if (options.maxQueue !== undefined)
+    config.maxQueue = maxQueue.value
+  if (options.queueTimeoutMs !== undefined)
+    config.queueTimeoutMs = queueTimeoutMs.value
+
+  resolveConcurrencyLimitConfig(config)
+  return config
 }
 
 export function resolveNativeServiceInstallLocations(
@@ -98,11 +160,49 @@ export const enable = defineCommand({
     name: 'enable',
     description: 'Register as auto-start service',
   },
-  async run() {
+  args: {
+    'max-concurrency': {
+      type: 'string',
+      description: 'Maximum concurrent Copilot upstream requests',
+    },
+    'max-queue': {
+      type: 'string',
+      description: 'Maximum requests waiting for a concurrency slot',
+    },
+    'queue-timeout-ms': {
+      type: 'string',
+      description: 'Maximum time to wait for a concurrency slot',
+    },
+    'clear-concurrency-limit': {
+      type: 'boolean',
+      default: false,
+      description: 'Remove persisted concurrency and queue limits',
+    },
+  },
+  async run({ args }) {
+    const previousInstallState = loadNativeServiceInstallState()
     const savedConfig = loadDaemonConfig()
-    const config = savedConfig ?? { ...DEFAULT_SERVICE_CONFIG }
-    if (!savedConfig)
+    let config: DaemonConfig
+    try {
+      config = resolveNativeServiceEnableConfig({
+        savedConfig: savedConfig ?? undefined,
+        installedConfig: previousInstallState?.config,
+        maxConcurrency: args['max-concurrency'],
+        maxQueue: args['max-queue'],
+        queueTimeoutMs: args['queue-timeout-ms'],
+        clearConcurrencyLimit: args['clear-concurrency-limit'],
+      })
+    }
+    catch (error) {
+      consola.error(error instanceof Error ? error.message : error)
+      process.exit(1)
+    }
+    if (previousInstallState?.config)
+      consola.info('Reusing the previously installed native service config.')
+    else if (!savedConfig)
       consola.info('No legacy daemon config found. Using default native service config.')
+    else
+      consola.info('Migrating the legacy daemon config to the native service config.')
     if (config.showToken) {
       consola.error('Cannot enable auto-start while --show-token is persisted in the legacy daemon config. Save the config again without --show-token first.')
       process.exit(1)
@@ -137,12 +237,11 @@ export const enable = defineCommand({
     }
 
     const instanceToken = randomUUID()
-    const args = buildServiceStartArgs(scriptPath, config, instanceToken)
+    const serviceArgs = buildServiceStartArgs(scriptPath, config, instanceToken)
     if (platform === 'darwin' || platform === 'win32')
-      args.push('--_log-file')
+      serviceArgs.push('--_log-file')
 
     const previousServiceEnvironment = readExistingServiceEnvironment()
-    const previousInstallState = loadNativeServiceInstallState()
     let replacementServiceEnvironment: ExistingServiceEnvironment | undefined
     let replacementInstallState: ReturnType<typeof loadNativeServiceInstallState>
     try {
@@ -171,15 +270,15 @@ export const enable = defineCommand({
     try {
       if (platform === 'linux') {
         const { installAutoStart } = await import('~/daemon/platform/linux')
-        success = await installAutoStart(execPath, args)
+        success = await installAutoStart(execPath, serviceArgs)
       }
       else if (platform === 'darwin') {
         const { installAutoStart } = await import('~/daemon/platform/darwin')
-        success = await installAutoStart(execPath, args)
+        success = await installAutoStart(execPath, serviceArgs)
       }
       else if (platform === 'win32') {
         const { installAutoStart } = await import('~/daemon/platform/win32')
-        success = await installAutoStart(execPath, args)
+        success = await installAutoStart(execPath, serviceArgs)
       }
       else {
         throw new Error(`Unsupported platform: ${platform}`)

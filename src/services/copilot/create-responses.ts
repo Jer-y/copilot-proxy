@@ -5,6 +5,7 @@ import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
+import { fetchAuthenticatedCopilot } from './authenticated-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
 import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
@@ -45,11 +46,6 @@ export async function createResponses(
     || ('type' in item && item.type === 'function_call'),
   )
 
-  const headers: Record<string, string> = {
-    ...copilotHeaders(state, hasVision),
-    'X-Initiator': isAgentCall ? 'agent' : 'user',
-  }
-
   const body = JSON.stringify(upstreamPayload)
   consola.debug('Forwarding Responses API request:', {
     ...payloadSummary,
@@ -58,11 +54,19 @@ export async function createResponses(
 
   const requestStartedAt = Date.now()
   const upstreamController = createUpstreamRequestController(options?.signal)
-  const response = await fetchCopilot(`${copilotBaseUrl(state)}/responses`, {
-    method: 'POST',
-    headers,
-    body,
+  const response = await fetchAuthenticatedCopilot({
+    endpoint: '/responses',
+    model: upstreamPayload.model,
     signal: upstreamController.signal,
+    request: () => fetchCopilot(`${copilotBaseUrl(state)}/responses`, {
+      method: 'POST',
+      headers: {
+        ...copilotHeaders(state, hasVision),
+        'X-Initiator': isAgentCall ? 'agent' : 'user',
+      },
+      body,
+      signal: upstreamController.signal,
+    }),
   })
   logUpstreamHeadersReceived({
     endpoint: '/responses',
@@ -98,6 +102,7 @@ export async function createResponses(
     )
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/responses',
+      onIteratorExit: reason => upstreamController.cancel(response, reason),
       requestStartedAt,
     })
     return {
@@ -168,15 +173,19 @@ export async function forwardResponsesEndpoint(
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
-  const response = await fetchCopilot(`${copilotBaseUrl(state)}${path}`, {
-    method: options.method,
-    headers: {
-      ...copilotHeaders(state),
-      'X-Initiator': 'user',
-      ...options.headers,
-    },
-    body: options.body,
+  const response = await fetchAuthenticatedCopilot({
+    endpoint: path,
     signal: options.signal,
+    request: () => fetchCopilot(`${copilotBaseUrl(state)}${path}`, {
+      method: options.method,
+      headers: {
+        ...copilotHeaders(state),
+        'X-Initiator': 'user',
+        ...options.headers,
+      },
+      body: options.body,
+      signal: options.signal,
+    }),
   })
 
   if (!response.ok) {

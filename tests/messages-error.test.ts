@@ -124,6 +124,8 @@ describe('messages error paths', () => {
         headers: {
           'Content-Type': 'application/json',
           'Retry-After': '11',
+          'X-Copilot-Service-Request-Id': 'copilot_service_messages_too_large',
+          'X-GitHub-Request-Id': 'github_messages_too_large',
           'X-Request-Id': 'req_messages_too_large',
           'X-RateLimit-Remaining': '7',
           'Set-Cookie': 'secret=not-forwarded',
@@ -143,6 +145,8 @@ describe('messages error paths', () => {
 
     expect(res.status).toBe(413)
     expect(res.headers.get('retry-after')).toBe('11')
+    expect(res.headers.get('x-copilot-service-request-id')).toBe('copilot_service_messages_too_large')
+    expect(res.headers.get('x-github-request-id')).toBe('github_messages_too_large')
     expect(res.headers.get('x-request-id')).toBe('req_messages_too_large')
     expect(res.headers.get('x-ratelimit-remaining')).toBe('7')
     expect(res.headers.get('set-cookie')).toBeNull()
@@ -153,6 +157,51 @@ describe('messages error paths', () => {
         message: expect.stringContaining('Upstream /responses rejected the request with 413 Payload Too Large.'),
       },
       request_id: 'req_messages_too_large',
+    })
+  })
+
+  test('native Anthropic errors preserve upstream correlation headers', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    globalThis.fetch = mock(async (url: string) => {
+      expect(url.endsWith('/v1/messages')).toBe(true)
+      return new Response('forbidden\n', {
+        status: 403,
+        headers: {
+          'Content-Type': 'text/plain',
+          'Retry-After': '13',
+          'X-Copilot-Service-Request-Id': 'copilot_service_forbidden',
+          'X-GitHub-Request-Id': 'github_forbidden',
+          'X-Request-Id': 'req_forbidden',
+          'Set-Cookie': 'secret=not-forwarded',
+        },
+      })
+    }) as unknown as typeof fetch
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4.8',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(res.status).toBe(403)
+    expect(res.headers.get('retry-after')).toBe('13')
+    expect(res.headers.get('x-copilot-service-request-id')).toBe('copilot_service_forbidden')
+    expect(res.headers.get('x-github-request-id')).toBe('github_forbidden')
+    expect(res.headers.get('x-request-id')).toBe('req_forbidden')
+    expect(res.headers.get('set-cookie')).toBeNull()
+    expect(await res.json()).toEqual({
+      type: 'error',
+      error: {
+        type: 'permission_error',
+        message: 'forbidden\n',
+      },
+      request_id: 'req_forbidden',
     })
   })
 

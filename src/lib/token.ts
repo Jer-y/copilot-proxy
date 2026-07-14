@@ -44,7 +44,7 @@ const refreshTokenFailureState: RefreshTokenFailureState = {
   consecutiveFailures: 0,
 }
 
-interface RefreshTokenWithRetryDeps {
+export interface RefreshTokenWithRetryDeps {
   fetchToken?: typeof getCopilotToken
   sleepFn?: typeof sleep
   failureState?: RefreshTokenFailureState
@@ -53,6 +53,62 @@ interface RefreshTokenWithRetryDeps {
 
 let refreshInFlight: Promise<GetCopilotTokenResponse | undefined> | undefined
 type RefreshTimer = ReturnType<typeof setTimeout>
+
+const FAILED_REFRESH_RETRY_DELAY_MS = 60_000
+
+export type TokenRefreshFailureKind = 'permanent_auth' | 'transient'
+export type ReactiveTokenRefreshOutcome = 'refreshed' | 'already_refreshed' | 'failed'
+
+export interface CopilotTokenSnapshot {
+  generation: number
+}
+
+export interface ReactiveTokenRefreshResult {
+  generation: number
+  outcome: ReactiveTokenRefreshOutcome
+}
+
+export interface CopilotTokenLifecycleStatus {
+  consecutiveRefreshFailures: number
+  expiresAt?: number
+  expiresInMs?: number
+  generation: number
+  lastReactiveRefreshAt?: number
+  lastReactiveRefreshOutcome?: ReactiveTokenRefreshOutcome
+  lastRefreshAttemptAt?: number
+  lastRefreshFailureAt?: number
+  lastRefreshFailureKind?: TokenRefreshFailureKind
+  lastRefreshFailureStatus?: number
+  lastRefreshSuccessAt?: number
+  nextRefreshAt?: number
+  reactiveRefreshInFlight: boolean
+  refreshInFlight: boolean
+  refreshScheduled: boolean
+  tokenAvailable: boolean
+}
+
+interface MutableTokenLifecycleStatus {
+  consecutiveRefreshFailures: number
+  expiresAt?: number
+  generation: number
+  lastReactiveRefreshAt?: number
+  lastReactiveRefreshOutcome?: ReactiveTokenRefreshOutcome
+  lastRefreshAttemptAt?: number
+  lastRefreshFailureAt?: number
+  lastRefreshFailureKind?: TokenRefreshFailureKind
+  lastRefreshFailureStatus?: number
+  lastRefreshSuccessAt?: number
+}
+
+const tokenLifecycleStatus: MutableTokenLifecycleStatus = {
+  consecutiveRefreshFailures: 0,
+  generation: 0,
+}
+
+export interface ReactiveTokenRefreshDeps {
+  refreshDeps?: Omit<RefreshTokenWithRetryDeps, 'useLock'>
+  schedulerDeps?: TokenRefreshSchedulerDeps
+}
 
 export interface TokenRefreshSchedulerDeps {
   setTimeoutFn?: (callback: () => void, delayMs: number) => RefreshTimer
@@ -63,6 +119,95 @@ export interface TokenRefreshSchedulerDeps {
 let copilotTokenRefreshTimer: RefreshTimer | undefined
 let clearCopilotTokenRefreshTimer: ((timer: RefreshTimer) => void) | undefined
 let copilotTokenRefreshGeneration = 0
+let copilotTokenRefreshScheduledForTokenGeneration: number | undefined
+let nextCopilotTokenRefreshAt: number | undefined
+let reactiveRefreshInFlight: Promise<ReactiveTokenRefreshResult> | undefined
+let lastKnownRefreshInSeconds: number | undefined
+const copilotTokenSnapshotValues = new WeakMap<CopilotTokenSnapshot, string | undefined>()
+
+export function getCopilotTokenSnapshot(): CopilotTokenSnapshot {
+  const snapshot = {
+    generation: tokenLifecycleStatus.generation,
+  }
+  copilotTokenSnapshotValues.set(snapshot, state.copilotToken)
+  return snapshot
+}
+
+export function getCopilotTokenLifecycleStatus(now = Date.now()): CopilotTokenLifecycleStatus {
+  return {
+    ...tokenLifecycleStatus,
+    expiresInMs: tokenLifecycleStatus.expiresAt === undefined
+      ? undefined
+      : Math.max(0, tokenLifecycleStatus.expiresAt - now),
+    nextRefreshAt: nextCopilotTokenRefreshAt,
+    reactiveRefreshInFlight: reactiveRefreshInFlight !== undefined,
+    refreshInFlight: refreshInFlight !== undefined,
+    refreshScheduled: copilotTokenRefreshTimer !== undefined,
+    tokenAvailable: Boolean(state.copilotToken),
+  }
+}
+
+export async function refreshCopilotTokenAfterFailure(
+  failedSnapshot: CopilotTokenSnapshot,
+  deps: ReactiveTokenRefreshDeps = {},
+): Promise<ReactiveTokenRefreshResult> {
+  if (!matchesCurrentTokenSnapshot(failedSnapshot)) {
+    return {
+      generation: tokenLifecycleStatus.generation,
+      outcome: 'already_refreshed',
+    }
+  }
+
+  if (reactiveRefreshInFlight)
+    return reactiveRefreshInFlight
+
+  tokenLifecycleStatus.lastReactiveRefreshAt = Date.now()
+  reactiveRefreshInFlight = performReactiveTokenRefresh(deps)
+    .finally(() => {
+      reactiveRefreshInFlight = undefined
+    })
+  return reactiveRefreshInFlight
+}
+
+function matchesCurrentTokenSnapshot(snapshot: CopilotTokenSnapshot): boolean {
+  return snapshot.generation === tokenLifecycleStatus.generation
+    && copilotTokenSnapshotValues.has(snapshot)
+    && copilotTokenSnapshotValues.get(snapshot) === state.copilotToken
+}
+
+async function performReactiveTokenRefresh(
+  deps: ReactiveTokenRefreshDeps,
+): Promise<ReactiveTokenRefreshResult> {
+  try {
+    const refreshed = await refreshTokenWithRetry({
+      ...deps.refreshDeps,
+      useLock: true,
+    })
+    if (!refreshed) {
+      scheduleCopilotTokenRefreshAfterFailure(
+        lastKnownRefreshInSeconds ?? 3600,
+        deps.schedulerDeps,
+        tokenLifecycleStatus.lastRefreshFailureKind ?? 'transient',
+      )
+      return recordReactiveTokenRefreshOutcome('failed')
+    }
+
+    ensureCopilotTokenRefreshScheduled(refreshed.refresh_in, deps.schedulerDeps)
+    return recordReactiveTokenRefreshOutcome('refreshed')
+  }
+  catch (error) {
+    consola.error('Unexpected reactive Copilot token refresh failure:', error)
+    return recordReactiveTokenRefreshOutcome('failed')
+  }
+}
+
+function recordReactiveTokenRefreshOutcome(outcome: ReactiveTokenRefreshOutcome): ReactiveTokenRefreshResult {
+  tokenLifecycleStatus.lastReactiveRefreshOutcome = outcome
+  return {
+    generation: tokenLifecycleStatus.generation,
+    outcome,
+  }
+}
 
 export async function refreshTokenWithRetry(deps: RefreshTokenWithRetryDeps = {}): Promise<GetCopilotTokenResponse | undefined> {
   const useLock = deps.useLock ?? (
@@ -89,15 +234,19 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
   const fetchToken = deps.fetchToken ?? getCopilotToken
   const sleepFn = deps.sleepFn ?? sleep
   const failureState = deps.failureState ?? refreshTokenFailureState
+  let attemptsMade = 0
+  let lastFailureKind: TokenRefreshFailureKind = 'transient'
+  let lastFailureStatus: number | undefined
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    attemptsMade++
+    tokenLifecycleStatus.lastRefreshAttemptAt = Date.now()
     try {
       const response = await fetchToken()
-      const { token } = response
-      state.copilotToken = token
+      applyCopilotTokenResponse(response)
       consola.debug('Copilot token refreshed')
       if (state.showToken) {
-        consola.info('Refreshed Copilot token:', token)
+        consola.info('Refreshed Copilot token:', response.token)
       }
       if (failureState.consecutiveFailures > 0) {
         consola.info(`Token refresh recovered after ${failureState.consecutiveFailures} consecutive failure(s)`)
@@ -106,6 +255,12 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
       return response
     }
     catch (error) {
+      lastFailureKind = classifyTokenRefreshError(error)
+      lastFailureStatus = error instanceof HTTPError ? error.response.status : undefined
+      if (lastFailureKind === 'permanent_auth') {
+        consola.error('Copilot token refresh rejected by the token endpoint; retries for this refresh cycle are suppressed.', error)
+        break
+      }
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_DELAYS[attempt] ?? RETRY_DELAYS.at(-1)!
         consola.warn(`Token refresh attempt ${attempt + 1} failed, retrying in ${delay}ms...`, error)
@@ -115,12 +270,39 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
   }
 
   failureState.consecutiveFailures++
+  tokenLifecycleStatus.consecutiveRefreshFailures++
+  tokenLifecycleStatus.lastRefreshFailureAt = Date.now()
+  tokenLifecycleStatus.lastRefreshFailureKind = lastFailureKind
+  tokenLifecycleStatus.lastRefreshFailureStatus = lastFailureStatus
   consola.error(
-    `Token refresh failed after ${MAX_RETRIES + 1} attempts`
+    `Token refresh failed after ${attemptsMade} attempt(s)`
     + ` (${failureState.consecutiveFailures} consecutive interval failure(s)).`
     + ` Service may be using a stale token.`,
   )
   return undefined
+}
+
+function classifyTokenRefreshError(error: unknown): TokenRefreshFailureKind {
+  if (error instanceof HTTPError && (error.response.status === 401 || error.response.status === 403))
+    return 'permanent_auth'
+  return 'transient'
+}
+
+function applyCopilotTokenResponse(response: GetCopilotTokenResponse): void {
+  state.copilotToken = response.token
+  lastKnownRefreshInSeconds = response.refresh_in
+  tokenLifecycleStatus.expiresAt = normalizeTokenExpiration(response.expires_at)
+  tokenLifecycleStatus.generation++
+  tokenLifecycleStatus.consecutiveRefreshFailures = 0
+  tokenLifecycleStatus.lastRefreshSuccessAt = Date.now()
+}
+
+function normalizeTokenExpiration(expiresAt: number): number | undefined {
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0)
+    return undefined
+  return expiresAt < 1_000_000_000_000
+    ? expiresAt * 1_000
+    : expiresAt
 }
 
 export async function setupCopilotToken(
@@ -128,7 +310,7 @@ export async function setupCopilotToken(
 ): Promise<GetCopilotTokenResponse> {
   const response = await getCopilotToken()
   const { token, refresh_in } = response
-  state.copilotToken = token
+  applyCopilotTokenResponse(response)
 
   // Display the Copilot token to the screen
   consola.debug('GitHub Copilot Token fetched successfully!')
@@ -155,28 +337,73 @@ export function startCopilotTokenRefresh(
   refreshInSeconds: number,
   deps: TokenRefreshSchedulerDeps = {},
 ): void {
+  lastKnownRefreshInSeconds = refreshInSeconds
+  scheduleCopilotTokenRefresh(refreshInSeconds, getCopilotTokenRefreshDelayMs(refreshInSeconds), deps)
+}
+
+function scheduleCopilotTokenRefresh(
+  refreshInSeconds: number,
+  refreshDelayMs: number,
+  deps: TokenRefreshSchedulerDeps,
+): void {
   stopCopilotTokenRefresh()
   const generation = copilotTokenRefreshGeneration
 
-  const refreshDelay = getCopilotTokenRefreshDelayMs(refreshInSeconds)
   const setTimeoutFn = deps.setTimeoutFn ?? setTimeout
   const clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout
   const refreshFn = deps.refreshFn ?? refreshTokenWithRetry
   clearCopilotTokenRefreshTimer = clearTimeoutFn
   const timer = setTimeoutFn(() => {
     copilotTokenRefreshTimer = undefined
+    copilotTokenRefreshScheduledForTokenGeneration = undefined
+    nextCopilotTokenRefreshAt = undefined
     consola.debug('Refreshing Copilot token')
     void refreshFn().then((refreshed) => {
-      if (generation === copilotTokenRefreshGeneration)
-        startCopilotTokenRefresh(refreshed?.refresh_in ?? refreshInSeconds, deps)
+      if (generation !== copilotTokenRefreshGeneration)
+        return
+      if (refreshed) {
+        ensureCopilotTokenRefreshScheduled(refreshed.refresh_in, deps)
+      }
+      else {
+        const failureKind = refreshFn === refreshTokenWithRetry
+          ? tokenLifecycleStatus.lastRefreshFailureKind ?? 'transient'
+          : 'transient'
+        scheduleCopilotTokenRefreshAfterFailure(refreshInSeconds, deps, failureKind)
+      }
     }).catch((error) => {
       consola.error('Unexpected Copilot token refresh failure:', error)
       if (generation === copilotTokenRefreshGeneration)
-        startCopilotTokenRefresh(refreshInSeconds, deps)
+        scheduleCopilotTokenRefresh(refreshInSeconds, FAILED_REFRESH_RETRY_DELAY_MS, deps)
     })
-  }, refreshDelay)
+  }, refreshDelayMs)
   copilotTokenRefreshTimer = timer
+  copilotTokenRefreshScheduledForTokenGeneration = tokenLifecycleStatus.generation
+  nextCopilotTokenRefreshAt = Date.now() + refreshDelayMs
   timer.unref?.()
+}
+
+function scheduleCopilotTokenRefreshAfterFailure(
+  refreshInSeconds: number,
+  deps: TokenRefreshSchedulerDeps = {},
+  failureKind: TokenRefreshFailureKind,
+): void {
+  const retryDelayMs = failureKind === 'permanent_auth'
+    ? getCopilotTokenRefreshDelayMs(refreshInSeconds)
+    : FAILED_REFRESH_RETRY_DELAY_MS
+  scheduleCopilotTokenRefresh(refreshInSeconds, retryDelayMs, deps)
+}
+
+function ensureCopilotTokenRefreshScheduled(
+  refreshInSeconds: number,
+  deps: TokenRefreshSchedulerDeps = {},
+): void {
+  if (
+    copilotTokenRefreshTimer !== undefined
+    && copilotTokenRefreshScheduledForTokenGeneration === tokenLifecycleStatus.generation
+  ) {
+    return
+  }
+  startCopilotTokenRefresh(refreshInSeconds, deps)
 }
 
 export function stopCopilotTokenRefresh(): void {
@@ -187,6 +414,8 @@ export function stopCopilotTokenRefresh(): void {
     copilotTokenRefreshTimer = undefined
   }
   clearCopilotTokenRefreshTimer = undefined
+  copilotTokenRefreshScheduledForTokenGeneration = undefined
+  nextCopilotTokenRefreshAt = undefined
 }
 
 export function isCopilotTokenRefreshScheduled(): boolean {

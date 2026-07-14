@@ -10,7 +10,7 @@ import consola from 'consola'
 import { serve } from 'srvx'
 import invariant from 'tiny-invariant'
 
-import { validateAccountType, validateHost, validatePort, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
+import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
 import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
 import { PATHS } from './lib/paths'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
@@ -29,6 +29,9 @@ export interface RunServerOptions {
   manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
+  maxConcurrency?: number
+  maxQueue?: number
+  queueTimeoutMs?: number
   headersTimeoutMs?: number
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
@@ -272,6 +275,18 @@ export const start = defineCommand({
       description:
         'Wait instead of error when rate limit is hit. Has no effect if rate limit is not set',
     },
+    'max-concurrency': {
+      type: 'string',
+      description: 'Maximum concurrent Copilot upstream requests (disabled when omitted)',
+    },
+    'max-queue': {
+      type: 'string',
+      description: 'Maximum requests waiting for a concurrency slot (default: 50; 0 disables queueing)',
+    },
+    'queue-timeout-ms': {
+      type: 'string',
+      description: 'Maximum time to wait for a concurrency slot (default: 30000; 0 disables waiting)',
+    },
     'headers-timeout-ms': {
       type: 'string',
       description: 'Upstream HTTP response headers timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
@@ -371,6 +386,32 @@ export const start = defineCommand({
     }
     const rateLimit = rateLimitResult.value
 
+    const maxConcurrencyResult = validateMaxConcurrency(args['max-concurrency'])
+    if (!maxConcurrencyResult.valid) {
+      consola.error(`Invalid max-concurrency: ${args['max-concurrency']} (must be a positive safe integer)`)
+      process.exit(1)
+    }
+    const maxConcurrency = maxConcurrencyResult.value
+
+    const maxQueueResult = validateMaxQueue(args['max-queue'])
+    if (!maxQueueResult.valid) {
+      consola.error(`Invalid max-queue: ${args['max-queue']} (must be a non-negative safe integer)`)
+      process.exit(1)
+    }
+    const maxQueue = maxQueueResult.value
+
+    const queueTimeoutResult = validateQueueTimeoutMs(args['queue-timeout-ms'])
+    if (!queueTimeoutResult.valid) {
+      consola.error(`Invalid queue-timeout-ms: ${args['queue-timeout-ms']} (must be between 0 and ${MAX_TIMER_DELAY_MS})`)
+      process.exit(1)
+    }
+    const queueTimeoutMs = queueTimeoutResult.value
+
+    if (maxConcurrency === undefined && (maxQueue !== undefined || queueTimeoutMs !== undefined)) {
+      consola.error('--max-queue and --queue-timeout-ms require --max-concurrency')
+      process.exit(1)
+    }
+
     const headersTimeoutResult = validateTimeoutMs(args['headers-timeout-ms'])
     if (!headersTimeoutResult.valid) {
       consola.error(`Invalid headers-timeout-ms: ${args['headers-timeout-ms']} (must be between 0 and ${MAX_TIMER_DELAY_MS})`)
@@ -426,6 +467,9 @@ export const start = defineCommand({
         manual: args.manual,
         rateLimit,
         rateLimitWait: args.wait,
+        maxConcurrency,
+        maxQueue,
+        queueTimeoutMs,
         headersTimeoutMs,
         bodyTimeoutMs,
         connectTimeoutMs,
@@ -501,6 +545,9 @@ export const start = defineCommand({
         manual: args.manual,
         rateLimit,
         rateLimitWait: args.wait,
+        maxConcurrency,
+        maxQueue,
+        queueTimeoutMs,
         headersTimeoutMs,
         bodyTimeoutMs,
         connectTimeoutMs,
@@ -519,6 +566,9 @@ export const start = defineCommand({
       manual: args.manual,
       rateLimit,
       rateLimitWait: args.wait,
+      maxConcurrency,
+      maxQueue,
+      queueTimeoutMs,
       headersTimeoutMs,
       bodyTimeoutMs,
       connectTimeoutMs,

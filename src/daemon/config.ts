@@ -3,6 +3,7 @@ import path from 'node:path'
 
 import consola from 'consola'
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
+import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { PATHS } from '~/lib/paths'
 import { DEFAULT_HOST } from '~/lib/security'
@@ -15,6 +16,9 @@ export interface DaemonConfig {
   manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
+  maxConcurrency?: number
+  maxQueue?: number
+  queueTimeoutMs?: number
   headersTimeoutMs?: number
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
@@ -68,6 +72,12 @@ export function mergeDaemonConfigWithExplicitFlags(
     merged.rateLimit = cliConfig.rateLimit
   if (wasCliOptionPassed(rawArgs, 'wait', 'w', true))
     merged.rateLimitWait = cliConfig.rateLimitWait
+  if (wasCliOptionPassed(rawArgs, 'max-concurrency'))
+    merged.maxConcurrency = cliConfig.maxConcurrency
+  if (wasCliOptionPassed(rawArgs, 'max-queue'))
+    merged.maxQueue = cliConfig.maxQueue
+  if (wasCliOptionPassed(rawArgs, 'queue-timeout-ms'))
+    merged.queueTimeoutMs = cliConfig.queueTimeoutMs
   if (wasCliOptionPassed(rawArgs, 'headers-timeout-ms'))
     merged.headersTimeoutMs = cliConfig.headersTimeoutMs
   if (wasCliOptionPassed(rawArgs, 'body-timeout-ms'))
@@ -215,6 +225,16 @@ function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | nul
     return null
   if (data.rateLimit !== undefined && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400))
     return null
+  try {
+    resolveConcurrencyLimitConfig({
+      maxConcurrency: data.maxConcurrency as number | undefined,
+      maxQueue: data.maxQueue as number | undefined,
+      queueTimeoutMs: data.queueTimeoutMs as number | undefined,
+    })
+  }
+  catch {
+    return null
+  }
   if (isInvalidTimeout(data.headersTimeoutMs))
     return null
   if (isInvalidTimeout(data.bodyTimeoutMs))

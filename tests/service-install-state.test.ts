@@ -11,6 +11,7 @@ import {
   saveNativeServiceInstallState,
   toNativeServiceConfig,
 } from '~/daemon/service-install-state'
+import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 const tempDirs: string[] = []
 
@@ -70,6 +71,9 @@ describe('native service install control state', () => {
       manual: false,
       rateLimit: 9,
       rateLimitWait: true,
+      maxConcurrency: 12,
+      maxQueue: 50,
+      queueTimeoutMs: 30_000,
       headersTimeoutMs: 600_000,
       bodyTimeoutMs: 900_000,
       connectTimeoutMs: 15_000,
@@ -92,6 +96,48 @@ describe('native service install control state', () => {
       config,
     })
     expect(fs.readFileSync(filePath, 'utf8')).not.toContain('must-not-be-persisted')
+  })
+
+  test('rejects native service config with queue settings but no concurrency limit', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    fs.writeFileSync(filePath, JSON.stringify({
+      dataDir: '/installed/data',
+      config: {
+        port: 4399,
+        host: '127.0.0.1',
+        verbose: false,
+        accountType: 'individual',
+        manual: false,
+        rateLimitWait: false,
+        maxQueue: 10,
+        showToken: false,
+        proxyEnv: false,
+      },
+    }))
+
+    expect(() => loadNativeServiceInstallState(filePath)).toThrow('control state is invalid')
+  })
+
+  test('rejects native service timeout values above the runtime timer limit', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    fs.writeFileSync(filePath, JSON.stringify({
+      dataDir: '/installed/data',
+      config: {
+        port: 4399,
+        host: '127.0.0.1',
+        verbose: false,
+        accountType: 'individual',
+        manual: false,
+        rateLimitWait: false,
+        headersTimeoutMs: MAX_TIMER_DELAY_MS + 1,
+        showToken: false,
+        proxyEnv: false,
+      },
+    }))
+
+    expect(() => loadNativeServiceInstallState(filePath)).toThrow('control state is invalid')
   })
 
   test('pins Linux control commands to the recorded XDG and definition paths', () => {

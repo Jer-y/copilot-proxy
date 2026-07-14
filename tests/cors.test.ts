@@ -27,6 +27,9 @@ describe('CORS', () => {
 
     expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000')
     expect(exposedHeaders).toContain('x-request-id')
+    expect(exposedHeaders).toContain('x-github-request-id')
+    expect(exposedHeaders).toContain('x-copilot-service-request-id')
+    expect(exposedHeaders).toContain('x-copilot-proxy-recovery-state')
     expect(exposedHeaders).toContain('retry-after')
     expect(exposedHeaders.some(header => header.startsWith('x-quota-snapshot'))).toBe(false)
   })

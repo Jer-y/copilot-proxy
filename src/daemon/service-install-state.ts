@@ -6,6 +6,8 @@ import path from 'node:path'
 import process from 'node:process'
 
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
+import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
+import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 const CONTROL_STATE_FILE = '.copilot-proxy-native-service.json'
 const NATIVE_CONTROL_COMMANDS = new Set(['enable', 'stop', 'restart', 'status', 'logs', 'disable'])
@@ -74,6 +76,9 @@ export function toNativeServiceConfig(config: DaemonConfig): NativeServiceConfig
     manual: config.manual,
     ...(config.rateLimit !== undefined && { rateLimit: config.rateLimit }),
     rateLimitWait: config.rateLimitWait,
+    ...(config.maxConcurrency !== undefined && { maxConcurrency: config.maxConcurrency }),
+    ...(config.maxQueue !== undefined && { maxQueue: config.maxQueue }),
+    ...(config.queueTimeoutMs !== undefined && { queueTimeoutMs: config.queueTimeoutMs }),
     ...(config.headersTimeoutMs !== undefined && { headersTimeoutMs: config.headersTimeoutMs }),
     ...(config.bodyTimeoutMs !== undefined && { bodyTimeoutMs: config.bodyTimeoutMs }),
     ...(config.connectTimeoutMs !== undefined && { connectTimeoutMs: config.connectTimeoutMs }),
@@ -151,10 +156,23 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
     && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400)) {
     return undefined
   }
+  try {
+    resolveConcurrencyLimitConfig({
+      maxConcurrency: data.maxConcurrency as number | undefined,
+      maxQueue: data.maxQueue as number | undefined,
+      queueTimeoutMs: data.queueTimeoutMs as number | undefined,
+    })
+  }
+  catch {
+    return undefined
+  }
   for (const key of ['headersTimeoutMs', 'bodyTimeoutMs', 'connectTimeoutMs'] as const) {
     const value = data[key]
     if (value !== undefined
-      && (typeof value !== 'number' || !Number.isInteger(value) || value < 0)) {
+      && (typeof value !== 'number'
+        || !Number.isInteger(value)
+        || value < 0
+        || value > MAX_TIMER_DELAY_MS)) {
       return undefined
     }
   }
@@ -167,6 +185,9 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
     manual: data.manual,
     ...(typeof data.rateLimit === 'number' && { rateLimit: data.rateLimit }),
     rateLimitWait: data.rateLimitWait,
+    ...(typeof data.maxConcurrency === 'number' && { maxConcurrency: data.maxConcurrency }),
+    ...(typeof data.maxQueue === 'number' && { maxQueue: data.maxQueue }),
+    ...(typeof data.queueTimeoutMs === 'number' && { queueTimeoutMs: data.queueTimeoutMs }),
     ...(typeof data.headersTimeoutMs === 'number' && { headersTimeoutMs: data.headersTimeoutMs }),
     ...(typeof data.bodyTimeoutMs === 'number' && { bodyTimeoutMs: data.bodyTimeoutMs }),
     ...(typeof data.connectTimeoutMs === 'number' && { connectTimeoutMs: data.connectTimeoutMs }),

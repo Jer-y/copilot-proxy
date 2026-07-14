@@ -62,6 +62,9 @@ describe('github token argv sanitization', () => {
     expect(removeGithubTokenArguments(['start', '--host', '--github-token=still-host-data'])).toEqual({
       args: ['start', '--host', '--github-token=still-host-data'],
     })
+    expect(removeGithubTokenArguments(['start', '--max-concurrency', '--github-token=still-option-data'])).toEqual({
+      args: ['start', '--max-concurrency', '--github-token=still-option-data'],
+    })
   })
 
   test('does not rewrite unrelated commands', () => {

@@ -4,18 +4,22 @@ import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
+import { fetchAuthenticatedCopilot } from './authenticated-fetch'
 
 export async function getModels() {
   // Primary: standard vscode-chat auth (consistent with all other API calls)
-  const headers = copilotHeaders(state)
-  const response = await fetchCopilot(`${copilotBaseUrl(state)}/models`, {
-    headers,
+  const response = await fetchAuthenticatedCopilot({
+    endpoint: '/models',
+    request: () => fetchCopilot(`${copilotBaseUrl(state)}/models`, {
+      headers: copilotHeaders(state),
+    }),
   })
 
   if (response.ok) {
     return (await response.json()) as ModelsResponse
   }
   consola.warn(`vscode-chat models request failed (${response.status} ${response.statusText}), falling back to copilot-developer-cli`)
+  const primaryFailureResponse = await consumeAndRebuildResponse(response)
 
   // Fallback: copilot-developer-cli for extended model list
   if (state.githubToken) {
@@ -40,7 +44,16 @@ export async function getModels() {
     }
   }
 
-  throw new HTTPError('Failed to get models', response)
+  throw new HTTPError('Failed to get models', primaryFailureResponse)
+}
+
+async function consumeAndRebuildResponse(response: Response): Promise<Response> {
+  const body = await response.text().catch(() => response.statusText)
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
 }
 
 export interface ModelsResponse {

@@ -1,3 +1,4 @@
+import type { AsyncConcurrencyLimiter } from './concurrency-limiter'
 import type { ModelsResponse } from '~/services/copilot/get-models'
 
 export interface State {
@@ -16,6 +17,9 @@ export interface State {
   // Rate limiting configuration
   rateLimitSeconds?: number
   lastRequestTimestamp?: number
+
+  // Optional global limiter for Copilot upstream request work.
+  concurrencyLimiter?: AsyncConcurrencyLimiter
 }
 
 export const state: State = {

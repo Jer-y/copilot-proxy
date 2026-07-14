@@ -231,6 +231,15 @@ export async function forwardErrorAnthropic(c: Context, error: unknown) {
     const requestId = error.response.headers.get('x-request-id')
     if (requestId)
       c.header('x-request-id', requestId)
+    const githubRequestId = error.response.headers.get('x-github-request-id')
+    if (githubRequestId)
+      c.header('x-github-request-id', githubRequestId)
+    const copilotServiceRequestId = error.response.headers.get('x-copilot-service-request-id')
+    if (copilotServiceRequestId)
+      c.header('x-copilot-service-request-id', copilotServiceRequestId)
+    const recoveryState = error.response.headers.get('x-copilot-proxy-recovery-state')
+    if (recoveryState)
+      c.header('x-copilot-proxy-recovery-state', recoveryState)
 
     const errorText = await error.text()
 

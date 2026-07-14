@@ -920,6 +920,8 @@ test('/v1/responses wraps non-JSON upstream errors and preserves safe headers', 
       headers: {
         'Content-Type': 'text/plain',
         'Retry-After': '7',
+        'X-Copilot-Service-Request-Id': 'copilot_service_non_json',
+        'X-GitHub-Request-Id': 'github_non_json',
         'X-Request-Id': 'req_non_json',
         'X-RateLimit-Remaining': '12',
         'Set-Cookie': 'secret=not-forwarded',
@@ -932,6 +934,8 @@ test('/v1/responses wraps non-JSON upstream errors and preserves safe headers', 
   expect(response.status).toBe(404)
   expect(response.headers.get('content-type')).toContain('application/json')
   expect(response.headers.get('retry-after')).toBe('7')
+  expect(response.headers.get('x-copilot-service-request-id')).toBe('copilot_service_non_json')
+  expect(response.headers.get('x-github-request-id')).toBe('github_non_json')
   expect(response.headers.get('x-request-id')).toBe('req_non_json')
   expect(response.headers.get('x-ratelimit-remaining')).toBe('12')
   expect(response.headers.get('set-cookie')).toBeNull()

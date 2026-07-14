@@ -25,7 +25,7 @@
 - **Test single file:**
   `bun test tests/messages-routing.test.ts`
 - **Common targeted tests:**
-  `bun test tests/create-responses.test.ts` for Responses routing/translation, `bun test tests/messages-routing.test.ts` for Anthropic messages, `bun test tests/model-config.test.ts` for model metadata, and `bun test tests/request-signal-regression.test.ts` for inbound request-signal regressions
+  `bun test tests/create-responses.test.ts` for Responses routing/translation, `bun test tests/messages-routing.test.ts` for Anthropic messages, `bun test tests/model-config.test.ts` for model metadata, `bun test tests/copilot-auth-recovery.test.ts tests/auth-recovery-routes.test.ts` for token self-healing/circuit behavior, `bun test tests/concurrency-limiter.test.ts` for bounded concurrency, and `bun test tests/request-signal-regression.test.ts` for inbound request-signal regressions
 - **Background service commands:**
   `bun run ./src/main.ts enable` installs a native systemd/launchd/Task Scheduler service that runs foreground `start`; on Linux this requires systemd user lingering so the service can start after boot before login. `stop`, `restart`, `status`, and `logs` prefer the native service and fall back to the legacy app-managed daemon. `bun run ./src/main.ts start -d` remains a compatibility daemon path.
 - **Other CLI subcommands:**
@@ -82,6 +82,16 @@
 - Before changing request-signal behavior, inspect `git log -S "signal: c.req.raw.signal"` and `tests/request-signal-regression.test.ts` to understand the v0.6.1/v0.7.6/v0.7.7 regression history. Treat reversing that test's semantic direction as high risk.
 - When editing routes or services that call `createResponses`, `createAnthropicMessages`, `createChatCompletions`, `createEmbeddings`, or `forwardResponsesEndpoint`, run `bun test tests/request-signal-regression.test.ts`. The test's intent is to fail if any normal route forwards an inbound request signal upstream.
 - Keep daemon/native-service tests on the isolated test data directory installed by `tests/preload.ts`; never point test configuration, PID, log, environment, or service-control helpers at the developer's real application directory.
+
+## Authentication Recovery and Concurrency Policy
+
+- Normal Copilot-token requests must go through the authenticated upstream wrapper so request-time recovery, correlation metrics, circuit state, and optional concurrency limits remain consistent across Responses, Messages, Chat Completions, embeddings, count-tokens, model refresh, and Responses passthrough routes. The developer-CLI model fallback uses the GitHub token and must not enter Copilot-token recovery.
+- A Copilot upstream `401` may trigger one short-lived token refresh and one replay. A `403` is eligible only when it is an explicit token-expired/invalid response or the dated, live-observed GitHub shape: plain-text `Forbidden` with a GitHub or Copilot service request ID and no `Retry-After`.
+- Never refresh/replay structured model, organization, content, or permission `403` responses; local Host/Origin/manual-approval/token-route `403` responses; `429`; 5xx; timeouts; connection resets; or any failure after a 2xx response or downstream stream has begun.
+- Concurrent failures for the same endpoint/model must join one recovery. Rebuild Authorization and `x-request-id` for the replay. If the fresh-token canary is still rejected, open the scoped cooldown circuit; multiple failing scopes may open the global circuit. Do not add restart, token-refresh, account-switch, or endpoint-switch loops that attempt to bypass persistent GitHub risk enforcement.
+- The optional concurrency limiter is disabled unless `--max-concurrency` is set. When enabled, hold its lease until the final upstream response body/SSE stream completes or is cancelled; do not release at response-header time. Queue overflow/timeout must fail locally without touching GitHub.
+- `/livez` is process liveness only. `/readyz` is passive and must never expose credentials, prompt content, token hashes, or user keys. Keep correlation logging limited to endpoint/model/status, recovery generation, and safe GitHub/Copilot request IDs.
+- After recovery, concurrency, health, or service-option changes, run `bun test tests/copilot-auth-recovery.test.ts tests/auth-recovery-routes.test.ts tests/concurrency-limiter.test.ts tests/health-routes.test.ts tests/request-signal-regression.test.ts` plus real Codex and Claude CLI smokes through a disposable local listener.
 
 ---
 

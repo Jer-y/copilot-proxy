@@ -5,6 +5,7 @@ import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
+import { fetchAuthenticatedCopilot } from './authenticated-fetch'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
 import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
@@ -29,19 +30,22 @@ export async function createChatCompletions(
   )
 
   // Build headers and add X-Initiator
-  const headers: Record<string, string> = {
-    ...copilotHeaders(state, enableVision),
-    'X-Initiator': isAgentCall ? 'agent' : 'user',
-  }
-
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
   const upstreamController = createUpstreamRequestController(options?.signal)
-  const response = await fetchCopilot(`${copilotBaseUrl(state)}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body,
+  const response = await fetchAuthenticatedCopilot({
+    endpoint: '/chat/completions',
+    model: payload.model,
     signal: upstreamController.signal,
+    request: () => fetchCopilot(`${copilotBaseUrl(state)}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        ...copilotHeaders(state, enableVision),
+        'X-Initiator': isAgentCall ? 'agent' : 'user',
+      },
+      body,
+      signal: upstreamController.signal,
+    }),
   })
   logUpstreamHeadersReceived({
     endpoint: '/chat/completions',
@@ -64,6 +68,7 @@ export async function createChatCompletions(
 
     const instrumentedStream = instrumentCopilotEventStream(events(response), {
       endpoint: '/chat/completions',
+      onIteratorExit: reason => upstreamController.cancel(response, reason),
       requestStartedAt,
     })
     return {

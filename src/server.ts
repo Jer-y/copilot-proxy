@@ -9,6 +9,7 @@ import { state } from '~/lib/state'
 
 import { completionRoutes } from './routes/chat-completions/route'
 import { embeddingRoutes } from './routes/embeddings/route'
+import { healthRoutes } from './routes/health/route'
 import { messageRoutes } from './routes/messages/route'
 import { modelRoutes } from './routes/models/route'
 import { responsesRoutes } from './routes/responses/route'
@@ -50,7 +51,13 @@ server.use(async (c, next) => {
 })
 server.use(cors({
   origin: (origin, c) => resolveCorsOrigin(origin, c.req.path),
-  exposeHeaders: ['x-request-id', 'retry-after'],
+  exposeHeaders: [
+    'x-request-id',
+    'x-github-request-id',
+    'x-copilot-service-request-id',
+    'x-copilot-proxy-recovery-state',
+    'retry-after',
+  ],
 }))
 
 server.get('/', (c) => {
@@ -58,6 +65,7 @@ server.get('/', (c) => {
     c.header(NATIVE_SERVICE_INSTANCE_HEADER, state.nativeServiceInstanceToken)
   return c.text('Server running')
 })
+server.route('/', healthRoutes)
 
 server.route('/chat/completions', completionRoutes)
 server.route('/models', modelRoutes)

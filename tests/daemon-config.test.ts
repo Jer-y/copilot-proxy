@@ -45,6 +45,9 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     const config = {
       ...sampleConfig,
       rateLimit: 5,
+      maxConcurrency: 12,
+      maxQueue: 50,
+      queueTimeoutMs: 30_000,
       headersTimeoutMs: 600000,
       bodyTimeoutMs: 900000,
       connectTimeoutMs: 15000,
@@ -54,6 +57,9 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
     expect(loadDaemonConfig()).toEqual({
       ...sampleConfig,
       rateLimit: 5,
+      maxConcurrency: 12,
+      maxQueue: 50,
+      queueTimeoutMs: 30_000,
       headersTimeoutMs: 600000,
       bodyTimeoutMs: 900000,
       connectTimeoutMs: 15000,
@@ -209,6 +215,31 @@ describe('saveDaemonConfig / loadDaemonConfig', () => {
       bodyTimeoutMs: MAX_TIMER_DELAY_MS + 1,
     }))
     expect(loadDaemonConfig()).toBeNull()
+  })
+
+  test('accepts explicit zero queue settings when concurrency limiting is enabled', () => {
+    const config: DaemonConfig = {
+      ...sampleConfig,
+      maxConcurrency: 1,
+      maxQueue: 0,
+      queueTimeoutMs: 0,
+    }
+    saveDaemonConfig(config)
+    expect(loadDaemonConfig()).toEqual(config)
+  })
+
+  test('rejects invalid or orphaned concurrency settings', () => {
+    for (const override of [
+      { maxConcurrency: 0 },
+      { maxConcurrency: 1, maxQueue: -1 },
+      { maxConcurrency: 1, queueTimeoutMs: MAX_TIMER_DELAY_MS + 1 },
+      { maxQueue: 5 },
+      { queueTimeoutMs: 100 },
+    ]) {
+      fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
+      fs.writeFileSync(PATHS.DAEMON_JSON, JSON.stringify({ ...sampleConfig, ...override }))
+      expect(loadDaemonConfig()).toBeNull()
+    }
   })
 
   test('prunes old backup files and keeps only latest N', () => {
