@@ -124,19 +124,20 @@ export function resolveNativeServiceInstallLocations(
   env: NodeJS.ProcessEnv,
   userHome: string = getUserHomeDir(env),
 ): { serviceDefinitionPath?: string, xdgConfigHome?: string } {
+  const platformPath = platform === 'win32' ? path.win32 : path.posix
   const configuredXdgHome = env.XDG_CONFIG_HOME?.trim()
   const xdgConfigHome = platform === 'linux'
-    ? configuredXdgHome && path.isAbsolute(configuredXdgHome)
+    ? configuredXdgHome && platformPath.isAbsolute(configuredXdgHome)
       ? configuredXdgHome
-      : path.join(userHome, '.config')
+      : platformPath.join(userHome, '.config')
     : undefined
   const persistedDefinitionPath = env[NATIVE_SERVICE_DEFINITION_PATH_ENV]
-  const serviceDefinitionPath = persistedDefinitionPath && path.isAbsolute(persistedDefinitionPath)
+  const serviceDefinitionPath = persistedDefinitionPath && platformPath.isAbsolute(persistedDefinitionPath)
     ? persistedDefinitionPath
     : platform === 'linux'
-      ? path.join(xdgConfigHome!, 'systemd', 'user', 'copilot-proxy.service')
+      ? platformPath.join(xdgConfigHome!, 'systemd', 'user', 'copilot-proxy.service')
       : platform === 'darwin'
-        ? path.join(userHome, 'Library', 'LaunchAgents', 'com.copilot-proxy.plist')
+        ? platformPath.join(userHome, 'Library', 'LaunchAgents', 'com.copilot-proxy.plist')
         : undefined
   return {
     ...(serviceDefinitionPath && { serviceDefinitionPath }),
