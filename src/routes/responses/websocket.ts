@@ -22,6 +22,7 @@ import {
   acquireCopilotRequestPermit,
 } from '~/services/copilot/authenticated-fetch'
 import { analyzeResponsesPayloadForCopilot } from '~/services/copilot/create-responses'
+import { createCopilotResponsesItemIdNormalizer } from '~/services/copilot/responses-id-normalizer'
 import {
   connectAuthenticatedCopilotResponsesWebSocket,
   MAX_RESPONSES_WEBSOCKET_FRAME_BYTES,
@@ -69,6 +70,7 @@ interface ActiveTurn {
   abortController: AbortController
   clientPreviousResponseId?: string
   firstEventSeen: boolean
+  itemIdNormalizer: ReturnType<typeof createCopilotResponsesItemIdNormalizer>
   lastSequenceNumber?: number
   model: string
   publicResponseId?: string
@@ -555,6 +557,7 @@ export class ResponsesWebSocketSession {
       abortController,
       clientPreviousResponseId,
       firstEventSeen: false,
+      itemIdNormalizer: createCopilotResponsesItemIdNormalizer(),
       model: effectiveModel,
       sent: false,
       settle,
@@ -825,9 +828,16 @@ export class ResponsesWebSocketSession {
     }
 
     const activeTurn = this.activeTurn
-    const response = event && isRecord(event.response) ? event.response : undefined
+    const normalizedItemEvent = activeTurn && event
+      ? activeTurn.itemIdNormalizer.normalize(event)
+      : event
+    const response = normalizedItemEvent && isRecord(normalizedItemEvent.response)
+      ? normalizedItemEvent.response
+      : undefined
     const upstreamResponseId = typeof response?.id === 'string' ? response.id : undefined
-    let downstreamRaw = raw
+    let downstreamRaw = normalizedItemEvent === event
+      ? raw
+      : JSON.stringify(normalizedItemEvent)
     if (eventType?.startsWith('response.') && activeTurn && response && upstreamResponseId) {
       activeTurn.publicResponseId ??= upstreamResponseId
       const upstreamPreviousResponseId = typeof response.previous_response_id === 'string'
@@ -842,7 +852,7 @@ export class ResponsesWebSocketSession {
         || normalizedPreviousResponseId !== upstreamPreviousResponseId
       ) {
         downstreamRaw = JSON.stringify({
-          ...event,
+          ...normalizedItemEvent,
           response: {
             ...response,
             id: activeTurn.publicResponseId,

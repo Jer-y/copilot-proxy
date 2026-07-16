@@ -36,6 +36,8 @@
   `bun run test:live:copilot` with `COPILOT_LIVE_TEST=1` and the required token/model environment variables; see [docs/copilot-capability-validation.md](docs/copilot-capability-validation.md#how-to-run-the-live-probes).
 - **Live Responses SSE/WSS semantic parity:**
   `COPILOT_LIVE_WS_PARITY=1 COPILOT_TOKEN=... COPILOT_LIVE_RESPONSES_MODEL=gpt-5.4 COPILOT_ACCOUNT_TYPE=individual bun test tests/live/copilot-responses-transport-parity.test.ts`; repeat with each account type in scope, and set `COPILOT_LIVE_VECTOR_STORE_ID` plus `COPILOT_LIVE_FILE_SEARCH_SENTINEL` for a positive `file_search` run
+- **Live stateless Responses item replay:**
+  `COPILOT_LIVE_ITEM_ID_REPLAY=1 COPILOT_LIVE_RESPONSES_MODEL=gpt-5.4 COPILOT_ACCOUNT_TYPE=individual bun run test:live:responses-item-replay` starts a disposable real HTTP proxy, captures the client-visible normalized `store:false` output including encrypted reasoning, replays the complete output on the next request, and requires exact semantic completion without retaining credentials or artifacts
 - **Real Codex paired transport smoke:**
   `COPILOT_LIVE_CODEX_SMOKE=1 CODEX_SMOKE_MODEL=<current-ws-responses-model> CODEX_SMOKE_ACCOUNT_TYPE=individual bun run test:live:codex` invokes the real `codex` command twice against a disposable proxy and requires both an HTTP/SSE and a native WSS tool loop with at least two turns. Mock clients, direct service calls, and protocol fixtures do not count as this smoke.
 

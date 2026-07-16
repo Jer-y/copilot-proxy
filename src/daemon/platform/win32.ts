@@ -13,6 +13,7 @@ import { PATHS } from '~/lib/paths'
 const TASK_NAME = 'CopilotProxy'
 const GRACEFUL_STOP_TIMEOUT_MS = 5_000
 const TASK_STOP_POLL_INTERVAL_MS = 100
+const UTF16LE_BOM = '\uFEFF'
 let pendingInstall: { previousTaskXml: string | undefined } | undefined
 
 export interface UninstallAutoStartOptions {
@@ -226,6 +227,15 @@ export function buildTaskXml(execPath: string, args: string[], options: BuildTas
 </Task>`
 }
 
+export function encodeTaskSchedulerXml(xml: string): Buffer {
+  // schtasks requires a UTF-16 BOM, which Node/Bun's utf16le encoding does not add.
+  let contentStart = 0
+  while (xml.startsWith(UTF16LE_BOM, contentStart))
+    contentStart += UTF16LE_BOM.length
+
+  return Buffer.from(`${UTF16LE_BOM}${xml.slice(contentStart)}`, 'utf16le')
+}
+
 export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
   rotateDaemonLogIfNeeded()
   ensureDaemonLogFile()
@@ -245,7 +255,7 @@ export async function installAutoStart(execPath: string, args: string[]): Promis
   pendingInstall = { previousTaskXml }
 
   try {
-    fs.writeFileSync(xmlPath, taskXml, { encoding: 'utf16le' })
+    fs.writeFileSync(xmlPath, encodeTaskSchedulerXml(taskXml))
 
     execFileSync('schtasks', [
       '/create',
@@ -303,7 +313,7 @@ export function rollbackAutoStartInstall(): boolean {
 
   const rollbackPath = path.join(os.tmpdir(), `copilot-proxy-task-rollback-${process.pid}.xml`)
   try {
-    fs.writeFileSync(rollbackPath, install.previousTaskXml, { encoding: 'utf16le' })
+    fs.writeFileSync(rollbackPath, encodeTaskSchedulerXml(install.previousTaskXml))
     execFileSync('schtasks', [
       '/create',
       '/tn',

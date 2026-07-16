@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
-import { buildTaskXml, captureAutoStartState, commitAutoStartInstall, restartAutoStartService, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/win32'
+import { buildTaskXml, captureAutoStartState, commitAutoStartInstall, encodeTaskSchedulerXml, restartAutoStartService, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/win32'
 
 const WIN32_SOURCE = new URL('../src/daemon/platform/win32.ts', import.meta.url)
 
@@ -124,6 +124,24 @@ describe('buildTaskXml', () => {
   })
 })
 
+describe('Task Scheduler XML encoding', () => {
+  const xml = '<?xml version="1.0" encoding="UTF-16"?><Task />'
+
+  test('writes new task XML as UTF-16LE with the required BOM', () => {
+    const encoded = encodeTaskSchedulerXml(xml)
+
+    expect([...encoded.subarray(0, 4)]).toEqual([0xFF, 0xFE, 0x3C, 0x00])
+    expect(encoded.toString('utf16le')).toBe(`\uFEFF${xml}`)
+  })
+
+  test('keeps exactly one BOM when encoding a captured task for rollback', () => {
+    const encoded = encodeTaskSchedulerXml(`\uFEFF${xml}`)
+
+    expect([...encoded.subarray(0, 6)]).toEqual([0xFF, 0xFE, 0x3C, 0x00, 0x3F, 0x00])
+    expect(encoded.toString('utf16le')).toBe(`\uFEFF${xml}`)
+  })
+})
+
 describe('Task Scheduler replacement state', () => {
   test('captures disabled and running task states before replacement', () => {
     expect(captureAutoStartState({
@@ -199,12 +217,19 @@ test('Task Scheduler install transaction helpers are safe when no install is pen
 test('Task Scheduler install records rollback state before its first mutation', () => {
   const source = readFileSync(WIN32_SOURCE, 'utf8')
   const transactionStart = source.indexOf('pendingInstall = { previousTaskXml }')
-  const firstMutation = source.indexOf('fs.writeFileSync(xmlPath, taskXml')
+  const firstMutation = source.indexOf('fs.writeFileSync(xmlPath, encodeTaskSchedulerXml(taskXml))')
   const handledFailureClear = source.indexOf('pendingInstall = undefined', transactionStart)
 
   expect(transactionStart).toBeGreaterThanOrEqual(0)
   expect(transactionStart).toBeLessThan(firstMutation)
   expect(handledFailureClear).toBeGreaterThan(firstMutation)
+})
+
+test('Task Scheduler install and rollback both use BOM-safe XML encoding', () => {
+  const source = readFileSync(WIN32_SOURCE, 'utf8')
+
+  expect(source).toContain('fs.writeFileSync(xmlPath, encodeTaskSchedulerXml(taskXml))')
+  expect(source).toContain('fs.writeFileSync(rollbackPath, encodeTaskSchedulerXml(install.previousTaskXml))')
 })
 
 describe('uninstallAutoStart stop safety', () => {

@@ -44,6 +44,7 @@
     "test:live:codex": "bash ./scripts/run-codex-cli-smoke.sh",
     "test:live:copilot": "bun test tests/live/copilot-capabilities.test.ts",
     "test:live:copilot:transport-parity": "bun test tests/live/copilot-responses-transport-parity.test.ts",
+    "test:live:responses-item-replay": "bash ./scripts/run-responses-item-replay-smoke.sh",
     "test:node:http": "bun run ./scripts/run-node-http-listener-smoke.ts",
     "typecheck": "tsc"
   },

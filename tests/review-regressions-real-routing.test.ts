@@ -155,25 +155,48 @@ describe('review-confirmed real route regressions', () => {
     })
   })
 
-  test('Responses-backed models forward replayed reasoning input items unchanged', async () => {
+  test('Responses-backed models forward complete stateless replay output unchanged', async () => {
+    const firstUserMessage = { role: 'user', content: 'Call remember_code.' }
     const reasoningItem = {
       type: 'reasoning',
-      id: 'rs_direct',
+      id: 'first_seen_reasoning_id',
       summary: [],
       encrypted_content: 'opaque-upstream-state',
     }
-    const userMessage = { role: 'user', content: 'continue' }
+    const functionCallItem = {
+      type: 'function_call',
+      id: 'first_seen_function_id',
+      call_id: 'call_replay_exact',
+      name: 'remember_code',
+      arguments: '{"code":"RUNTIME_ONLY"}',
+    }
+    const functionCallOutput = {
+      type: 'function_call_output',
+      call_id: 'call_replay_exact',
+      output: 'Code stored successfully.',
+    }
+    const secondUserMessage = { role: 'user', content: 'Which code was stored?' }
+    const replayInput = [
+      firstUserMessage,
+      reasoningItem,
+      functionCallItem,
+      functionCallOutput,
+      secondUserMessage,
+    ]
 
     const response = await post('/v1/responses', {
       model: 'gpt-5.4',
       store: false,
-      input: [reasoningItem, userMessage],
+      include: ['reasoning.encrypted_content'],
+      input: replayInput,
     })
 
     expect(response.status).toBe(200)
     expect(upstreamCalls).toHaveLength(1)
     expect(upstreamCalls[0]?.url.endsWith('/responses')).toBe(true)
-    expect(upstreamCalls[0]?.body?.input).toEqual([reasoningItem, userMessage])
+    expect(upstreamCalls[0]?.body?.input).toEqual(replayInput)
+    expect(upstreamCalls[0]?.body?.include).toEqual(['reasoning.encrypted_content'])
+    expect(upstreamCalls[0]?.body?.store).toBe(false)
   })
 
   test('Anthropic custom tools with type=custom translate to Responses function tools', async () => {

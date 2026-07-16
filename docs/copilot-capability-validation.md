@@ -158,6 +158,18 @@ Interpretation rules:
 - Optional probes pass if they return either `supported` or a clean `unsupported`.
 - `auth_error`, `rate_limited`, `api_error`, `network_error`, and `unexpected_response` should be treated as environment or upstream-health failures, not product decisions.
 
+## Point-in-time evidence record: 2026-07-16
+
+This is a dated decision record for a dirty compatibility-fix checkout based on Git commit `aa3df9f`. The item-ID observations below used the `individual` account route, model `gpt-5.4`, and forced function-call payloads against both native Responses transports.
+
+- **Official-contract verified:** OpenAI's [streaming function-call guide](https://developers.openai.com/api/docs/guides/function-calling#streaming) uses one function-call item ID from `response.output_item.added.item.id` through every `response.function_call_arguments.delta.item_id`, `response.function_call_arguments.done.item_id`, and `response.output_item.done.item.id`. The Responses [streaming-event reference](https://developers.openai.com/api/reference/resources/responses/streaming-events#response.output_text.annotation.added) likewise defines `item_id` as the unique identifier of the output item at the corresponding `output_index`.
+- **Live-upstream verified before adaptation:** a real HTTP `POST /responses` with `stream: true` returned `200` and `response.completed`, but one reasoning item at `output_index=0` used `3` distinct opaque IDs while one function-call item at `output_index=1` used `11`. A real WebSocket connection completed both the local and Copilot `101` handshakes and returned `response.completed`, but the same two output indices used `3` and `13` distinct IDs respectively. The function `call_id` remained stable, proving this was per-event item-ID churn rather than multiple logical tool calls.
+- **Implementation boundary:** direct Copilot Responses streams now retain the first non-empty item ID observed for each non-negative safe-integer `output_index` and reuse it in later `item.id`, `item_id`, and terminal `response.output[index].id` fields. The map is response-local for HTTP/SSE and turn-local for WebSocket, so two turns on one socket cannot share item aliases. `call_id`, response IDs, encrypted reasoning, content, summaries, indices, sequence numbers, and unknown fields remain untouched. This adaptation is always enabled because it restores the official client-facing contract; there is no opt-in flag that leaves the default stream malformed.
+- **Live-upstream verified after adaptation:** the same forced function-call probe completed over both transports. HTTP/SSE exposed `3` item-bearing observations for `output_index=0` and `13` for `output_index=1`, with exactly one public ID per index. WebSocket also exposed exactly one public ID per index and one unchanged function `call_id`, then completed normally.
+- **Stateless replay verified:** the packaged `bun run test:live:responses-item-replay` gate used a real disposable HTTP listener and `store:false` on both turns. The latest run observed `20` client-visible item-ID fields with one ID per `output_index`, captured one reasoning item with non-empty `encrypted_content`, deep-compared the complete serialized replay slice against the first terminal `response.output`, proved `previous_response_id` was absent, and stopped each SSE reader at its terminal event. A runtime-generated code existed only inside the replayed function-call item; the second turn returned that exact code, so the semantic assertion could not pass from the original prompts alone. Sensitive request/output payloads remained in memory; listener, content-aware worktree snapshot, and temporary-directory cleanup passed.
+- **Locally reproduced:** the focused Windows, Responses normalizer, and WebSocket suites passed `75` tests with `0` failures, including exact no-op checks for stable upstream SSE message data and WebSocket raw frames; the worktree-snapshot suite passed `8` cases covering stable state, already-dirty tracked and untracked files, ignored files, raw tracked bytes hidden by EOL normalization, non-executable permission changes, symbolic-link targets, and fail-closed nested repositories. The full suite and coverage gate each passed `944` tests, skipped `60` opt-in live tests, failed `0`, and executed `3015` assertions across `84` files. Coverage reached 84.98% functions and 82.67% lines, all `21` critical-file gates passed, and typecheck, full lint, knip, dependency audit, build, the packaged Node HTTP/WebSocket listener smoke, and the `13`-case inbound request-signal regression suite were green.
+- **Client-smoke verified:** Vercel AI SDK `ai@7.0.29` with `@ai-sdk/openai@4.0.15` consumed a real Responses reasoning stream (`2` reasoning parts) and produced the forced `report_probe` tool call with input `{"value":"ai-sdk-ok"}` and finish reason `tool-calls`. The real Codex CLI `0.144.4` paired gate completed `3` HTTP turns and `3` WSS turns on one socket, with local/upstream `101` evidence, a two-link `previous_response_id` chain, and zero HTTP fallback. Claude Code `2.1.197` through native `/v1/messages` using `claude-opus-4.8` returned exactly `claude-ok`.
+
 ## Point-in-time evidence record: 2026-07-15
 
 This is a dated decision record for a dirty feature checkout based on Git commit `1d28835`. Re-run the exact probes before changing an upstream-gated behavior; a handshake alone is not semantic-support evidence.
@@ -340,6 +352,27 @@ The dated `gpt-5.4` result was:
 | --- | --- | --- | --- |
 | Function-tool control, `json_object`, `json_schema`, `web_search`, `web_search_preview` | `supported` | `supported` | Both transports passed the same semantic validator |
 | MCP, `file_search` | `explicit_capability_unsupported` | `explicit_capability_unsupported` | Both transports rejected the capability consistently; support is not claimed |
+
+## Stateless Responses item-ID replay gate
+
+OpenAI's [manual conversation-state guidance](https://developers.openai.com/api/docs/guides/conversation-state#manually-manage-conversation-state) requires stateless reasoning clients to preserve every item in `response.output` and append that complete output to the next request. The [Responses migration guide](https://developers.openai.com/api/docs/guides/migrate-to-responses#4-decide-when-to-use-statefulness) likewise requires `store:false` clients to replay returned reasoning items with their `encrypted_content`.
+
+Run the focused real-machine gate whenever client-visible Responses item IDs, reasoning output, encrypted content, or stateless replay handling changes:
+
+```bash
+COPILOT_LIVE_ITEM_ID_REPLAY=1 \
+COPILOT_LIVE_RESPONSES_MODEL=gpt-5.4 \
+COPILOT_ACCOUNT_TYPE=individual \
+bun run test:live:responses-item-replay
+```
+
+The gate starts a disposable proxy from the current checkout and uses real TCP `POST /v1/responses` SSE requests. The first turn sets `store:false`, requests `reasoning.encrypted_content`, and requires a completed response with reasoning plus a `remember_code` function-call output item. Across `item.id`, `item_id`, and terminal `response.output[index].id`, every observed ID for an output index must equal the first-seen public ID. Each output item must have at least two lifecycle observations so a gate that checks only `added` and terminal snapshots cannot miss churn in intermediate deltas.
+
+The first request forces a `remember_code` function call whose required code is generated at runtime and exists only in the tool description until Copilot returns it inside the function-call item. The second request includes the original user input, the complete first `response.output` without field pruning or reconstruction, a matching `function_call_output`, and a new user message; neither prompt nor any non-replayed input contains the generated code. Before sending, the client serializes the request and deep-compares the replay slice with the first output, verifies the encrypted reasoning is present through that full-object comparison, and rejects any `previous_response_id`. Success requires a second `response.completed` whose exact text equals the runtime code, so dropping the replay output cannot produce a false pass.
+
+A deterministic route-level regression independently inspects the upstream fetch body and requires the complete reasoning item, normalized item IDs, function-call item, function-call output, `include`, and `store:false` fields to remain unchanged. The live semantic gate and deterministic forwarding assertion are both required: one proves Copilot accepts the real replay, while the other prevents a proxy-side drop from being hidden by model behavior.
+
+The SSE client stops at the first terminal Responses event; upstream EOF is not required for success. Request bodies, opaque item IDs, and encrypted reasoning stay in memory and are never printed or written to disk. The wrapper verifies the disposable listener closes, compares both Git status and a content-aware digest of tracked changes plus non-ignored untracked files, and removes its safe temporary logs and snapshot files.
 
 ## Codex CLI smoke tests
 

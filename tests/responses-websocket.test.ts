@@ -63,6 +63,10 @@ class FakeUpstreamWebSocket extends EventEmitter {
     this.emit('message', Buffer.from(JSON.stringify(event)), false)
   }
 
+  emitRaw(raw: string): void {
+    this.emit('message', Buffer.from(raw, 'utf8'), false)
+  }
+
   pause(): void {
     this.pauseCalls++
   }
@@ -292,6 +296,113 @@ describe('ResponsesWebSocketSession', () => {
       sequence_number: 0,
     })
     await waitFor(() => harness.permit.succeed.mock.calls.length === 2)
+  })
+
+  test('stabilizes item IDs independently for each turn on one connection', async () => {
+    const harness = createHarness()
+
+    harness.session.receive(textMessage({
+      type: 'response.create',
+      model: 'gpt-ws',
+      input: 'first',
+    }))
+    await waitFor(() => harness.upstream.sent.length === 1)
+
+    harness.upstream.emitEvent({
+      type: 'response.output_item.added',
+      output_index: 0,
+      sequence_number: 0,
+      item: { type: 'function_call', id: 'first_added', call_id: 'call_first' },
+    })
+    harness.upstream.emitEvent({
+      type: 'response.function_call_arguments.done',
+      output_index: 0,
+      item_id: 'first_arguments',
+      sequence_number: 1,
+      item: { type: 'function_call', id: 'first_nested', call_id: 'call_first' },
+    })
+    harness.upstream.emitEvent({
+      type: 'response.completed',
+      response: {
+        id: 'resp_first_terminal',
+        output: [{ type: 'function_call', id: 'first_terminal', call_id: 'call_first' }],
+      },
+      sequence_number: 2,
+    })
+    await waitFor(() => harness.initialTurnRelease.mock.calls.length === 1)
+
+    harness.session.receive(textMessage({
+      type: 'response.create',
+      input: 'second',
+    }))
+    await waitFor(() => harness.upstream.sent.length === 2)
+    harness.upstream.emitEvent({
+      type: 'response.output_item.added',
+      output_index: 0,
+      sequence_number: 0,
+      item: { type: 'message', id: 'second_added', role: 'assistant' },
+    })
+    harness.upstream.emitEvent({
+      type: 'response.output_text.delta',
+      output_index: 0,
+      content_index: 0,
+      item_id: 'second_delta',
+      delta: 'ok',
+      sequence_number: 1,
+    })
+    harness.upstream.emitEvent({
+      type: 'response.completed',
+      response: {
+        id: 'resp_second_terminal',
+        output: [{ type: 'message', id: 'second_terminal', role: 'assistant' }],
+      },
+      sequence_number: 2,
+    })
+    await waitFor(() => harness.permit.succeed.mock.calls.length === 1)
+
+    const frames = harness.peer.sent.map(parseFrame) as Array<{
+      item?: { call_id?: string, id?: string }
+      item_id?: string
+      response?: { output?: Array<{ call_id?: string, id?: string }> }
+      type?: string
+    }>
+    expect(frames[0]?.item?.id).toBe('first_added')
+    expect(frames[1]?.item_id).toBe('first_added')
+    expect(frames[1]?.item?.id).toBe('first_added')
+    expect(frames[1]?.item?.call_id).toBe('call_first')
+    expect(frames[2]?.response?.output?.[0]).toMatchObject({
+      id: 'first_added',
+      call_id: 'call_first',
+    })
+    expect(frames[3]?.item?.id).toBe('second_added')
+    expect(frames[4]?.item_id).toBe('second_added')
+    expect(frames[5]?.response?.output?.[0]?.id).toBe('second_added')
+  })
+
+  test('forwards exact raw frames when upstream response and item IDs are already stable', async () => {
+    const harness = createHarness()
+    harness.session.receive(textMessage({
+      type: 'response.create',
+      model: 'gpt-ws',
+      input: 'stable upstream IDs',
+    }))
+    await waitFor(() => harness.upstream.sent.length === 1)
+
+    const rawFrames = [
+      '{ "type": "response.created", "response": { "id": "resp_stable", "output": [] }, "sequence_number": 0 } ',
+      '{\n "type": "response.output_item.added", "output_index": 0,\n "item": { "type": "message", "id": "item_stable", "role": "\\u0061ssistant", "content": [] }, "sequence_number": 1\n}',
+      '{ "type": "response.output_text.delta", "output_index": 0, "content_index": 0, "item_id": "item_stable", "delta": "ok", "sequence_number": 2 }\n',
+      '{\n "type": "response.completed", "response": { "id": "resp_stable", "status": "completed", "output": [{ "type": "message", "id": "item_stable", "role": "assistant", "content": [] }] },\n "sequence_number": 3\n}  ',
+    ]
+
+    for (const rawFrame of rawFrames)
+      harness.upstream.emitRaw(rawFrame)
+
+    await waitFor(() => harness.initialTurnRelease.mock.calls.length === 1)
+    expect(harness.peer.sent).toEqual(rawFrames)
+    for (const [index, actual] of harness.peer.sent.entries()) {
+      expect(Buffer.compare(Buffer.from(actual), Buffer.from(rawFrames[index]!))).toBe(0)
+    }
   })
 
   test('rejects a model without explicit WebSocket metadata before connecting', async () => {
