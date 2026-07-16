@@ -65,6 +65,12 @@ export interface AuthenticatedCopilotFetchDeps {
   ) => Promise<ReactiveTokenRefreshResult>
 }
 
+export interface CopilotRequestPermit {
+  cancel: () => void
+  fail: () => void
+  succeed: () => void
+}
+
 export interface CopilotRecoveryMetrics {
   upstreamAttempts: number
   upstreamTransportErrors: number
@@ -139,6 +145,68 @@ export async function fetchAuthenticatedCopilot(
   finally {
     scope.activeRequests--
   }
+}
+
+/**
+ * Admit one unit of work that will use an already-authenticated persistent
+ * Copilot transport. The caller must settle the permit exactly once when the
+ * corresponding response reaches a terminal event, fails, or is cancelled.
+ */
+export async function acquireCopilotRequestPermit(
+  options: Pick<AuthenticatedCopilotFetchOptions, 'endpoint' | 'model' | 'signal'>,
+  deps: Pick<AuthenticatedCopilotFetchDeps, 'now'> = {},
+): Promise<CopilotRequestPermit> {
+  const now = deps.now ?? Date.now
+  const scope = getScopeCircuit(createScopeKey(options.endpoint, options.model))
+  scope.activeRequests++
+
+  let lease: ConcurrencyLease | undefined
+  let reservation: CircuitReservation | undefined
+  let settled = false
+
+  const settle = (outcome: 'cancel' | 'failure' | 'success') => {
+    if (settled)
+      return
+    settled = true
+
+    if (reservation) {
+      if (outcome === 'success')
+        recordCircuitSuccess(reservation, now())
+      else if (outcome === 'failure')
+        recordCircuitFailure(reservation, now())
+      else
+        releaseCircuitReservation(reservation)
+    }
+    lease?.release()
+    scope.activeRequests--
+  }
+
+  try {
+    if (!state.concurrencyLimiter)
+      throwIfPermitAborted(options.signal)
+    assertCircuitAllowsRequest(scope, now())
+    lease = await acquireConcurrencyLease(options.signal)
+    throwIfPermitAborted(options.signal)
+    reservation = reserveCircuitProbe(scope, now())
+  }
+  catch (error) {
+    settle('cancel')
+    throw error
+  }
+
+  return {
+    cancel: () => settle('cancel'),
+    fail: () => settle('failure'),
+    succeed: () => settle('success'),
+  }
+}
+
+function throwIfPermitAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted)
+    return
+  const error = new Error('Copilot persistent-transport request was cancelled before admission')
+  error.name = 'AbortError'
+  throw error
 }
 
 async function fetchAuthenticatedCopilotWithinScope(

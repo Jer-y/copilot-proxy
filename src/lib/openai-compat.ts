@@ -41,7 +41,7 @@ export function chatCompletionsHasExternalImageUrls(
 }
 
 export function responsesHasExternalImageUrls(
-  payload: ResponsesPayload,
+  payload: { input?: ResponsesPayload['input'] },
 ): boolean {
   if (typeof payload.input === 'string' || !Array.isArray(payload.input)) {
     return false

@@ -1,6 +1,6 @@
-# GitHub Copilot Capability Validation for Claude Compatibility Work
+# GitHub Copilot Capability Validation
 
-This repository already translates Anthropic-compatible requests onto GitHub Copilot upstream APIs. That means some fixes are purely local schema/translation work, while others are only safe if the Copilot upstream endpoint actually accepts the mapped field.
+This repository forwards OpenAI-compatible requests, translates selected OpenAI/Anthropic request families, and bridges native Responses WebSocket connections onto GitHub Copilot upstream APIs. That means some fixes are purely local schema, transport, or translation work, while others are only safe if the selected Copilot model and endpoint actually support them.
 
 This document is the guardrail for that second category.
 
@@ -42,6 +42,7 @@ These should only be enabled after a live probe proves Copilot accepts the trans
 - Passing Responses-native controls such as `text.verbosity`, `include`, `top_logprobs`, `prompt_cache_key`, `prompt_cache_retention`, `metadata`, `safety_identifier`, `user`, `truncation`, `context_management`, `conversation`, `prompt`, `store`, `previous_response_id`, `background`, `max_tool_calls`, `stream_options`, and `service_tier`
 - Passing hosted and Responses-native tools such as `web_search`, `web_search_preview`, `file_search`, `image_generation`, `mcp`, `computer_use_preview`, `tool_search`, `local_shell`, `shell`, `custom`, `namespace`, `apply_patch`, and `code_interpreter`
 - Exposing official Responses subroutes such as `/responses/{id}`, `/responses/{id}/cancel`, `/responses/{id}/input_items`, `/responses/input_tokens`, and `/responses/compact`
+- Advertising or opening native Responses WebSocket transport for a model; ordinary `/responses` support is insufficient unless the current live model metadata explicitly includes `ws:/responses` or its normalized equivalent
 
 ## Probe matrix
 
@@ -66,6 +67,8 @@ Hosted tool presence probes set `tool_choice=none`, so they measure whether Copi
 ## How to run the live probes
 
 The live suite is intentionally opt-in. It is skipped during normal `bun test` runs unless `COPILOT_LIVE_TEST=1` is set.
+
+The dedicated Responses SSE/WSS parity suite is separate from `bun run test:live:copilot`: it uses `COPILOT_LIVE_WS_PARITY=1` and the direct command documented in [Responses SSE/WSS semantic parity gate](#responses-ssewss-semantic-parity-gate).
 
 Required environment variables:
 
@@ -155,6 +158,17 @@ Interpretation rules:
 - Optional probes pass if they return either `supported` or a clean `unsupported`.
 - `auth_error`, `rate_limited`, `api_error`, `network_error`, and `unexpected_response` should be treated as environment or upstream-health failures, not product decisions.
 
+## Point-in-time evidence record: 2026-07-15
+
+This is a dated decision record for a dirty feature checkout based on Git commit `1d28835`. Re-run the exact probes before changing an upstream-gated behavior; a handshake alone is not semantic-support evidence.
+
+- **Official-contract verified:** OpenAI [Responses WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) uses `GET /v1/responses` Upgrade plus `response.create` text events. `stream` is implicit, `background` is unsupported, one connection runs one response at a time in FIFO order without multiplexing, and the connection duration is limited to 60 minutes. With `store: false`, uncached `previous_response_id` state has no persisted fallback after reconnect. OpenAI also defines `generate: false` as a no-output state warmup that returns a response ID for later continuation.
+- **Implementation boundary:** the proxy accepts Upgrade requests on `/responses` and `/v1/responses`, bridges each eligible downstream connection to one Copilot `wss://.../responses` connection, and leaves HTTP `POST`/SSE Responses behavior intact. Eligibility comes from the current live model's explicit `ws:/responses` metadata; ordinary Responses support, Claude translation, Chat Completions, and Realtime do not imply this transport. Because Copilot did not preserve official warmup semantics, the proxy rejects `generate: false` locally with `400 unsupported_value`, `param: "generate"`, before opening upstream.
+- **Locally reproduced:** `bun run test:coverage` completed with `927` passed, `60` skipped, `0` failed, and `2946` assertions, reached 84.80% function / 82.61% line coverage, and passed the critical coverage gate for all `21` tracked files. The focused WebSocket and transport-parity suites passed downstream/session behavior, pre-Upgrade Host/Origin policy, independent HTTP/WSS model gating, FIFO ordering, per-connection plus 64 MiB global request buffering, top-level duration-limit errors, explicit `stream: false` rejection, clean idle close versus queued-work failure handling, semantic classification, Bun/Node handshake timeout, permit lifetime, authentication recovery, bounded approval cancellation, bounded HTTP/SSE shutdown, and graceful/forced WebSocket shutdown. `bun run test:node:http` also passed its packaged Node.js HTTP, ordinary WebSocket Upgrade, and non-acknowledging raw WebSocket forced-close smoke.
+- **Live-upstream verified:** using the `individual` account route and model `gpt-5.4`, both the Bun runtime and Node.js `24.11.1` completed a real local `GET /v1/responses` `101` followed by an upstream `wss://api.githubcopilot.com/responses` `101`. The Node semantic result was exactly `NODE_WS_OK`. A direct same-socket probe chained two turns with `previous_response_id` and returned exactly `LOCAL_WS_ONE` then `LOCAL_WS_TWO`; another same-socket probe began with text, added a base64 image on the second turn, completed normally, and answered `PINK`. Open-event diagnostics proved both handshake statuses; the active Bun connection did not expose an upstream request ID, so none is claimed. A separate live `generate: false` probe returned `bad_request` without `input` and actually generated output when `input` was present, which is not the official no-output warmup semantic.
+- **Client-smoke verified:** the real-command gate `bun run test:live:codex` passed repeatedly on 2026-07-15 with Codex CLI `0.144.4`, `gpt-5.4`, and the `individual` Copilot route. With the isolated child environment, its HTTP/SSE half completed a real local `command_execution` tool loop with matching request/terminal evidence (three to six requests across repeated runs). Its WSS half used one active downstream connection, exactly one upstream handshake, three alternating forwarded/completed turns, and zero HTTP fallback. Turn count is intentionally bounded below rather than fixed because real agent behavior may use additional tool rounds. An earlier targeted `0.144.3` trace also verified the full `store:false`/`previous_response_id` chain and observed a separate `generate:false` prewarm socket rejected locally with zero upstream attempts. Claude Code `2.1.197` using `claude-sonnet-5` returned exactly `claude-ok`.
+- **SSE/WSS semantic parity verified:** the opt-in parity test ran twice for `gpt-5.4`, once with `COPILOT_ACCOUNT_TYPE=individual` and once with `COPILOT_ACCOUNT_TYPE=enterprise`; both exited `0` with `confirmed=7`, `inconclusive=0`, and `failed=0`. Function-tool control, `json_object`, `json_schema`, `web_search`, and `web_search_preview` were semantically supported over both real SSE and WebSocket transports. MCP and `file_search` returned `explicit_capability_unsupported` on both transports, confirming rejection parity without claiming support. The HTTP side used `stream: true`, the WebSocket side used `response.create`, and each pair shared the same feature payload and validator.
+
 ## Point-in-time evidence record: 2026-07-13
 
 This section is a dated decision record, not a durable support matrix. Re-run the exact probes before changing an upstream-gated behavior.
@@ -232,9 +246,117 @@ bun test \
 
 For a real-machine recovery smoke, invalidate only the in-memory short-lived Copilot token in a disposable proxy process; never corrupt or replace the persisted GitHub credential. Then run one real Codex request through `/v1/responses` and one real Claude request through `/v1/messages`. Success requires a single refresh, a new upstream request ID, one terminal client response, no duplicated stream events, and a closed recovery circuit. Persistent GitHub risk enforcement must be recorded and cooled down, not induced repeatedly or bypassed by token/account/IP rotation.
 
+## Responses WebSocket validation
+
+Responses WebSocket is a native transport path, not a protocol translation. The proxy accepts client Upgrade requests on both `/responses` and `/v1/responses` and opens one Copilot `wss://.../responses` connection per accepted downstream connection. It must reject a model before connecting upstream unless that model's current live `supported_endpoints` explicitly contains `ws:/responses` or an equivalent normalized WebSocket endpoint. Do not infer WebSocket eligibility from ordinary `/responses`, a static model default, or a successful HTTP/SSE request.
+
+The [official Responses WebSocket guide](https://developers.openai.com/api/docs/guides/websocket-mode) defines the client contract that this path preserves:
+
+- Clients send text JSON `response.create` events; `stream` is implicit and `background` is unsupported. Reject `stream: false` or malformed `stream` values locally rather than reporting a streaming response as a faithful success; strip `stream: true` or `null` as transport-compatible no-ops.
+- OpenAI clients may send `response.create` with `generate: false` to warm request state without model output and receive a response ID for later continuation.
+- A connection processes one response at a time. Additional turns are FIFO and are not multiplexed.
+- A connection lasts at most 60 minutes, after which the client reconnects.
+- `previous_response_id` can use the connection-local most-recent response cache. With `store: false`, reconnecting or losing that cache means the client must start a new chain and resend the full required context; there is no persisted fallback.
+
+Copilot did not implement the official warmup semantic in the 2026-07-15 live probe: `generate: false` without `input` returned `bad_request`, while the same field with `input` caused actual generation. Treat this as unsupported rather than parser acceptance. The proxy must return local `400 unsupported_value` with `param: "generate"` and make zero upstream attempts until a fresh live probe proves a faithful no-output warmup.
+
+The focused deterministic gate is:
+
+```sh
+bun test \
+  tests/responses-websocket.test.ts \
+  tests/responses-websocket-upgrade.test.ts \
+  tests/responses-websocket-upstream.test.ts \
+  tests/copilot-responses-transport-parity.test.ts \
+  tests/routing-policy.test.ts \
+  tests/models-route.test.ts \
+  tests/copilot-auth-recovery.test.ts \
+  tests/start-shutdown.test.ts
+bun run test:node:http
+```
+
+The Bun tests must cover direct model gating, pre-Upgrade Host/Origin rejection, text-frame validation, local `generate: false` rejection with zero upstream attempts, one in-flight turn/FIFO ordering, bounded queue behavior, terminal-event permit release, inactivity timeout, disconnect cleanup, authentication recovery before a successful handshake, no replay after a turn is sent, Codex `supports_websockets` catalog projection, and graceful/forced shutdown. `bun run test:node:http` must exercise an actual packaged Node.js listener and complete a WebSocket Upgrade in addition to the ordinary HTTP route; a Bun-only in-process test does not substitute for that runtime smoke.
+
+Security and recovery assertions apply before and after Upgrade:
+
+- Reject invalid Host or Origin and connection-capacity overflow before returning `101`, with zero upstream WebSocket attempts.
+- Reject `generate: false` warmup locally before connecting upstream; Copilot generation under that field is not a faithful warmup fallback.
+- Run manual approval and rate limiting for every `response.create`, not only once during the handshake.
+- A handshake-time eligible `401`/`403` may use the normal single-flight refresh path once. After an upstream socket is open or a `response.create` has been sent, never replay that turn automatically.
+- Hold the shared concurrency lease for the active turn until a terminal Responses event, cancellation, or connection failure. An idle connection between turns must not retain a turn lease.
+- Keep each downstream connection isolated to one upstream connection, forward backpressure, and close both sides on disconnect or bounded shutdown. Never pass an inbound HTTP request signal into the upstream WebSocket.
+
+### Responses SSE/WSS semantic parity gate
+
+The official [Responses WebSocket event reference](https://developers.openai.com/api/reference/resources/responses/websocket-events#response.create) says that `response.create` uses the same top-level fields as `POST /v1/responses`, with transport-specific exceptions such as implicit streaming and unsupported background mode. The parity gate therefore compares one common feature payload across the two native Copilot transports instead of maintaining separate feature assumptions for SSE and WebSocket.
+
+Run the deterministic classifier/validator tests first:
+
+```sh
+bun test tests/copilot-responses-transport-parity.test.ts
+```
+
+Then run the direct live gate for every account route in scope:
+
+```sh
+COPILOT_LIVE_WS_PARITY=1 \
+COPILOT_TOKEN=ghu_xxx \
+COPILOT_LIVE_RESPONSES_MODEL=gpt-5.4 \
+COPILOT_ACCOUNT_TYPE=individual \
+bun test tests/live/copilot-responses-transport-parity.test.ts
+
+# Repeat with COPILOT_ACCOUNT_TYPE=enterprise for that route.
+```
+
+The live gate has these non-negotiable mechanics:
+
+1. Build one common payload for each feature.
+2. Send the HTTP attempt to Copilot `/responses` with `stream: true` and consume a real SSE event sequence through its terminal event.
+3. Send the WebSocket attempt as `response.create` on Copilot `wss://.../responses` and consume its event sequence through the terminal event.
+4. Apply the same feature-specific semantic validator to both attempts, then compare their outcome categories.
+5. Fail on a transport/category mismatch, semantic-validation failure, or transport/API failure. Matching `resource_unavailable` or `dependency_unavailable` outcomes are only `inconclusive`. Matching `explicit_capability_unsupported` outcomes are `confirmed` rejection parity, not feature support.
+
+The validators require observable feature behavior:
+
+| Feature | Required semantic evidence |
+| --- | --- |
+| Function-tool control | Exactly one completed `parity_marker` function call with the required `transport-parity` argument and a usable call ID |
+| `json_object` | Output parses as a JSON object and preserves `ok=true` plus `transport="parity"` |
+| `json_schema` | Output parses and satisfies the strict schema, including `answer="4"` and no additional properties |
+| `web_search`, `web_search_preview` | A completed `web_search_call`, `response.web_search_call.completed`, an affirmative statement that the H1 is `Example Domain`, and a URL citation or included action source whose URL is on `example.com` |
+| MCP positive path | Completed `mcp_list_tools` and `mcp_call` events/items, discovery of `dmcp.roll`, exact `1d1` arguments, a tool output whose exact result is numeric `1`, and an assistant answer exactly equal to `1` |
+| `file_search` positive path | A real vector store, completed search event/item, non-empty results and queries, a file citation, and the configured sentinel in returned evidence |
+
+For a positive `file_search` run, set both `COPILOT_LIVE_VECTOR_STORE_ID` and `COPILOT_LIVE_FILE_SEARCH_SENTINEL`. Do not turn a missing vector store into a capability verdict. Only an error that explicitly identifies the vector store as missing is `resource_unavailable`; a bare API or WebSocket-handshake `404` is `transport_error` and fails the gate. As of 2026-07-15, the relevant Files/Vector Store management `GET` requests returned `404` on all three probed Copilot hosts, so the environment could not provision that resource through a Copilot management plane. The parity run nevertheless reached an explicit tool-schema capability rejection on both transports, which is stronger than a resource-missing result but still does not claim support. If MCP becomes available later, a successful HTTP status is insufficient: the positive path must include both `mcp_list_tools` and `mcp_call` for deterministic `roll` input `1d1`. MCP connection, protocol, or tool-listing outages are dependency failures; a completed-but-wrong result or an ordinary tool-execution failure is a hard semantic failure, not an inconclusive dependency result.
+
+The dated `gpt-5.4` result was:
+
+| Account route | Process result | Confirmed | Inconclusive | Failed |
+| --- | --- | ---: | ---: | ---: |
+| `individual` | exit `0` | 7 | 0 | 0 |
+| `enterprise` | exit `0` | 7 | 0 | 0 |
+
+| Features | SSE outcome | WSS outcome | What is confirmed |
+| --- | --- | --- | --- |
+| Function-tool control, `json_object`, `json_schema`, `web_search`, `web_search_preview` | `supported` | `supported` | Both transports passed the same semantic validator |
+| MCP, `file_search` | `explicit_capability_unsupported` | `explicit_capability_unsupported` | Both transports rejected the capability consistently; support is not claimed |
+
 ## Codex CLI smoke tests
 
-Use a real `codex` CLI smoke when changing Responses routing, request adaptation, tool handling, hosted tools, structured output, image inputs, or Responses stream handling.
+Use the repository's paired real `codex` CLI smoke when changing Responses routing, request adaptation, tool handling, hosted tools, structured output, image inputs, HTTP/SSE stream handling, or Responses WebSocket behavior. The script directly invokes the installed `codex` command; it does not implement a mock client. It always runs an HTTP/SSE tool loop with provider WebSockets disabled and then a native WSS tool loop with provider WebSockets enabled:
+
+```bash
+COPILOT_LIVE_CODEX_SMOKE=1 \
+CODEX_SMOKE_MODEL=gpt-5.4 \
+CODEX_SMOKE_ACCOUNT_TYPE=individual \
+bun run test:live:codex
+```
+
+Set the exact current model and account type under test. The script owns one disposable proxy, isolated cache-backed `CODEX_HOME` directories, transport-specific provider configuration, redacted evidence summary, worktree comparison, listener cleanup, and artifact removal. In-process tests, direct service helpers, handcrafted WebSocket clients, and fixtures remain useful lower-layer checks but never count as this real Codex smoke.
+
+The packaged command is a POSIX Bash gate and requires `curl`, `jq`, `lsof`, `rg`, and GNU `timeout`. On macOS with coreutils, set `CODEX_TIMEOUT_BIN=gtimeout`. On Windows, run the equivalent real-CLI procedure from the expanded guidance below until a native PowerShell wrapper is added; do not replace it with a mock client.
+
+Do not replace the WSS half with a successful Codex final answer. Codex CLI `0.144.4` was locally reproduced falling back from a rejected WebSocket Upgrade to `POST /v1/responses`, then still emitting `turn.completed` and the expected final text. The paired script therefore requires proxy-side transport evidence and rejects any HTTP POST or fallback diagnostic in the WSS scenario.
 
 ### What counts as a real-machine Codex smoke
 
@@ -243,16 +365,16 @@ A qualifying smoke must use all of the following:
 - the real `codex` executable installed on the machine
 - a proxy process started from the current checkout
 - a real GitHub Copilot credential, exact model ID, and account type
-- real TCP and SSE traffic through the local `/v1/responses` route to the real Copilot upstream
+- real TCP traffic through the local `/v1/responses` route to the real Copilot upstream, using SSE for an HTTP smoke or an end-to-end WebSocket for a WebSocket smoke
 - real local tool execution for tool-loop scenarios
 
-In-process `server.request()` calls, direct calls to `createResponses`, `curl` requests without Codex, the live capability probe matrix, and stub/mock/fake upstreams remain useful at their own layers, but none of them substitutes for this client smoke. An HTTP `200` alone is also insufficient: validate the Codex terminal event and the observable result.
+In-process `server.request()` calls, direct calls to `createResponses`, `curl` requests without Codex, the live capability probe matrix, and stub/mock/fake upstreams remain useful at their own layers, but none of them substitutes for this client smoke. An HTTP `200` or WebSocket `101` alone is also insufficient: validate the Codex terminal event and the observable result.
 
 Use Codex's `--json` event stream and `--output-last-message` for machine assertions, as documented in the [official non-interactive mode guide](https://learn.chatgpt.com/docs/non-interactive-mode). Do not rely on formatted terminal output or model self-report.
 
 ### Preflight and isolated proxy lifecycle
 
-Run the following from the repository root in one Bash shell, keeping all blocks in that same shell. Set `CODEX_SMOKE_MODEL` to a current Responses-backed model that is also present in the installed Codex catalog with local-tool support; an unknown explicit model may run as a text-only client and invalidate the tool-loop case. On macOS, set `CODEX_TIMEOUT_BIN=gtimeout` if GNU `timeout` is installed through coreutils.
+The executable script above is the normative gate. The expanded shell blocks below remain a manual troubleshooting and surface-specific extension reference; if used for a release or behavior claim, run both the HTTP/SSE and WebSocket sections and apply every assertion from the script. Set `CODEX_SMOKE_MODEL` to a current Responses-backed model that is also present in the installed Codex catalog with local-tool support; an unknown explicit model may run as a text-only client and invalidate the tool-loop case. On macOS, set `CODEX_TIMEOUT_BIN=gtimeout` if GNU `timeout` is installed through coreutils.
 
 ```bash
 set -euo pipefail
@@ -263,10 +385,16 @@ export CODEX_SMOKE_EXPECTED_BACKEND="${CODEX_SMOKE_EXPECTED_BACKEND:-responses}"
 export CODEX_SMOKE_PORT="${CODEX_SMOKE_PORT:-4899}"
 export CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-180}"
 export CODEX_TIMEOUT_BIN="${CODEX_TIMEOUT_BIN:-timeout}"
+export CODEX_SMOKE_SUPPORTS_WEBSOCKETS="${CODEX_SMOKE_SUPPORTS_WEBSOCKETS:-false}"
 
 case "$CODEX_SMOKE_ACCOUNT_TYPE" in
   individual | business | enterprise) ;;
   *) echo "Invalid CODEX_SMOKE_ACCOUNT_TYPE: $CODEX_SMOKE_ACCOUNT_TYPE" >&2; exit 1 ;;
+esac
+
+case "$CODEX_SMOKE_SUPPORTS_WEBSOCKETS" in
+  true | false) ;;
+  *) echo "CODEX_SMOKE_SUPPORTS_WEBSOCKETS must be true or false." >&2; exit 1 ;;
 esac
 
 for command_name in codex curl jq lsof rg "$CODEX_TIMEOUT_BIN"; do
@@ -385,7 +513,7 @@ codex_smoke() {
       --json \
       --output-last-message "$final_path" \
       -c 'model_provider="copilot-proxy"' \
-      -c "model_providers.copilot-proxy={name=\"Copilot Proxy\",base_url=\"http://127.0.0.1:$CODEX_SMOKE_PORT/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}" \
+      -c "model_providers.copilot-proxy={name=\"Copilot Proxy\",base_url=\"http://127.0.0.1:$CODEX_SMOKE_PORT/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\",supports_websockets=$CODEX_SMOKE_SUPPORTS_WEBSOCKETS}" \
       "$@" \
     >"$events_path" \
     </dev/null
@@ -420,7 +548,9 @@ assert_codex_events() {
 
 `OPENAI_API_KEY=dummy` only satisfies Codex's custom-provider validation. The local proxy authenticates to Copilot with its normal credential and must not log or copy that token into smoke artifacts. `--json` writes JSONL to stdout while Codex diagnostics remain on stderr, so keep the streams separate; do not use `2>&1` when creating the events file.
 
-### Minimum real-machine gate
+### Minimum HTTP/SSE real-machine gate
+
+This is the first half of `bun run test:live:codex`; the script fixes `supports_websockets=false` for this scenario so it cannot accidentally consume the WSS path.
 
 #### 1. Streaming baseline
 
@@ -480,9 +610,67 @@ test "$(rg -c "event: 'response.completed'" "$CODEX_SMOKE_ROOT/tool-loop-proxy.l
 
 The second request must carry the matching tool-call history and `function_call_output`. Assert terminal `response.completed` events rather than requiring the upstream iterator to reach EOF for every turn: Codex may close the client stream immediately after the terminal event. When auditing exact fields, capture and inspect them at the proxy boundary; do not ask the model whether it received or sent them.
 
+### Responses WebSocket client gate
+
+This is the mandatory second half of `bun run test:live:codex`, not an optional add-on reserved for WebSocket-only changes. The script invokes the real `codex` command with `supports_websockets=true`; the provider opt-in is required in addition to the selected model's live proxy-catalog capability. Run it for every Responses behavior change so future Codex client updates cannot silently turn a green HTTP smoke into assumed WSS coverage.
+
+For Codex CLI `0.144.4`, WebSocket selection is provider-level. The old `responses_websockets` and `responses_websockets_v2` feature flags are removed, and the bundled model catalog does not contain a per-model WebSocket flag. Do not use `--enable` as smoke evidence: set the provider's `supports_websockets` value explicitly, then check the proxy's live `/v1/models?client_version=...` projection for the selected model.
+
+First prove that the proxy's Codex catalog view derives the selected model's flag from current live Copilot metadata:
+
+```bash
+export CODEX_SMOKE_SUPPORTS_WEBSOCKETS=true
+CODEX_CLIENT_VERSION="$(codex --version | awk '{print $2}')"
+curl -fsS \
+  "http://127.0.0.1:$CODEX_SMOKE_PORT/v1/models?client_version=$CODEX_CLIENT_VERSION" \
+  | jq -e --arg model "$CODEX_SMOKE_MODEL" \
+    'any(.models[]; .slug == $model and .supports_websockets == true)' >/dev/null
+```
+
+Then repeat the forced read-only tool loop over the WebSocket-enabled provider:
+
+```bash
+CODEX_WS_SENTINEL="codex-ws-tool-loop-$(date +%s)-$$"
+printf '%s\n' "$CODEX_WS_SENTINEL" >"$CODEX_SMOKE_WORK/ws-sentinel.txt"
+CODEX_WS_EVENTS="$CODEX_SMOKE_ROOT/ws-tool-loop.jsonl"
+CODEX_WS_FINAL="$CODEX_SMOKE_ROOT/ws-tool-loop-final.txt"
+CODEX_WS_LOG_START="$(wc -l <"$CODEX_SMOKE_PROXY_LOG")"
+
+codex_smoke \
+  "$CODEX_WS_FINAL" \
+  "$CODEX_WS_EVENTS" \
+  read-only \
+  'You must use the exec_command tool to read ws-sentinel.txt. Do not guess or answer before reading it. Reply with only the exact file contents.'
+
+assert_codex_events "$CODEX_WS_EVENTS"
+jq -s -e \
+  'any(.[]; .type == "item.completed" and .item.type == "command_execution" and .item.status == "completed" and .item.exit_code == 0)' \
+  "$CODEX_WS_EVENTS" >/dev/null
+test "$(cat "$CODEX_WS_FINAL")" = "$CODEX_WS_SENTINEL"
+
+tail -n "+$((CODEX_WS_LOG_START + 1))" \
+  "$CODEX_SMOKE_PROXY_LOG" \
+  >"$CODEX_SMOKE_ROOT/ws-tool-loop-proxy.log"
+test "$(rg -c 'Forwarded Responses WebSocket request' "$CODEX_SMOKE_ROOT/ws-tool-loop-proxy.log")" -ge 2
+! rg -q -- '--> POST /v1/responses' "$CODEX_SMOKE_ROOT/ws-tool-loop-proxy.log"
+```
+
+The paired script is the mandatory base client gate. When the change affects WebSocket connection state, chaining, prewarm, recovery, queueing, or lifecycle behavior, the full WebSocket claim additionally requires all of the following from a temporary redacted transport trace plus Codex JSONL and proxy diagnostics:
+
+- The client uses `GET /v1/responses` with WebSocket Upgrade and receives `101`; the proxy opens `wss://<selected-copilot-host>/responses` and receives a separate upstream `101`.
+- The scenario contains no local `POST /v1/responses`, no Codex `transport.fallback_to_http`, and no reconnect between the two turns. A correct final answer after HTTP fallback is a failed WebSocket smoke.
+- If Codex opens a separate prewarm socket with `generate: false`, require a local `400 unsupported_value` and zero upstream attempts for that socket. Do not count this expected fail-closed compatibility result as a reconnect or HTTP fallback on the active tool-loop socket.
+- One downstream connection maps to one upstream connection. It carries at least two FIFO `response.create` events: the first produces the real local tool call, and the second carries the matching tool output plus the first response's `previous_response_id`. Both requests use `store: false` for the stateless smoke.
+- Both Responses turns emit a terminal event (`response.completed`, `response.failed`, `response.incomplete`, or `error`), with the successful scenario requiring `response.completed` for both; Codex emits `turn.completed`, no error/failed event, and the final sentinel matches.
+- The active-turn concurrency lease is released after each terminal event, and closing Codex closes both WebSocket sides without a leaked listener, session, queue item, or permit.
+
+The script consumes existing redacted proxy diagnostics for the downstream Upgrade, upstream handshake, forwarded-request connection ID, terminal-event connection ID, HTTP route, `storeFalse`, presence of `previous_response_id`, and whether that ID matches the preceding terminal response. It requires exactly one active connection, at least two alternating forwarded/completed turns with equal counts, `store:false` on every turn, no previous ID on the first turn, a matching previous ID on every later turn, one upstream handshake, and zero HTTP fallback. Its final summary records UTC date, Git SHA and dirty state, local/upstream `101` counts, turn/terminal counts, active-socket count, chain counts, and fallback count. It never retains authorization headers, tokens, response IDs, raw frames, complete prompts, or tool output. Do not claim `generate:false` prewarm evidence when Codex did not send such an event; if it does send one, validate the actual local rejection and zero upstream attempts before recording it. Do not add a fake Codex implementation to obtain that evidence.
+
+The `101` statuses must come from actual handshake evidence. The `Forwarded Responses WebSocket request` debug count proves that frames crossed the proxy but does not, by itself, prove both Upgrade statuses. Do not retain tokens, Authorization headers, complete prompts, tool output, or raw unredacted frames in the evidence record.
+
 ### Surface-specific real-machine cases
 
-Run the minimum gate for every Responses behavior change, then add the matching scenario below. A schema merely being present in the first request does not prove that the feature works.
+Run the minimum HTTP/SSE gate for every Responses behavior change so the existing transport remains covered, then add the matching scenario below. WebSocket changes must also run [Responses WebSocket client gate](#responses-websocket-client-gate). A schema merely being present in the first request does not prove that the feature works.
 
 | Changed surface | Required real Codex scenario | Semantic evidence |
 | --- | --- | --- |
@@ -491,6 +679,7 @@ Run the minimum gate for every Responses behavior change, then add the matching 
 | Image input | `--image <known-local-fixture>` | The real Codex image request succeeds and the answer proves the known image fact |
 | Web search | A prompt that requires an actual search | Codex JSONL contains a web-search event and the result uses returned evidence |
 | MCP | A disposable real MCP server with a deterministic tool | Codex JSONL contains the MCP call/result and the final answer uses the returned value |
+| Responses WebSocket | WebSocket-enabled provider plus the forced tool loop above | Local and upstream `101`, one persistent one-to-one bridge, at least two alternating `response.create`/terminal pairs with equal counts, no `POST` fallback, and the semantic sentinel matches |
 | Responses-to-Anthropic translation | The exact Claude model and intended Codex configuration | Proxy logs prove `/v1/responses` translated to the real `/v1/messages` upstream and the terminal SSE is client-compatible |
 | Streaming cancellation | Interrupt the real Codex process after the first upstream SSE event | Codex exits within a bound, the captured proxy request does not finish with route status `500`, the proxy listener remains healthy, and an immediate baseline rerun succeeds |
 
@@ -558,7 +747,7 @@ curl -fsS \
 
 ### Evidence record and cleanup
 
-Record the UTC date, Git SHA and dirty state, `codex` path and version, Copilot account type, exact model ID, expected backend, scenario IDs, configuration overrides, Codex exit status, terminal event, semantic assertion, local route, upstream endpoint/status, and stream completion when the client remains connected through EOF. Emit a redacted summary before cleanup; retain that summary in the surrounding job or terminal log when it supports an upstream-gated decision. Never retain authorization headers, tokens, raw proxy logs, or unredacted user content.
+Record the UTC date, Git SHA and dirty state, `codex` path and version, Copilot account type, exact model ID, expected backend, scenario IDs, configuration overrides, Codex exit status, terminal event, semantic assertion, local route, upstream endpoint/status, and stream completion when the client remains connected through EOF. For a WebSocket smoke, additionally record the provider and model `supports_websockets` decisions, local and upstream handshake statuses, downstream/upstream connection correlation, `response.create` and terminal-event counts, `POST` fallback count, reconnect count, and whether both turns used `store: false` with the expected `previous_response_id` chain. Record a `generate: false` prewarm rejection and zero upstream attempts only when the captured client traffic actually contained that event. Emit a redacted summary before cleanup; retain that summary in the surrounding job or terminal log when it supports an upstream-gated decision. Never retain authorization headers, tokens, raw proxy logs, or unredacted user content.
 
 The minimum gate can emit a machine-readable summary without preserving its raw temporary artifacts:
 
@@ -599,7 +788,7 @@ emit_codex_smoke_summary() {
 emit_codex_smoke_summary
 ```
 
-Add equivalent scenario-specific assertion fields when running writable tools, structured output, images, web search, MCP, translation, or cancellation cases.
+Add equivalent scenario-specific assertion fields when running writable tools, structured output, images, web search, MCP, translation, cancellation, or WebSocket cases. For WebSocket, the minimum summary fields are `local_websocket_101=true`, `upstream_websocket_101=true`, `response_create_count>=2`, `terminal_response_completed>=2`, `http_post_fallback_count=0`, `reconnect_count=0`, and `final_match=true`; derive them from redacted evidence rather than hard-coding success. Add `generate_false_local_rejections` and `generate_false_upstream_attempts` only when a real `generate:false` event was observed.
 
 Before leaving the shell, verify that the repository did not change:
 

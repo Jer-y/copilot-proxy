@@ -4,6 +4,7 @@ import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import {
+  acquireCopilotRequestPermit,
   fetchAuthenticatedCopilot,
   getCopilotRecoveryStatus,
   resetCopilotRecoveryStateForTests,
@@ -461,6 +462,139 @@ describe('authenticated Copilot recovery', () => {
     await response.body?.cancel('client disconnected')
     expect(upstreamCancelled).toBe(true)
     expect(state.concurrencyLimiter.snapshot().active).toBe(0)
+  })
+
+  test('settles persistent-transport permits exactly once for every outcome', async () => {
+    for (const [outcome, settle] of [
+      ['success', (permit: Awaited<ReturnType<typeof acquireCopilotRequestPermit>>) => permit.succeed()],
+      ['failure', (permit: Awaited<ReturnType<typeof acquireCopilotRequestPermit>>) => permit.fail()],
+      ['cancel', (permit: Awaited<ReturnType<typeof acquireCopilotRequestPermit>>) => permit.cancel()],
+    ] as const) {
+      state.concurrencyLimiter = new AsyncConcurrencyLimiter({
+        maxConcurrency: 1,
+        maxQueue: 0,
+        queueTimeoutMs: 0,
+      })
+      const permit = await acquireCopilotRequestPermit({
+        endpoint: 'ws:/responses',
+        model: `gpt-permit-${outcome}`,
+      })
+
+      expect(state.concurrencyLimiter.snapshot().active).toBe(1)
+      settle(permit)
+      permit.succeed()
+      permit.fail()
+      permit.cancel()
+
+      expect(state.concurrencyLimiter.snapshot()).toMatchObject({
+        active: 0,
+        totalAcquired: 1,
+        totalReleased: 1,
+      })
+    }
+  })
+
+  test('rejects an already-cancelled persistent-transport permit without a limiter', async () => {
+    state.concurrencyLimiter = undefined
+    const controller = new AbortController()
+    controller.abort('client disconnected')
+
+    await expect(acquireCopilotRequestPermit({
+      endpoint: 'ws:/responses',
+      model: 'gpt-cancelled-before-admission',
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+
+    const followup = await acquireCopilotRequestPermit({
+      endpoint: 'ws:/responses',
+      model: 'gpt-cancelled-before-admission',
+    })
+    followup.cancel()
+  })
+
+  test('preserves limiter abort accounting for a cancelled persistent-transport permit', async () => {
+    state.concurrencyLimiter = new AsyncConcurrencyLimiter({
+      maxConcurrency: 1,
+      maxQueue: 1,
+      queueTimeoutMs: 1_000,
+    })
+    const controller = new AbortController()
+    controller.abort('client disconnected')
+
+    await expect(acquireCopilotRequestPermit({
+      endpoint: 'ws:/responses',
+      model: 'gpt-cancelled-limiter-admission',
+      signal: controller.signal,
+    })).rejects.toMatchObject({
+      code: 'concurrency_acquire_aborted',
+      name: 'AbortError',
+    })
+    expect(state.concurrencyLimiter.snapshot()).toMatchObject({
+      abortedAcquisitions: 1,
+      active: 0,
+    })
+  })
+
+  test('rejects a full persistent-transport queue before recording an upstream attempt', async () => {
+    state.concurrencyLimiter = new AsyncConcurrencyLimiter({
+      maxConcurrency: 1,
+      maxQueue: 0,
+      queueTimeoutMs: 0,
+    })
+    const activePermit = await acquireCopilotRequestPermit({
+      endpoint: 'ws:/responses',
+      model: 'gpt-active',
+    })
+
+    try {
+      await expect(acquireCopilotRequestPermit({
+        endpoint: 'ws:/responses',
+        model: 'gpt-overflow',
+      })).rejects.toMatchObject({ response: { status: 429 } })
+
+      expect(getCopilotRecoveryStatus().metrics).toMatchObject({
+        concurrencyQueueFullRejections: 1,
+        upstreamAttempts: 0,
+      })
+      expect(state.concurrencyLimiter.snapshot()).toMatchObject({
+        active: 1,
+        queued: 0,
+      })
+    }
+    finally {
+      activePermit.cancel()
+    }
+  })
+
+  test('times out a queued persistent-transport permit without recording an upstream attempt', async () => {
+    state.concurrencyLimiter = new AsyncConcurrencyLimiter({
+      maxConcurrency: 1,
+      maxQueue: 1,
+      queueTimeoutMs: 5,
+    })
+    const activePermit = await acquireCopilotRequestPermit({
+      endpoint: 'ws:/responses',
+      model: 'gpt-active-timeout',
+    })
+
+    try {
+      await expect(acquireCopilotRequestPermit({
+        endpoint: 'ws:/responses',
+        model: 'gpt-queued-timeout',
+      })).rejects.toMatchObject({ response: { status: 503 } })
+
+      expect(getCopilotRecoveryStatus().metrics).toMatchObject({
+        concurrencyQueueTimeoutRejections: 1,
+        upstreamAttempts: 0,
+      })
+      expect(state.concurrencyLimiter.snapshot()).toMatchObject({
+        active: 1,
+        queued: 0,
+      })
+    }
+    finally {
+      activePermit.cancel()
+    }
   })
 
   test('never refreshes after a successful streaming response has begun', async () => {

@@ -402,6 +402,10 @@ const ResponsesInputItemSchema = z.union([
   ResponsesTypedInputSchema,
 ])
 
+function isResponsesContentPartObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 export const ResponsesPayloadSchema = z.object({
   model: z.string(),
   input: z.union([z.string(), z.array(ResponsesInputItemSchema)]),
@@ -414,4 +418,57 @@ export const ResponsesPayloadSchema = z.object({
   temperature: z.number().nullable().optional(),
   top_p: z.number().nullable().optional(),
   max_output_tokens: z.number().nullable().optional(),
-}).passthrough()
+}).passthrough().superRefine((payload, ctx) => {
+  if (!Array.isArray(payload.input))
+    return
+
+  for (let itemIndex = 0; itemIndex < payload.input.length; itemIndex++) {
+    const item = payload.input[itemIndex] as Record<string, unknown>
+    const isMessage = typeof item.role === 'string'
+      && (item.type === undefined || item.type === 'message')
+
+    if (isMessage) {
+      if (typeof item.content !== 'string' && !Array.isArray(item.content)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Expected a string or an array of content parts',
+          path: ['input', itemIndex, 'content'],
+        })
+      }
+      else if (Array.isArray(item.content)) {
+        for (let partIndex = 0; partIndex < item.content.length; partIndex++) {
+          if (isResponsesContentPartObject(item.content[partIndex]))
+            continue
+
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Expected a content part object',
+            path: ['input', itemIndex, 'content', partIndex],
+          })
+        }
+      }
+    }
+
+    if (item.type === 'function_call_output') {
+      if (typeof item.output !== 'string' && !Array.isArray(item.output)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Expected a string or an array of content parts',
+          path: ['input', itemIndex, 'output'],
+        })
+      }
+      else if (Array.isArray(item.output)) {
+        for (let partIndex = 0; partIndex < item.output.length; partIndex++) {
+          if (isResponsesContentPartObject(item.output[partIndex]))
+            continue
+
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Expected a content part object',
+            path: ['input', itemIndex, 'output', partIndex],
+          })
+        }
+      }
+    }
+  }
+})

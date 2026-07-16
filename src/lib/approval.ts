@@ -6,8 +6,6 @@ import { HTTPError } from './error'
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000
 const MAX_PENDING_APPROVALS = 4
-let approvalQueue: Promise<void> = Promise.resolve()
-let pendingApprovals = 0
 
 interface ApprovalRequestContext {
   method: string
@@ -18,7 +16,23 @@ interface ApprovalRequestContext {
   model?: string
 }
 
+interface ApprovalQueueEntry {
+  context?: ApprovalRequestContext
+  options: ApprovalOptions
+  reject: (reason?: unknown) => void
+  resolve: () => void
+  started: boolean
+  queuedAbortListener?: () => void
+}
+
 const approvalRequestStorage = new AsyncLocalStorage<ApprovalRequestContext>()
+const approvalQueue: ApprovalQueueEntry[] = []
+let activeApproval: ApprovalQueueEntry | undefined
+
+export interface ApprovalOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
 
 export function withApprovalRequestContext<T>(context: ApprovalRequestContext, callback: () => T): T {
   return approvalRequestStorage.run(context, callback)
@@ -30,26 +44,86 @@ export function setApprovalRequestModel(model: unknown): void {
     context.model = sanitizeAndTruncate(model)
 }
 
-export async function awaitApproval(options?: { timeoutMs?: number }) {
-  if (pendingApprovals >= MAX_PENDING_APPROVALS) {
+export async function awaitApproval(options: ApprovalOptions = {}) {
+  if (options.signal?.aborted)
+    throw createApprovalAbortError()
+
+  if (approvalQueue.length + (activeApproval ? 1 : 0) >= MAX_PENDING_APPROVALS) {
     throwApprovalUnavailable('Manual approval queue is full')
   }
 
-  pendingApprovals++
-  const run = approvalQueue.then(
-    () => awaitApprovalUnqueued(options),
-    () => awaitApprovalUnqueued(options),
-  )
-  approvalQueue = run.catch(() => {})
-  try {
-    return await run
-  }
-  finally {
-    pendingApprovals--
-  }
+  return await new Promise<void>((resolve, reject) => {
+    const entry: ApprovalQueueEntry = {
+      context: approvalRequestStorage.getStore(),
+      options,
+      reject,
+      resolve,
+      started: false,
+    }
+
+    if (options.signal) {
+      entry.queuedAbortListener = () => {
+        if (entry.started)
+          return
+        const index = approvalQueue.indexOf(entry)
+        if (index === -1)
+          return
+        approvalQueue.splice(index, 1)
+        removeQueuedAbortListener(entry)
+        reject(createApprovalAbortError())
+      }
+      options.signal.addEventListener('abort', entry.queuedAbortListener, { once: true })
+    }
+
+    approvalQueue.push(entry)
+    processApprovalQueue()
+  })
 }
 
-async function awaitApprovalUnqueued(options?: { timeoutMs?: number }) {
+function processApprovalQueue(): void {
+  if (activeApproval)
+    return
+
+  const entry = approvalQueue.shift()
+  if (!entry)
+    return
+
+  entry.started = true
+  activeApproval = entry
+  removeQueuedAbortListener(entry)
+
+  const run = entry.context
+    ? approvalRequestStorage.run(entry.context, () => awaitApprovalUnqueued(entry.options))
+    : awaitApprovalUnqueued(entry.options)
+
+  void raceApprovalWithAbort(run, entry.options.signal).then(
+    () => entry.resolve(),
+    (error: unknown) => entry.reject(error),
+  )
+  void run.then(
+    () => finishApprovalRun(entry),
+    () => finishApprovalRun(entry),
+  )
+}
+
+function finishApprovalRun(entry: ApprovalQueueEntry): void {
+  if (activeApproval !== entry)
+    return
+  activeApproval = undefined
+  processApprovalQueue()
+}
+
+function removeQueuedAbortListener(entry: ApprovalQueueEntry): void {
+  if (!entry.options.signal || !entry.queuedAbortListener)
+    return
+  entry.options.signal.removeEventListener('abort', entry.queuedAbortListener)
+  entry.queuedAbortListener = undefined
+}
+
+async function awaitApprovalUnqueued(options: ApprovalOptions) {
+  if (options.signal?.aborted)
+    throw createApprovalAbortError()
+
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     consola.warn('Manual approval is enabled, but no interactive TTY is available; rejecting request.')
     throwApprovalUnavailable('Manual approval requires an interactive TTY')
@@ -67,10 +141,13 @@ async function awaitApprovalUnqueued(options?: { timeoutMs?: number }) {
     }, timeoutMs)
     timeout.unref?.()
   })
+  const promptSignal = options.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal
   const promptPromise = consola.prompt(formatApprovalPrompt(), {
     type: 'confirm',
     cancel: 'symbol',
-    signal: controller.signal,
+    signal: promptSignal,
   } as Parameters<typeof consola.prompt>[1] & { signal: AbortSignal })
 
   const response = await Promise.race([
@@ -99,6 +176,34 @@ async function awaitApprovalUnqueued(options?: { timeoutMs?: number }) {
       Response.json({ message: 'Request rejected' }, { status: 403 }),
     )
   }
+}
+
+function raceApprovalWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal)
+    return promise
+  if (signal.aborted)
+    return Promise.reject(createApprovalAbortError())
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(createApprovalAbortError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then((value) => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(value)
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', onAbort)
+      reject(error)
+    })
+  })
+}
+
+function createApprovalAbortError(): Error {
+  const error = new Error('Manual approval was cancelled')
+  error.name = 'AbortError'
+  return error
 }
 
 function formatApprovalPrompt(): string {

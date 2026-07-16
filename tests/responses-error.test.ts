@@ -4,6 +4,7 @@ import consola from 'consola'
 import { ResponsesPayloadSchema } from '../src/lib/schemas'
 import { state } from '../src/lib/state'
 import { server } from '../src/server'
+import { normalizeCopilotResponsesEventStream, resetCopilotResponseIdAliasesForTests } from '../src/services/copilot/responses-id-normalizer'
 
 state.copilotToken = 'test-token'
 state.vsCodeVersion = '1.0.0'
@@ -36,6 +37,7 @@ beforeEach(() => {
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
   state.models = undefined
+  resetCopilotResponseIdAliasesForTests()
 })
 
 function createErroringSSE(
@@ -97,6 +99,82 @@ test('official nullable fields and rich function outputs pass Responses request 
   })
 
   expect(parsed.success).toBe(true)
+})
+
+test('malformed Responses content arrays fail validation without narrowing unknown typed parts', () => {
+  const invalidInputs = [[{
+    type: 'message',
+    role: 'user',
+    content: [null],
+  }], [{
+    type: 'message',
+    role: 'user',
+    content: null,
+  }], [{
+    type: 'function_call_output',
+    call_id: 'call_1',
+    output: [null],
+  }], [{
+    type: 'function_call_output',
+    call_id: 'call_1',
+    output: null,
+  }]]
+
+  for (const input of invalidInputs) {
+    const parsed = ResponsesPayloadSchema.safeParse({
+      model: 'gpt-5.4',
+      input,
+    })
+    expect(parsed.success).toBe(false)
+  }
+
+  expect(ResponsesPayloadSchema.safeParse({
+    model: 'gpt-5.4',
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'future_content_part', future_field: true }],
+    }, {
+      type: 'future_input_item',
+      future_field: true,
+    }],
+  }).success).toBe(true)
+})
+
+test('malformed Responses content arrays return 400 before an upstream request', async () => {
+  const invalidInputs = [[{
+    type: 'message',
+    role: 'user',
+    content: [null],
+  }], [{
+    type: 'message',
+    role: 'user',
+    content: null,
+  }], [{
+    type: 'function_call_output',
+    call_id: 'call_1',
+    output: [null],
+  }], [{
+    type: 'function_call_output',
+    call_id: 'call_1',
+    output: null,
+  }]]
+
+  for (const input of invalidInputs) {
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4', input }),
+    })
+    const body = await response.json() as { error?: { message?: string, type?: string } }
+
+    expect(response.status).toBe(400)
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('Expected ')
+    expect(body.error?.message).not.toContain('Cannot ')
+  }
+
+  expect(fetchMock).not.toHaveBeenCalled()
 })
 
 test('official nullable fields and rich function outputs are forwarded on a direct Responses route', async () => {
@@ -231,6 +309,42 @@ test('/v1/responses official subroutes are forwarded to the Copilot backend', as
     url: item.upstreamUrl,
     method: item.method,
   })))
+})
+
+test('/v1/responses ID subroutes resolve stable streamed IDs before forwarding', async () => {
+  for await (const normalizedEvent of normalizeCopilotResponsesEventStream((async function* () {
+    yield {
+      event: 'response.created',
+      data: '{"type":"response.created","sequence_number":0,"response":{"id":"public-response"}}',
+    }
+    yield {
+      event: 'response.completed',
+      data: '{"type":"response.completed","sequence_number":1,"response":{"id":"upstream-terminal"}}',
+    }
+  })())) {
+    void normalizedEvent
+  }
+  fetchMock.mockImplementation(async () => new Response('{}', {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }))
+
+  for (const [method, suffix] of [
+    ['GET', ''],
+    ['GET', '/input_items'],
+    ['POST', '/cancel'],
+    ['DELETE', ''],
+  ] as const) {
+    const response = await server.request(`/v1/responses/public-response${suffix}`, { method })
+    expect(response.status).toBe(200)
+  }
+
+  expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+    'https://api.githubcopilot.com/responses/upstream-terminal',
+    'https://api.githubcopilot.com/responses/upstream-terminal/input_items',
+    'https://api.githubcopilot.com/responses/upstream-terminal/cancel',
+    'https://api.githubcopilot.com/responses/upstream-terminal',
+  ])
 })
 
 test('/v1/responses surfaces upstream 413 with request-size diagnostics', async () => {

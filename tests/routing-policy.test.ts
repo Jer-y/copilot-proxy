@@ -3,11 +3,40 @@ import type { Model } from '~/services/copilot/get-models'
 
 import { describe, expect, test } from 'bun:test'
 
-import { assertMessagesPayloadTranslatable, assertResponsesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
+import { assertMessagesPayloadTranslatable, assertResponsesPayloadTranslatable, modelSupportsResponsesWebSocket, resolveRoute } from '~/lib/routing-policy'
 
 function fail(message: string): never {
   throw new Error(message)
 }
+
+describe('modelSupportsResponsesWebSocket', () => {
+  test('accepts only explicit live Responses WebSocket endpoints', () => {
+    for (const endpoint of [
+      'ws:/responses',
+      'wss:/responses',
+      'ws:/v1/responses',
+      ' ws:/V1/RESPONSES/ ',
+      ' WSS:/V1/RESPONSES/ ',
+    ]) {
+      expect(modelSupportsResponsesWebSocket(makeModel('gpt-ws', [endpoint]))).toBe(true)
+    }
+  })
+
+  test('does not infer WebSocket support from ordinary Responses or missing live metadata', () => {
+    for (const endpoint of [
+      'responses',
+      '/responses',
+      '/v1/responses',
+      'ws://responses',
+      'https:/responses',
+    ]) {
+      expect(modelSupportsResponsesWebSocket(makeModel('gpt-http', [endpoint]))).toBe(false)
+    }
+
+    expect(modelSupportsResponsesWebSocket(makeModel('gpt-unknown'))).toBe(false)
+    expect(modelSupportsResponsesWebSocket(undefined)).toBe(false)
+  })
+})
 
 describe('resolveRoute — anthropic-messages client', () => {
   test('Claude → native /v1/messages (direct)', () => {
@@ -67,14 +96,24 @@ describe('resolveRoute — responses client', () => {
     expect(route).toEqual({ backend: 'responses', kind: 'direct' })
   })
 
-  test('live Responses endpoint support lets future models route without static config', () => {
+  test('live HTTP Responses endpoint support lets future models route without static config', () => {
     const route = resolveRoute('responses', 'gpt-6-preview', fail, {
       models: [
-        makeModel('gpt-6-preview', ['/responses', 'ws:/responses']),
+        makeModel('gpt-6-preview', [' /V1/RESPONSES/ ']),
       ],
     })
 
     expect(route).toEqual({ backend: 'responses', kind: 'direct' })
+  })
+
+  test('does not infer HTTP Responses support from a WebSocket-only live endpoint', () => {
+    expect(() => resolveRoute('responses', 'gpt-ws-only', (message) => {
+      throw new Error(message)
+    }, {
+      models: [
+        makeModel('gpt-ws-only', [' ws:/V1/RESPONSES/ ']),
+      ],
+    })).toThrow(/no supported backend API/)
   })
 
   test('gpt-5-codex no longer inherits the dual chat-completions gpt-5 config', () => {
@@ -287,7 +326,7 @@ describe('assertResponsesPayloadTranslatable', () => {
   })
 })
 
-function makeModel(id: string, supported_endpoints: string[]): Model {
+function makeModel(id: string, supported_endpoints?: string[]): Model {
   return {
     id,
     supported_endpoints,

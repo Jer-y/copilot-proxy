@@ -206,7 +206,7 @@ function defineModelTests(model: string) {
     expect(res.status).toBe(200)
   }, TIMEOUT)
 
-  test('thinking adaptive + effort high returns a thinking block', async () => {
+  test('thinking adaptive + effort high returns a valid response', async () => {
     const res = await sendRequest({
       model,
       max_tokens: 8000,
@@ -219,7 +219,13 @@ function defineModelTests(model: string) {
     const content = body.content as Array<Record<string, unknown>>
     const hasThinking = content?.some(b => b.type === 'thinking')
     consola.info(`  → thinking blocks in response: ${hasThinking}`)
-    expect(hasThinking).toBe(true)
+
+    // Adaptive thinking lets the model decide whether this turn needs an
+    // exposed thinking block. Copilot currently makes different choices across
+    // otherwise compatible Opus models, so validate the completed assistant
+    // response instead of treating optional reasoning visibility as mandatory.
+    expect(content).toBeArray()
+    expect(content.some(block => block.type === 'text' || block.type === 'thinking')).toBe(true)
   }, TIMEOUT)
 
   test('metadata — user_id', async () => {
@@ -250,7 +256,7 @@ function defineModelTests(model: string) {
     expect(types).toContain('message_stop')
   }, TIMEOUT)
 
-  test('streaming + adaptive thinking — thinking events in stream', async () => {
+  test('streaming + adaptive thinking — complete stream with optional thinking events', async () => {
     const res = await sendRequest({
       model,
       max_tokens: 8000,
@@ -264,7 +270,8 @@ function defineModelTests(model: string) {
     const hasThinkingBlock = raw.includes('"type":"thinking"')
     const hasThinkingDelta = raw.includes('thinking_delta')
     consola.info(`  → thinking stream: block=${hasThinkingBlock}, delta=${hasThinkingDelta}`)
-    expect(hasThinkingDelta).toBe(true)
+    expect(raw).toContain('message_stop')
+    expect(hasThinkingDelta).toBe(hasThinkingBlock)
   }, TIMEOUT)
 
   test('tool_choice auto', async () => {

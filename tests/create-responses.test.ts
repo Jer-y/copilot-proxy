@@ -4,7 +4,15 @@ import { afterEach, expect, mock, test } from 'bun:test'
 
 import { JSONResponseError } from '../src/lib/error'
 import { state } from '../src/lib/state'
-import { createResponses, summarizeResponsesPayload } from '../src/services/copilot/create-responses'
+import {
+  analyzeResponsesPayloadForCopilot,
+  createResponses,
+  summarizeResponsesPayload,
+} from '../src/services/copilot/create-responses'
+import {
+  normalizeCopilotResponsesEventStream,
+  resetCopilotResponseIdAliasesForTests,
+} from '../src/services/copilot/responses-id-normalizer'
 
 state.copilotToken = 'test-token'
 state.vsCodeVersion = '1.0.0'
@@ -30,6 +38,48 @@ const fetchMock = mock(
 
 afterEach(() => {
   fetchMock.mockClear()
+  resetCopilotResponseIdAliasesForTests()
+})
+
+test('maps a stable streamed response ID back to the Copilot terminal ID', async () => {
+  for await (const normalizedEvent of normalizeCopilotResponsesEventStream((async function* () {
+    yield {
+      event: 'response.created',
+      data: '{"type":"response.created","sequence_number":0,"response":{"id":"public-created"}}',
+    }
+    yield {
+      event: 'response.completed',
+      data: '{"type":"response.completed","sequence_number":1,"response":{"id":"upstream-terminal"}}',
+    }
+  })())) {
+    // Exhaust the normalizer so it commits the public-to-terminal alias.
+    void normalizedEvent
+  }
+
+  fetchMock.mockImplementationOnce(
+    (_url: string, _opts: { headers: Record<string, string> }) => new Response(JSON.stringify({
+      id: 'resp_next',
+      object: 'response',
+      model: 'gpt-test',
+      output: [],
+      previous_response_id: 'upstream-terminal',
+      status: 'completed',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  )
+  const result = await createResponses({
+    input: 'continue',
+    model: 'gpt-test',
+    previous_response_id: 'public-created',
+  })
+
+  const body = JSON.parse(
+    (fetchMock.mock.calls[0][1] as unknown as { body: string }).body,
+  ) as Record<string, unknown>
+  expect(body.previous_response_id).toBe('upstream-terminal')
+  expect((result.body as { previous_response_id?: string }).previous_response_id).toBe('public-created')
 })
 
 test('sets X-Initiator to agent if function_call history is present', async () => {
@@ -152,6 +202,28 @@ test('summarizes inline image payloads without expanding them', () => {
     inlineDataUrlImages: 2,
     inlineImageChars: firstDataUrl.length + secondDataUrl.length,
     maxInlineImageChars: secondDataUrl.length,
+  })
+})
+
+test('keeps payload analysis and summaries safe for malformed runtime values', () => {
+  const malformedPayload = {
+    model: 'gpt-test',
+    input: [
+      null,
+      { role: 'user', content: [null] },
+      { type: 'function_call_output', call_id: 'call_1', output: [null] },
+    ],
+  } as unknown as ResponsesPayload
+
+  expect(analyzeResponsesPayloadForCopilot(malformedPayload)).toEqual({
+    hasVision: false,
+    initiator: 'user',
+  })
+  expect(summarizeResponsesPayload(malformedPayload)).toMatchObject({
+    functionCallOutputs: 1,
+    imageParts: 0,
+    inlineDataUrlImages: 0,
+    messageItems: 1,
   })
 })
 

@@ -28,9 +28,14 @@ const FLOORS: CoverageFloor[] = [
   { file: 'src/lib/translation/anthropic-to-responses.ts', lines: 0.80, functions: 0.85 },
   { file: 'src/lib/translation/responses-to-anthropic.ts', lines: 0.60, functions: 0.80 },
   { file: 'src/routes/messages/stream-finalizer.ts', lines: 0.65, functions: 0.80 },
+  { file: 'src/routes/responses/websocket.ts', lines: 0.90, functions: 0.85 },
   { file: 'src/services/copilot/create-anthropic-messages.ts', lines: 0.90, functions: 0.90 },
   { file: 'src/services/copilot/create-embeddings.ts', lines: 0.90, functions: 0.95 },
   { file: 'src/services/copilot/create-responses.ts', lines: 0.90, functions: 0.95 },
+  { file: 'src/services/copilot/responses-id-normalizer.ts', lines: 0.90, functions: 0.95 },
+  // The connector includes Bun/Node-specific handshake branches that require
+  // separate runtime probes; keep the portable core above a meaningful floor.
+  { file: 'src/services/copilot/responses-websocket.ts', lines: 0.60, functions: 0.55 },
   { file: 'src/services/copilot/upstream-response.ts', lines: 0.95, functions: 0.70 },
 ]
 

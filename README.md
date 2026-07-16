@@ -29,18 +29,20 @@ English | [简体中文](README.zh-CN.md)
 > - [Anthropic Claude - GitHub Docs](https://docs.github.com/en/copilot/concepts/agents/anthropic-claude)
 > - [Using your own LLM models in GitHub Copilot CLI - GitHub Docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models)
 >
-> This project is still useful when you specifically want a local OpenAI- or Anthropic-compatible HTTP proxy backed by your GitHub Copilot subscription for external clients such as Claude Code, Codex, SDKs, or custom tooling.
+> This project is still useful when you specifically want a local OpenAI- or Anthropic-compatible API proxy, including native Responses WebSocket mode, backed by your GitHub Copilot subscription for external clients such as Claude Code, Codex, SDKs, or custom tooling.
 
 ---
 
 ## Project Overview
 
-A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot subscription through OpenAI- and Anthropic-compatible HTTP endpoints. This lets you use GitHub Copilot with external tools that speak OpenAI Chat Completions/Responses or Anthropic Messages, including [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and OpenAI Codex.
+A reverse-engineered proxy for the GitHub Copilot API that exposes your Copilot subscription through OpenAI- and Anthropic-compatible HTTP endpoints plus native Responses WebSocket mode. This lets you use GitHub Copilot with external tools that speak OpenAI Chat Completions/Responses or Anthropic Messages, including [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and OpenAI Codex.
 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) APIs, with native Claude `/v1/messages` passthrough when the upstream supports it.
 - **Responses API Support**: Supports the OpenAI Responses API (`/v1/responses`) for Copilot models that expose the Responses backend. Claude requests are also reachable via `/v1/responses` when their request shape can be faithfully translated to Anthropic Messages.
+- **Native Responses WebSocket Mode**: Accepts WebSocket Upgrades on `GET /v1/responses` (and `GET /responses`) and bridges each client connection one-to-one to Copilot's native `wss://.../responses` endpoint. WebSocket mode is dynamically enabled only for models whose current Copilot metadata explicitly advertises `ws:/responses`, on both Bun and Node.js; the existing HTTP `POST`/SSE Responses path remains available.
+- **Responses SSE/WSS Semantic Parity Gate**: Includes an opt-in live gate that sends the same feature payload through a real HTTP `stream: true` SSE response and a WebSocket `response.create`, then compares semantic results rather than status codes alone.
 - **Codex Ready for Responses-backed models**: OpenAI Codex CLI/SDK works by pointing its base URL to this proxy when the selected Copilot model exposes the Responses backend. Codex-to-Claude translation is subject to the limitations below.
 - **Model-Aware Routing and Translation**: Requests are routed directly when the requested client API is supported; otherwise only `/v1/messages` and `/responses` may translate to each other. The proxy does not translate to or from `/chat/completions`. Also applies Claude prompt caching (`copilot_cache_control`), preserves adaptive-thinking / `output_config.effort` compatibility, and normalizes provider-specific model IDs when Copilot expects a different upstream name.
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
@@ -353,11 +355,20 @@ These endpoints mimic the OpenAI API structure.
 
 ### OpenAI Responses API Endpoint
 
-This endpoint supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format. Models backed by Copilot's Responses surface are forwarded directly upstream. Claude models are served by translating the request into the Anthropic Messages API.
+These endpoints support the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) format. HTTP requests backed by Copilot's Responses surface are forwarded directly upstream; Claude models can use the HTTP route through a faithful Anthropic Messages translation. WebSocket turns are direct-only: the proxy opens the one-to-one Copilot bridge only after the first `response.create` selects a live model that explicitly advertises `ws:/responses`. It does not translate Claude/Anthropic Messages, Chat Completions, or the Realtime API into WebSocket support.
 
-| Endpoint              | Method | Description                                                              |
-| --------------------- | ------ | ------------------------------------------------------------------------ |
-| `POST /v1/responses`  | `POST` | Creates a model response using the Responses API (supports streaming).   |
+| Endpoint              | Method          | Description                                                               |
+| --------------------- | --------------- | ------------------------------------------------------------------------- |
+| `POST /v1/responses`  | `POST`          | Creates a model response using the Responses API (supports SSE streaming). |
+| `GET /v1/responses`   | `GET` + Upgrade | Opens Responses WebSocket mode; the first turn must select an explicitly supported model. |
+
+WebSocket mode follows the [official Responses WebSocket contract](https://developers.openai.com/api/docs/guides/websocket-mode): send `response.create` text events, keep at most one response in flight on a connection, and let queued turns run FIFO rather than multiplexing them. A connection lasts at most 60 minutes. If you use `store: false`, connection-local `previous_response_id` state is not available after reconnect, so start a new chain with the full required context unless you deliberately use persisted state. HTTP/SSE clients can continue using `POST /v1/responses` unchanged.
+
+Streaming is implicit on this transport. The proxy rejects `stream: false` and malformed `stream` values before opening upstream, while treating `stream: true` or `null` as transport-compatible no-ops and stripping them from the Copilot event.
+
+Downstream input buffering is bounded independently from upstream concurrency: each text frame is limited to 16 MiB, each connection may queue at most 8 turns or 32 MiB, and all Responses WebSocket connections share a 64 MiB request-buffer budget covering queued and setup-stage frames. A connection that exceeds either queue boundary receives a local `429` and is closed without forwarding the rejected turn to Copilot.
+
+Compatibility note: official OpenAI WebSocket mode defines `generate: false` as a no-output state warmup. Copilot's 2026-07-15 behavior was not equivalent: it returned `bad_request` without `input` and generated output when `input` was present. The proxy therefore fails closed with `400 unsupported_value` (`param: "generate"`) before connecting upstream instead of reporting a misleading warmup success.
 
 ### Anthropic Compatible Endpoints
 
@@ -577,6 +588,48 @@ bun run test:live:copilot
 ```
 
 See [docs/copilot-capability-validation.md](docs/copilot-capability-validation.md) for the probe matrix, supported environment variables, and result interpretation.
+
+For a Responses WebSocket change, run the focused deterministic gates before the full suite:
+
+```sh
+bun test \
+  tests/responses-websocket.test.ts \
+  tests/responses-websocket-upgrade.test.ts \
+  tests/responses-websocket-upstream.test.ts \
+  tests/copilot-responses-transport-parity.test.ts \
+  tests/routing-policy.test.ts \
+  tests/models-route.test.ts \
+  tests/copilot-auth-recovery.test.ts \
+  tests/start-shutdown.test.ts
+bun run test:node:http
+```
+
+Run the live semantic-parity gate for every Copilot account route in scope:
+
+```sh
+COPILOT_LIVE_WS_PARITY=1 \
+COPILOT_TOKEN=ghu_xxx \
+COPILOT_LIVE_RESPONSES_MODEL=gpt-5.4 \
+COPILOT_ACCOUNT_TYPE=individual \
+bun test tests/live/copilot-responses-transport-parity.test.ts
+
+# Repeat with COPILOT_ACCOUNT_TYPE=enterprise when validating that route.
+```
+
+The gate uses one common payload per feature, forces the HTTP side through real SSE, and sends the WebSocket side as `response.create`. A pair mismatch or semantic-validation failure fails the run; matching resource/dependency failures are only inconclusive. For positive `file_search` validation, also set `COPILOT_LIVE_VECTOR_STORE_ID` and `COPILOT_LIVE_FILE_SEARCH_SENTINEL`.
+
+On 2026-07-15, both the `individual` and `enterprise` runs for `gpt-5.4` exited `0` with `confirmed=7`, `inconclusive=0`, and `failed=0`. Function-tool control, `json_object`, `json_schema`, `web_search`, and `web_search_preview` were semantically supported on both transports. MCP and `file_search` returned the same explicit capability-unsupported result on both transports; this confirms rejection parity, not feature support. See the [dated evidence and validators](docs/copilot-capability-validation.md#responses-ssewss-semantic-parity-gate).
+
+For every Responses behavior change, run the paired real Codex client gate; it runs HTTP/SSE first and WSS second by default:
+
+```sh
+COPILOT_LIVE_CODEX_SMOKE=1 \
+CODEX_SMOKE_MODEL=gpt-5.4 \
+CODEX_SMOKE_ACCOUNT_TYPE=individual \
+bun run test:live:codex
+```
+
+The script invokes the installed `codex` command for both halves; it does not emulate a Codex client. The WSS half must prove local and upstream `101` handshakes, no HTTP `POST /v1/responses` fallback, and at least two alternating tool-loop turns on one persistent connection. See [Responses WebSocket client gate](docs/copilot-capability-validation.md#responses-websocket-client-gate).
 
 ## Usage Tips
 

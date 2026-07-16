@@ -96,6 +96,7 @@ describe('/v1/models', () => {
         model_messages?: unknown
         supports_image_detail_original: boolean
         supports_search_tool: boolean
+        supports_websockets: boolean
       }>
     }
 
@@ -114,6 +115,7 @@ describe('/v1/models', () => {
       input_modalities: ['text', 'image'],
       supports_image_detail_original: false,
       supports_search_tool: true,
+      supports_websockets: true,
     })
     expect(body.models[0]?.supported_reasoning_levels.map(level => level.effort)).toEqual([
       'low',
@@ -285,6 +287,45 @@ describe('/v1/models', () => {
 
     expect(response.status).toBe(200)
     expect(body.models.map(model => model.slug)).toEqual(['gpt-5.5'])
+  })
+
+  test('includes HTTP-only and WebSocket-only Responses models with normalized live transport flags', async () => {
+    state.models = {
+      object: 'list',
+      data: [
+        makeModel('gpt-5.5', {
+          supported_endpoints: [' ws:/V1/RESPONSES/ '],
+        }),
+        makeModel('gpt-5.4', {
+          supported_endpoints: [' /V1/RESPONSES/ '],
+        }),
+        makeModel('gpt-5.3-codex'),
+      ],
+    }
+    fetchMock.mockImplementationOnce(async () => {
+      return Response.json({
+        models: [
+          makeBundledCodexModel('gpt-5.5', { supports_websockets: false }),
+          makeBundledCodexModel('gpt-5.4', { supports_websockets: true }),
+          makeBundledCodexModel('gpt-5.3-codex', { supports_websockets: true }),
+        ],
+      })
+    })
+
+    const response = await server.request('/v1/models?client_version=0.133.5')
+    const body = await response.json() as {
+      models: Array<{ slug: string, supports_websockets: boolean }>
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.models.map(model => ({
+      slug: model.slug,
+      supportsWebSockets: model.supports_websockets,
+    }))).toEqual([
+      { slug: 'gpt-5.5', supportsWebSockets: true },
+      { slug: 'gpt-5.4', supportsWebSockets: false },
+      { slug: 'gpt-5.3-codex', supportsWebSockets: false },
+    ])
   })
 
   test('does not infer search or image support when Copilot omits optional capability fields', async () => {

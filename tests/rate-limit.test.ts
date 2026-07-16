@@ -1,10 +1,12 @@
 import type { State } from '~/lib/state'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test, vi } from 'bun:test'
 
 import { HTTPError } from '~/lib/error'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { checkRateLimit } from '~/lib/rate-limit'
+
+type TrackedAbortListener = ((event: Event) => void) | { handleEvent: (event: Event) => void }
 
 function makeState(overrides?: Partial<State>): State {
   return {
@@ -13,6 +15,54 @@ function makeState(overrides?: Partial<State>): State {
     rateLimitWait: false,
     showToken: false,
     ...overrides,
+  }
+}
+
+function createTrackedAbortSignal(): {
+  abort: () => void
+  activeListeners: () => number
+  addedListeners: () => number
+  removedListeners: () => number
+  signal: AbortSignal
+} {
+  let aborted = false
+  let addedListeners = 0
+  let removedListeners = 0
+  const listeners = new Set<TrackedAbortListener>()
+  const signal = {
+    get aborted() {
+      return aborted
+    },
+    addEventListener(type: string, listener: TrackedAbortListener | null) {
+      if (type !== 'abort' || listener === null)
+        return
+      addedListeners++
+      listeners.add(listener)
+    },
+    removeEventListener(type: string, listener: TrackedAbortListener | null) {
+      if (type !== 'abort' || listener === null || !listeners.delete(listener))
+        return
+      removedListeners++
+    },
+  } as AbortSignal
+
+  return {
+    abort: () => {
+      if (aborted)
+        return
+      aborted = true
+      const event = new Event('abort')
+      for (const listener of [...listeners]) {
+        if (typeof listener === 'function')
+          listener(event)
+        else
+          listener.handleEvent(event)
+      }
+    },
+    activeListeners: () => listeners.size,
+    addedListeners: () => addedListeners,
+    removedListeners: () => removedListeners,
+    signal,
   }
 }
 
@@ -147,5 +197,145 @@ describe('checkRateLimit', () => {
     })
     expect(state.lastRequestTimestamp).toBe(lastReservedTimestamp)
     expect(requiredGapMs * 25).toBeGreaterThan(MAX_TIMER_DELAY_MS)
+  })
+
+  test('aborts a pending wait immediately and rolls back its reservation', async () => {
+    const baseline = Date.now()
+    const state = makeState({
+      rateLimitSeconds: 3600,
+      rateLimitWait: true,
+      lastRequestTimestamp: baseline,
+    })
+    const controller = new AbortController()
+    const startedAt = Date.now()
+    const result = checkRateLimit(state, { signal: controller.signal })
+      .catch((error: unknown) => error)
+
+    expect(state.lastRequestTimestamp).toBe(baseline + 3_600_000)
+    controller.abort()
+
+    const error = await result
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).name).toBe('AbortError')
+    expect(Date.now() - startedAt).toBeLessThan(250)
+    expect(state.lastRequestTimestamp).toBe(baseline)
+  })
+
+  test('compacts middle and first cancellations without leaving empty slots', async () => {
+    const baseline = Date.now()
+    const gapMs = 40
+    const state = makeState({
+      rateLimitSeconds: gapMs / 1000,
+      rateLimitWait: true,
+      lastRequestTimestamp: baseline,
+    })
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = checkRateLimit(state, { signal: firstController.signal })
+      .catch((error: unknown) => error)
+    const second = checkRateLimit(state, { signal: secondController.signal })
+      .catch((error: unknown) => error)
+    const third = checkRateLimit(state)
+
+    expect(state.lastRequestTimestamp).toBe(baseline + (gapMs * 3))
+
+    secondController.abort()
+    expect(state.lastRequestTimestamp).toBe(baseline + (gapMs * 2))
+
+    firstController.abort()
+    expect(state.lastRequestTimestamp).toBe(baseline + gapMs)
+
+    await expect(first).resolves.toMatchObject({ name: 'AbortError' })
+    await expect(second).resolves.toMatchObject({ name: 'AbortError' })
+    await third
+
+    expect(state.lastRequestTimestamp).toBeGreaterThanOrEqual(baseline + gapMs - 5)
+    expect(state.lastRequestTimestamp).toBeLessThanOrEqual(Date.now())
+  })
+
+  test('keeps a completed request as the baseline when a later wait is aborted', async () => {
+    const gapMs = 40
+    const state = makeState({
+      rateLimitSeconds: gapMs / 1000,
+      rateLimitWait: true,
+      lastRequestTimestamp: Date.now(),
+    })
+
+    await checkRateLimit(state)
+    const completedTimestamp = state.lastRequestTimestamp!
+    const controller = new AbortController()
+    const canceled = checkRateLimit(state, { signal: controller.signal })
+      .catch((error: unknown) => error)
+
+    expect(state.lastRequestTimestamp).toBe(completedTimestamp + gapMs)
+    controller.abort()
+    await expect(canceled).resolves.toMatchObject({ name: 'AbortError' })
+    expect(state.lastRequestTimestamp).toBe(completedTimestamp)
+
+    const startedAt = Date.now()
+    await checkRateLimit(state)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(gapMs - 10)
+  })
+
+  test('removes abort listeners after both completion and cancellation', async () => {
+    vi.useFakeTimers()
+    try {
+      const completedSignal = createTrackedAbortSignal()
+      const state = makeState({
+        rateLimitSeconds: 0.02,
+        rateLimitWait: true,
+        lastRequestTimestamp: Date.now(),
+      })
+      const baselineTimerCount = vi.getTimerCount()
+
+      const completed = checkRateLimit(state, { signal: completedSignal.signal })
+      const waitingTimerCount = vi.getTimerCount()
+      expect(waitingTimerCount).toBeGreaterThan(baselineTimerCount)
+      vi.advanceTimersByTime(20)
+      await completed
+      expect(completedSignal.addedListeners()).toBe(1)
+      expect(completedSignal.removedListeners()).toBe(1)
+      expect(completedSignal.activeListeners()).toBe(0)
+      const settledTimerCount = vi.getTimerCount()
+      expect(settledTimerCount).toBe(waitingTimerCount - 1)
+
+      const canceledSignal = createTrackedAbortSignal()
+      const canceled = checkRateLimit(state, { signal: canceledSignal.signal })
+        .catch((error: unknown) => error)
+      expect(vi.getTimerCount()).toBe(settledTimerCount + 1)
+      canceledSignal.abort()
+      await expect(canceled).resolves.toMatchObject({ name: 'AbortError' })
+      expect(canceledSignal.addedListeners()).toBe(1)
+      expect(canceledSignal.removedListeners()).toBe(1)
+      expect(canceledSignal.activeListeners()).toBe(0)
+      expect(vi.getTimerCount()).toBe(settledTimerCount)
+    }
+    finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  test('keeps a disabled limiter as a no-op for an aborted signal', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      checkRateLimit(makeState(), { signal: controller.signal }),
+    ).resolves.toBeUndefined()
+  })
+
+  test('does not consume the first slot when its signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const state = makeState({
+      rateLimitSeconds: 9999,
+      rateLimitWait: false,
+    })
+    const error = await checkRateLimit(state, { signal: controller.signal })
+      .catch((error: unknown) => error)
+
+    expect(error).toMatchObject({ name: 'AbortError' })
+    expect(state.lastRequestTimestamp).toBeUndefined()
   })
 })

@@ -45,13 +45,40 @@ export function isRuntimeProxyEnvironmentEnabled(): boolean {
   return copilotFetchTimeoutConfig.proxyEnv === true
 }
 
+export function getCopilotWebSocketHandshakeTimeoutMs(): number {
+  const candidates = [
+    copilotFetchTimeoutConfig.connectTimeoutMs ?? DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,
+    copilotFetchTimeoutConfig.headersTimeoutMs ?? DEFAULT_COPILOT_HEADERS_TIMEOUT_MS,
+  ].filter(timeoutMs => timeoutMs > 0)
+
+  return candidates.length > 0 ? Math.min(...candidates) : 0
+}
+
+export function getCopilotWebSocketInactivityTimeoutMs(): number {
+  return copilotFetchTimeoutConfig.bodyTimeoutMs ?? DEFAULT_COPILOT_BODY_TIMEOUT_MS
+}
+
+export function resolveRuntimeProxyForUrl(input: string | URL): string | undefined {
+  if (!runtimeProxyEnvironment)
+    return undefined
+
+  const target = new URL(input)
+  if (target.protocol === 'ws:')
+    target.protocol = 'http:'
+  else if (target.protocol === 'wss:')
+    target.protocol = 'https:'
+
+  const proxyUrl = resolveProxyForUrlFromEnvironment(target.toString(), runtimeProxyEnvironment)
+  if (!proxyUrl) {
+    throw new Error(`--proxy-env resolved a direct route for ${target.toString()}; refusing to send upstream data outside the required proxy.`)
+  }
+  return proxyUrl
+}
+
 export function assertRuntimeProxyRoute(input: FetchInput): void {
   if (!runtimeProxyEnvironment)
     return
-  const target = describeRequest(input)
-  if (!resolveProxyForUrlFromEnvironment(target, runtimeProxyEnvironment)) {
-    throw new Error(`--proxy-env resolved a direct route for ${target}; refusing to send upstream data outside the required proxy.`)
-  }
+  resolveRuntimeProxyForUrl(describeRequest(input))
 }
 
 export function fetchCopilot(

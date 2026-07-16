@@ -5,6 +5,7 @@ import consola from 'consola'
 import { HTTPError } from '~/lib/error'
 import { getModelConfig } from '~/lib/model-config'
 import { throwOpenAIInvalidRequestError } from '~/lib/openai-compat'
+import { modelSupportsResponsesHttp, modelSupportsResponsesWebSocket } from '~/lib/routing-policy'
 import { fetchWithTimeout } from '~/lib/upstream-fetch'
 
 type CodexInputModality = 'text' | 'image'
@@ -14,6 +15,7 @@ interface CodexModelInfo extends Record<string, unknown> {
   input_modalities?: Array<CodexInputModality>
   supports_search_tool?: boolean
   supports_image_detail_original?: boolean
+  supports_websockets?: boolean
 }
 
 interface CodexModelsResponse {
@@ -101,6 +103,7 @@ function toCodexModelInfo(model: Model, bundledModel: CodexModelInfo | undefined
     supports_parallel_tool_calls: getSupportsParallelToolCalls(model),
     supports_image_detail_original: getSupportsImageDetailOriginal(),
     supports_search_tool: getSupportsSearchTool(model, bundledModel),
+    supports_websockets: modelSupportsResponsesWebSocket(model),
   }
 
   if (inputModalities) {
@@ -315,19 +318,11 @@ function isCodexModelInfo(value: unknown): value is CodexModelInfo {
 
 function modelSupportsResponses(model: Model): boolean {
   if (model.supported_endpoints?.length) {
-    return model.supported_endpoints.some(endpoint => isResponsesEndpoint(endpoint))
+    return modelSupportsResponsesHttp(model)
+      || modelSupportsResponsesWebSocket(model)
   }
 
   return getModelConfig(model.id).supportedApis.includes('responses')
-}
-
-function isResponsesEndpoint(endpoint: string): boolean {
-  const normalized = endpoint.toLowerCase()
-  return normalized === 'responses'
-    || normalized === '/responses'
-    || normalized === '/v1/responses'
-    || normalized === 'ws:/responses'
-    || normalized === 'wss:/responses'
 }
 
 function getCodexContextWindow(model: Model): {

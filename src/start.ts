@@ -7,7 +7,7 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 import clipboard from 'clipboardy'
 import consola from 'consola'
-import { serve } from 'srvx'
+import { serve } from 'crossws/server'
 import invariant from 'tiny-invariant'
 
 import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
@@ -19,6 +19,12 @@ import { initializeServer } from './lib/server-setup'
 import { generateEnvScript } from './lib/shell'
 import { state } from './lib/state'
 import { toAnthropicClientModelName } from './routes/messages/model-normalization'
+import {
+  closeResponsesWebSocketsGracefully,
+  forceCloseResponsesWebSockets,
+  prepareResponsesWebSocketServer,
+  responsesWebSocketOptions,
+} from './routes/responses/websocket'
 import { server } from './server'
 
 export interface RunServerOptions {
@@ -44,6 +50,129 @@ export interface RunServerOptions {
   nativeServiceInstanceToken?: string
 }
 
+interface AppServerDependencies {
+  prepareResponsesWebSocketServer: () => void
+  responsesWebSocketOptions: Parameters<typeof serve>[0]['websocket']
+  serve: (options: Parameters<typeof serve>[0]) => Server
+}
+
+interface WebSocketShutdownDependencies {
+  closeResponsesWebSocketsGracefully: () => Promise<void>
+  forceCloseResponsesWebSockets: () => void
+}
+
+const defaultAppServerDependencies: AppServerDependencies = {
+  prepareResponsesWebSocketServer,
+  responsesWebSocketOptions,
+  serve,
+}
+
+const defaultWebSocketShutdownDependencies: WebSocketShutdownDependencies = {
+  closeResponsesWebSocketsGracefully,
+  forceCloseResponsesWebSockets,
+}
+
+const httpRequestDrainTrackers = new WeakMap<object, HttpRequestDrainTracker>()
+
+class HttpRequestDrainTracker {
+  private accepting = true
+  private activeRequests = 0
+  private readonly idleWaiters = new Set<() => void>()
+
+  get activeCount(): number {
+    return this.activeRequests
+  }
+
+  async fetch(request: Parameters<ServerHandler>[0], handler: ServerHandler): Promise<Response> {
+    if (!this.accepting) {
+      return Response.json({
+        error: {
+          code: 'server_shutting_down',
+          message: 'Copilot proxy is shutting down.',
+          type: 'api_error',
+        },
+      }, { status: 503 })
+    }
+
+    this.activeRequests++
+    let response: Response
+    try {
+      response = await handler(request)
+    }
+    catch (error) {
+      this.release()
+      throw error
+    }
+
+    if (!response.body) {
+      this.release()
+      return response
+    }
+
+    const reader = response.body.getReader()
+    let released = false
+    const release = () => {
+      if (released)
+        return
+      released = true
+      this.release()
+    }
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const result = await reader.read()
+          if (result.done) {
+            release()
+            controller.close()
+          }
+          else {
+            controller.enqueue(result.value)
+          }
+        }
+        catch (error) {
+          release()
+          controller.error(error)
+        }
+      },
+      async cancel(reason) {
+        release()
+        await reader.cancel(reason)
+      },
+    })
+
+    return new Response(body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    })
+  }
+
+  stopAccepting(): void {
+    this.accepting = false
+  }
+
+  async waitForIdle(): Promise<void> {
+    if (this.activeRequests === 0)
+      return
+    await new Promise<void>((resolve) => {
+      this.idleWaiters.add(resolve)
+    })
+  }
+
+  private release(): void {
+    this.activeRequests--
+    if (this.activeRequests !== 0)
+      return
+    for (const resolve of this.idleWaiters)
+      resolve()
+    this.idleWaiters.clear()
+  }
+}
+
+export function getActiveHttpRequestCountForTests(appServer: object): number | undefined {
+  return httpRequestDrainTrackers.get(appServer)?.activeCount
+}
+
 function formatHostForUrl(host: string): string {
   const normalized = host.toLowerCase()
   if (normalized === DEFAULT_HOST || normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]')
@@ -61,15 +190,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
 
   try {
-    const appServer = serve({
-      fetch: server.fetch as ServerHandler,
-      port: options.port,
-      hostname: options.host,
-      gracefulShutdown: false,
-      bun: {
-        idleTimeout: 0,
-      },
-    })
+    const appServer = createAppServer(options)
 
     await appServer.ready()
     installShutdownHandlers(appServer, {
@@ -145,14 +266,62 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await new Promise(() => {})
 }
 
+export function createAppServer(
+  options: Pick<RunServerOptions, 'host' | 'port'>,
+  dependencies: AppServerDependencies = defaultAppServerDependencies,
+  fetchHandler: ServerHandler = server.fetch as ServerHandler,
+): Server {
+  dependencies.prepareResponsesWebSocketServer()
+  const httpRequestDrainTracker = new HttpRequestDrainTracker()
+  const appServer = dependencies.serve({
+    fetch: request => httpRequestDrainTracker.fetch(request, fetchHandler),
+    port: options.port,
+    hostname: options.host,
+    gracefulShutdown: false,
+    websocket: dependencies.responsesWebSocketOptions,
+    bun: {
+      idleTimeout: 0,
+    },
+  })
+  httpRequestDrainTrackers.set(appServer, httpRequestDrainTracker)
+  return appServer
+}
+
 export async function closeServerGracefully(
   appServer: Pick<Server, 'close'>,
   timeoutMs = 3_000,
+  dependencies: WebSocketShutdownDependencies = defaultWebSocketShutdownDependencies,
 ): Promise<'graceful' | 'forced'> {
   let timeout: ReturnType<typeof setTimeout> | undefined
+  let forceStarted = false
+  const bunServer = getBunPendingRequestServer(appServer)
+  const httpRequestDrainTracker = httpRequestDrainTrackers.get(appServer)
 
   try {
-    const gracefulClose = appServer.close(false)
+    httpRequestDrainTracker?.stopAccepting()
+    const websocketClose = Promise.resolve()
+      .then(() => dependencies.closeResponsesWebSocketsGracefully())
+    const gracefulClose = bunServer
+      ? Promise.all([
+          websocketClose,
+          httpRequestDrainTracker?.waitForIdle()
+          ?? waitForBunPendingRequestsToDrain(bunServer, () => forceStarted),
+        ]).then(async () => {
+          if (forceStarted)
+            return
+
+          // Never call Bun 1.3.6 stop(false): after it starts, a later
+          // stop(true) can remain chained to the stuck graceful stop forever.
+          // The application gate above rejects new HTTP work; once pending
+          // requests and WebSockets drain, this first stop(true) only finalizes
+          // Bun's phantom pendingWebSockets entry.
+          await stopBunServerImmediately(bunServer)
+        })
+      : Promise.all([
+          Promise.resolve().then(() => appServer.close(false)),
+          websocketClose,
+          httpRequestDrainTracker?.waitForIdle() ?? Promise.resolve(),
+        ])
     const result = await Promise.race([
       gracefulClose.then(() => 'graceful' as const),
       new Promise<'timeout'>((resolve) => {
@@ -161,8 +330,10 @@ export async function closeServerGracefully(
       }),
     ])
 
-    if (result === 'graceful')
+    if (result === 'graceful') {
+      httpRequestDrainTrackers.delete(appServer)
       return 'graceful'
+    }
   }
   catch (error) {
     consola.warn('Graceful server close failed; forcing active connections closed:', error)
@@ -172,8 +343,69 @@ export async function closeServerGracefully(
       clearTimeout(timeout)
   }
 
-  await appServer.close(true)
+  forceStarted = true
+  try {
+    dependencies.forceCloseResponsesWebSockets()
+  }
+  catch (error) {
+    consola.warn('Failed to force WebSocket connections closed:', error)
+  }
+  if (bunServer)
+    await stopBunServerImmediately(bunServer)
+  else
+    await appServer.close(true)
+  httpRequestDrainTrackers.delete(appServer)
   return 'forced'
+}
+
+interface BunPendingRequestServer {
+  pendingRequests: number
+  pendingWebSockets?: number
+  stop: (closeActiveConnections?: boolean) => Promise<void> | void
+}
+
+function getBunPendingRequestServer(
+  appServer: Pick<Server, 'close'>,
+): BunPendingRequestServer | undefined {
+  const runtimeServer = appServer as Pick<Server, 'close'> & {
+    bun?: { server?: { pendingRequests?: number, pendingWebSockets?: number, stop?: (closeActiveConnections?: boolean) => Promise<void> | void } }
+    runtime?: string
+  }
+  const bunServer = runtimeServer.bun?.server
+  return runtimeServer.runtime === 'bun'
+    && typeof bunServer?.pendingRequests === 'number'
+    && typeof bunServer.stop === 'function'
+    ? bunServer as BunPendingRequestServer
+    : undefined
+}
+
+async function stopBunServerImmediately(server: BunPendingRequestServer): Promise<void> {
+  let firstStopError: unknown
+  const repeatForPhantomWebSocket = (server.pendingWebSockets ?? 0) > 0
+  const firstStop = Promise.resolve(server.stop(true)).catch((error) => {
+    firstStopError = error
+  })
+
+  if (repeatForPhantomWebSocket) {
+    // Bun 1.3.6 can leave the first stop(true) pending forever after a
+    // server-initiated WebSocket close while a second call completes
+    // immediately. Keep this workaround scoped to that observable state.
+    await server.stop(true)
+  }
+  else {
+    await firstStop
+  }
+
+  if (firstStopError)
+    throw firstStopError
+}
+
+async function waitForBunPendingRequestsToDrain(
+  server: BunPendingRequestServer,
+  shouldStop: () => boolean,
+): Promise<void> {
+  while (server.pendingRequests > 0 && !shouldStop())
+    await new Promise(resolve => setTimeout(resolve, 5))
 }
 
 function installShutdownHandlers(

@@ -13,7 +13,9 @@
   ],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
+    "@types/ws",
     "undici",
-    "prettier-plugin-packagejson"
+    "prettier-plugin-packagejson",
+    "ws"
   ]
 }

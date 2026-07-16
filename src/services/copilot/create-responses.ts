@@ -6,20 +6,26 @@ import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { fetchAuthenticatedCopilot } from './authenticated-fetch'
+import { normalizeCopilotResponsesEventStream, resolveCopilotResponseIdAlias } from './responses-id-normalizer'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
 import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /** Type guard: is a message input item (has role, not a function_call/output) */
-function isMessageInput(item: ResponsesInputItem): item is ResponsesMessageInputItem {
-  return 'role' in item
+function isMessageInput(item: unknown): item is ResponsesMessageInputItem {
+  return isRecord(item)
+    && 'role' in item
     && typeof item.role === 'string'
     && 'content' in item
     && (item.type === undefined || item.type === 'message')
 }
 
-function isFunctionCallOutput(item: ResponsesInputItem): item is ResponsesFunctionCallOutputItem {
-  return 'type' in item && item.type === 'function_call_output'
+function isFunctionCallOutput(item: unknown): item is ResponsesFunctionCallOutputItem {
+  return isRecord(item) && item.type === 'function_call_output'
 }
 
 const VISION_TYPES = new Set([
@@ -36,15 +42,13 @@ export async function createResponses(
   if (!state.copilotToken)
     throw new Error('Copilot token not found')
 
-  const upstreamPayload = sanitizeResponsesPayloadForCopilotBackend(payload)
-  const inputArray = Array.isArray(upstreamPayload.input) ? upstreamPayload.input : []
-  const hasVision = inputArray.length > 0 && hasVisionInput(inputArray)
+  const clientPreviousResponseId = typeof payload.previous_response_id === 'string'
+    ? payload.previous_response_id
+    : undefined
+  const resolvedPayload = resolveResponsesIdAliases(payload)
+  const prepared = prepareResponsesPayloadForCopilot(resolvedPayload)
+  const { hasVision, initiator, payload: upstreamPayload } = prepared
   const payloadSummary = summarizeResponsesPayload(upstreamPayload)
-
-  const isAgentCall = inputArray.some(item =>
-    (isMessageInput(item) && item.role === 'assistant')
-    || ('type' in item && item.type === 'function_call'),
-  )
 
   const body = JSON.stringify(upstreamPayload)
   consola.debug('Forwarding Responses API request:', {
@@ -62,7 +66,7 @@ export async function createResponses(
       method: 'POST',
       headers: {
         ...copilotHeaders(state, hasVision),
-        'X-Initiator': isAgentCall ? 'agent' : 'user',
+        'X-Initiator': initiator,
       },
       body,
       signal: upstreamController.signal,
@@ -106,7 +110,9 @@ export async function createResponses(
       requestStartedAt,
     })
     return {
-      body: instrumentedStream,
+      body: normalizeCopilotResponsesEventStream(instrumentedStream, {
+        clientPreviousResponseId,
+      }),
       headers: response.headers,
       cancel: (reason?: unknown) => upstreamController.cancel(response, reason),
     }
@@ -121,7 +127,44 @@ export async function createResponses(
     endpoint: '/responses',
     requestStartedAt,
   })
-  return { body: json, headers: response.headers }
+  return {
+    body: restoreClientPreviousResponseId(
+      json,
+      clientPreviousResponseId,
+    ),
+    headers: response.headers,
+  }
+}
+
+function restoreClientPreviousResponseId(
+  response: ResponsesResponse,
+  clientPreviousResponseId: string | undefined,
+): ResponsesResponse {
+  if (
+    !clientPreviousResponseId
+    || typeof response.previous_response_id !== 'string'
+  ) {
+    return response
+  }
+
+  return {
+    ...response,
+    previous_response_id: clientPreviousResponseId,
+  }
+}
+
+function resolveResponsesIdAliases(payload: ResponsesPayload): ResponsesPayload {
+  if (typeof payload.previous_response_id !== 'string')
+    return payload
+
+  const upstreamPreviousResponseId = resolveCopilotResponseIdAlias(payload.previous_response_id)
+  if (upstreamPreviousResponseId === payload.previous_response_id)
+    return payload
+
+  return {
+    ...payload,
+    previous_response_id: upstreamPreviousResponseId,
+  }
 }
 
 function isResponsesResponse(value: unknown): value is ResponsesResponse {
@@ -150,7 +193,7 @@ function isResponsesResponse(value: unknown): value is ResponsesResponse {
     )
 }
 
-function sanitizeResponsesPayloadForCopilotBackend(payload: ResponsesPayload): ResponsesPayload {
+export function sanitizeResponsesPayloadForCopilotBackend(payload: ResponsesPayload): ResponsesPayload {
   if (!Object.hasOwn(payload, 'service_tier')) {
     return payload
   }
@@ -159,6 +202,39 @@ function sanitizeResponsesPayloadForCopilotBackend(payload: ResponsesPayload): R
   const upstreamPayload = { ...payload }
   delete upstreamPayload.service_tier
   return upstreamPayload
+}
+
+export function prepareResponsesPayloadForCopilot(payload: ResponsesPayload): {
+  hasVision: boolean
+  initiator: 'agent' | 'user'
+  payload: ResponsesPayload
+} {
+  const upstreamPayload = sanitizeResponsesPayloadForCopilotBackend(payload)
+  const analysis = analyzeResponsesPayloadForCopilot(upstreamPayload)
+
+  return {
+    ...analysis,
+    payload: upstreamPayload,
+  }
+}
+
+export function analyzeResponsesPayloadForCopilot(
+  payload: { input?: ResponsesPayload['input'] },
+): {
+  hasVision: boolean
+  initiator: 'agent' | 'user'
+} {
+  const inputArray = Array.isArray(payload.input) ? payload.input : []
+  const hasVision = inputArray.length > 0 && hasVisionInput(inputArray)
+  const isAgentCall = inputArray.some(item =>
+    (isMessageInput(item) && item.role === 'assistant')
+    || (isRecord(item) && item.type === 'function_call'),
+  )
+
+  return {
+    hasVision,
+    initiator: isAgentCall ? 'agent' : 'user',
+  }
 }
 
 export async function forwardResponsesEndpoint(
@@ -199,12 +275,12 @@ export async function forwardResponsesEndpoint(
 function hasVisionInput(input: Array<ResponsesInputItem>): boolean {
   return input.some((item) => {
     if (isMessageInput(item) && Array.isArray(item.content)) {
-      return item.content.some(part => VISION_TYPES.has(part.type))
+      return item.content.some(part => isRecord(part) && typeof part.type === 'string' && VISION_TYPES.has(part.type))
     }
 
     return isFunctionCallOutput(item)
       && Array.isArray(item.output)
-      && item.output.some(part => VISION_TYPES.has(part.type))
+      && item.output.some(part => isRecord(part) && typeof part.type === 'string' && VISION_TYPES.has(part.type))
   })
 }
 
@@ -326,7 +402,7 @@ export function summarizeResponsesPayload(payload: ResponsesPayload): ResponsesP
       continue
     }
 
-    if ('type' in item && item.type === 'function_call') {
+    if (isRecord(item) && item.type === 'function_call') {
       summary.functionCalls++
       continue
     }
@@ -358,7 +434,10 @@ export function summarizeResponsesPayload(payload: ResponsesPayload): ResponsesP
   return summary
 }
 
-function getInlineImageChars(part: Record<string, unknown>): number | undefined {
+function getInlineImageChars(part: unknown): number | undefined {
+  if (!isRecord(part))
+    return undefined
+
   const partType = typeof part.type === 'string' ? part.type : undefined
   if (!partType || !VISION_TYPES.has(partType)) {
     return undefined
@@ -385,7 +464,7 @@ function getInlineImageChars(part: Record<string, unknown>): number | undefined 
   return undefined
 }
 
-function hasInlineImageData(part: Record<string, unknown>): boolean {
+function hasInlineImageData(part: unknown): boolean {
   return getInlineImageChars(part) !== undefined
 }
 

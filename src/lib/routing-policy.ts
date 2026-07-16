@@ -25,6 +25,8 @@ interface BackendRoute {
 
 type ClientApi = BackendApiType
 
+const RESPONSES_WEBSOCKET_ENDPOINT_PATTERN = /^wss?:\/(?:v1\/)?responses\/?$/i
+
 const RESPONSES_INPUT_FILE_REJECTION_MESSAGE
   = 'input_file is only supported when routing this model directly through /responses. Use a model that supports /responses directly, or provide content that can be represented as translated text/image blocks.'
 const RESPONSES_HOSTED_TOOL_REJECTION_MESSAGE
@@ -123,9 +125,22 @@ function getSupportedApisForRouting(
 }
 
 function endpointToBackendApi(endpoint: string): BackendApiType | undefined {
-  const normalized = endpoint.trim().toLowerCase().replace(/^wss?:/, '').replace(/^\/v1\//, '/').replace(/^v1\//, '').replace(/^\/+/, '')
+  const normalized = endpoint.trim().toLowerCase()
 
-  switch (normalized) {
+  // WebSocket endpoints are transport capabilities, not evidence that the
+  // corresponding HTTP API is available. In particular, a model advertising
+  // only `ws:/responses` must not be routed through POST /responses.
+  if (/^wss?:/.test(normalized)) {
+    return undefined
+  }
+
+  const normalizedPath = normalized
+    .replace(/^\/v1\//, '/')
+    .replace(/^v1\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+
+  switch (normalizedPath) {
     case 'chat/completions':
       return 'chat-completions'
     case 'responses':
@@ -135,6 +150,32 @@ function endpointToBackendApi(endpoint: string): BackendApiType | undefined {
     default:
       return undefined
   }
+}
+
+/**
+ * Return whether the live Copilot model catalog explicitly advertises the
+ * ordinary HTTP Responses endpoint. WebSocket metadata is intentionally not
+ * treated as evidence that POST /responses is available.
+ */
+export function modelSupportsResponsesHttp(
+  model: Pick<Model, 'supported_endpoints'> | undefined,
+): boolean {
+  return model?.supported_endpoints?.some(endpoint =>
+    endpointToBackendApi(endpoint) === 'responses',
+  ) ?? false
+}
+
+/**
+ * Return whether the live Copilot model catalog explicitly advertises the
+ * Responses WebSocket transport. Ordinary `/responses` support and static
+ * model defaults are intentionally insufficient evidence for this capability.
+ */
+export function modelSupportsResponsesWebSocket(
+  model: Pick<Model, 'supported_endpoints'> | undefined,
+): boolean {
+  return model?.supported_endpoints?.some(endpoint =>
+    RESPONSES_WEBSOCKET_ENDPOINT_PATTERN.test(endpoint.trim()),
+  ) ?? false
 }
 
 /**
