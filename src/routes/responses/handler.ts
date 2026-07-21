@@ -47,6 +47,16 @@ export async function handleResponses(c: Context) {
     contentLength: c.req.header('content-length') ?? undefined,
   })
 
+  // Filter out unsupported tools (e.g. image_generation) before forwarding
+  const FILTERED_TOOL_TYPES = new Set(['image_generation'])
+  if (payload.tools?.length) {
+    const before = payload.tools.length
+    payload.tools = payload.tools.filter(t => !FILTERED_TOOL_TYPES.has(t.type))
+    if (payload.tools.length !== before) {
+      consola.debug(`Filtered ${before - payload.tools.length} unsupported tool(s): ${[...FILTERED_TOOL_TYPES].join(', ')}`)
+    }
+  }
+
   if (responsesHasExternalImageUrls(payload)) {
     throwOpenAIInvalidRequestError(OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE)
   }
