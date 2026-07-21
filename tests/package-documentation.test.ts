@@ -91,7 +91,7 @@ function getPackManifest(): PackManifest {
     expect(result.error).toBeUndefined()
     expect(result.status).toBe(0)
 
-    const manifests = JSON.parse(result.stdout) as PackManifest[]
+    const manifests = parsePackManifests(result.stdout)
     expect(manifests).toHaveLength(1)
     return manifests[0]
   }
@@ -99,6 +99,21 @@ function getPackManifest(): PackManifest {
     if (stagingParent)
       fs.rmSync(stagingParent, { force: true, recursive: true })
   }
+}
+
+function parsePackManifests(output: string): PackManifest[] {
+  const candidates = [...output.matchAll(/(?:^|\r?\n)[ \t]*\[/g)]
+  for (const candidate of candidates.reverse()) {
+    try {
+      const parsed = JSON.parse(output.slice(candidate.index).trim()) as unknown
+      if (Array.isArray(parsed))
+        return parsed as PackManifest[]
+    }
+    catch {
+      // Lifecycle tools can write bracket-prefixed logs before npm's JSON.
+    }
+  }
+  throw new SyntaxError('npm pack did not emit a parseable JSON manifest')
 }
 
 function getLocalMarkdownReferences(markdown: string): LocalMarkdownReference[] {
@@ -144,6 +159,13 @@ function getMarkdownHeadingAnchors(markdown: string): Set<string> {
 describe('published documentation', () => {
   const manifest = getPackManifest()
   const packedPaths = new Set(manifest.files.map(file => file.path))
+
+  test('parses npm pack JSON after lifecycle output from older npm releases', () => {
+    expect(parsePackManifests([
+      '[INFO] Successfully set all git hooks',
+      JSON.stringify([{ files: [{ path: 'package.json' }] }], null, 2),
+    ].join('\n'))).toEqual([{ files: [{ path: 'package.json' }] }])
+  })
 
   test('includes every repository guide in the actual npm pack manifest', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {

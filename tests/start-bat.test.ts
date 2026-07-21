@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -395,7 +395,7 @@ describe('Windows development launcher native integration', () => {
       if (result.status !== 23)
         throw new Error(`Windows launcher exited with ${result.status}. stdout: ${result.stdout}; stderr: ${result.stderr}`)
       expect(result.status).toBe(23)
-      expect(path.resolve(readFileSync(cwdLog, 'utf8'))).toBe(path.resolve(directory))
+      expect(realpathSync.native(readFileSync(cwdLog, 'utf8'))).toBe(realpathSync.native(directory))
       expect(existsSync(path.join(directory, 'node_modules', 'fixture-dependency', 'package.json'))).toBe(true)
       expect(readFileSync(openLog, 'utf8')).toBe(dashboardUrlFor(`http://127.0.0.1:${port}/diagnostics`))
       expect(statSync(openLog).mtimeMs).toBeGreaterThanOrEqual(statSync(readyLog).mtimeMs)
@@ -460,7 +460,7 @@ describe('Windows development launcher native integration', () => {
         TEST_AUTH_FINISHED_LOG: authFinishedLog,
         TEST_AUTH_STARTED_LOG: authStartedLog,
         TEST_EXIT_CODE: '37',
-        TEST_LIFETIME_MILLISECONDS: '300',
+        TEST_LIFETIME_MILLISECONDS: '1000',
         TEST_PORT: String(port),
         TEST_READY_LOG: readyLog,
         TEST_START_DELAY_MILLISECONDS: '100',
@@ -681,7 +681,7 @@ describe('Windows development launcher native integration', () => {
       await waitForFile(browserTokenLog)
       expect(readFileSync(authTokenLog, 'utf8')).toBe('true\n')
       expect(readFileSync(persistedTokenPath, 'utf8')).toBe(ghToken)
-      expect(path.resolve(readFileSync(cwdLog, 'utf8'))).toBe(path.resolve(directory))
+      expect(realpathSync.native(readFileSync(cwdLog, 'utf8'))).toBe(realpathSync.native(directory))
       expect(readFileSync(serverTokenLog, 'utf8')).toBe('false')
       expect(readFileSync(browserTokenLog, 'utf8')).toBe('false')
       expect(readFileSync(browserUrlLog, 'utf8')).toBe(dashboardUrlFor(`http://127.0.0.1:${port}/diagnostics`))
