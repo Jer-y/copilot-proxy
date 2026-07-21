@@ -100,6 +100,37 @@ describe('buildTaskXml', () => {
     expect(xml).not.toContain('2&gt;&amp;1')
   })
 
+  test('uses Citty semantics when deciding whether the process owns logging', () => {
+    const disabledCases = [
+      ['main.js', '--_log-file', 'start'],
+      ['main.js', 'start', '--host', '--_log-file'],
+      ['main.js', 'start', '--_log-file=false'],
+      ['main.js', 'start', '--logFile', '--no-logFile'],
+      ['main.js', 'start', '--', '--logFile'],
+    ]
+    for (const args of disabledCases) {
+      const xml = buildTaskXml('C:\\node.exe', args, { useHeadlessConhost: true })
+      expect({ args, redirected: xml.includes('&gt;&gt;') }).toEqual({
+        args,
+        redirected: true,
+      })
+    }
+
+    const enabledCases = [
+      ['main.js', 'start', '--logFile'],
+      ['main.js', 'start', '---log-file'],
+      ['main.js', 'start', '--host', '--', '--logFile'],
+      ['main.js', 'start', '--no-logFile', '---log-file'],
+    ]
+    for (const args of enabledCases) {
+      const xml = buildTaskXml('C:\\node.exe', args, { useHeadlessConhost: true })
+      expect({ args, redirected: xml.includes('&gt;&gt;') }).toEqual({
+        args,
+        redirected: false,
+      })
+    }
+  })
+
   test('process-rotated logging avoids cmd.exe interpretation of service arguments', () => {
     const xml = buildTaskXml(
       'C:\\Program Files\\nodejs\\node.exe',
@@ -111,6 +142,26 @@ describe('buildTaskXml', () => {
     expect(xml).toContain('--headless')
     expect(xml).not.toContain('cmd.exe /d /s /c')
     expect(xml).toContain('127.0.0.1&amp;calc')
+  })
+
+  test('uses the shared persisted-environment bootstrap without embedding security settings or tokens', () => {
+    const xml = buildTaskXml(
+      'C:\\Program Files\\nodejs\\node.exe',
+      [
+        'C:\\app\\main.js',
+        'start',
+        '--_service',
+        '--_data-dir',
+        'C:\\Users\\alice\\AppData\\Local\\copilot-proxy',
+        '--_log-file',
+      ],
+      { useHeadlessConhost: true },
+    )
+
+    expect(xml).toContain('--_service')
+    expect(xml).toContain('--_data-dir')
+    expect(xml).not.toContain('COPILOT_PROXY_ALLOWED_HOSTS')
+    expect(xml).not.toContain('GITHUB_TOKEN')
   })
 
   test('does not escape inner quotes with backslashes for cmd /s /c', () => {

@@ -46,18 +46,20 @@ const refreshTokenFailureState: RefreshTokenFailureState = {
 
 export interface RefreshTokenWithRetryDeps {
   fetchToken?: typeof getCopilotToken
+  signal?: AbortSignal
   sleepFn?: typeof sleep
   failureState?: RefreshTokenFailureState
   useLock?: boolean
 }
 
 let refreshInFlight: Promise<GetCopilotTokenResponse | undefined> | undefined
+let refreshInFlightAbortController: AbortController | undefined
 type RefreshTimer = ReturnType<typeof setTimeout>
 
 const FAILED_REFRESH_RETRY_DELAY_MS = 60_000
 
 export type TokenRefreshFailureKind = 'permanent_auth' | 'transient'
-export type ReactiveTokenRefreshOutcome = 'refreshed' | 'already_refreshed' | 'failed'
+export type ReactiveTokenRefreshOutcome = 'refreshed' | 'already_refreshed' | 'cancelled' | 'failed'
 
 export interface CopilotTokenSnapshot {
   generation: number
@@ -122,6 +124,10 @@ let copilotTokenRefreshGeneration = 0
 let copilotTokenRefreshScheduledForTokenGeneration: number | undefined
 let nextCopilotTokenRefreshAt: number | undefined
 let reactiveRefreshInFlight: Promise<ReactiveTokenRefreshResult> | undefined
+let reactiveRefreshAbortController: AbortController | undefined
+let reactiveRefreshFailedGeneration: number | undefined
+let tokenRefreshCancellationEpoch = 0
+let tokenRefreshCancellationInFlight: Promise<void> | undefined
 let lastKnownRefreshInSeconds: number | undefined
 const copilotTokenSnapshotValues = new WeakMap<CopilotTokenSnapshot, string | undefined>()
 
@@ -151,6 +157,7 @@ export async function refreshCopilotTokenAfterFailure(
   failedSnapshot: CopilotTokenSnapshot,
   deps: ReactiveTokenRefreshDeps = {},
 ): Promise<ReactiveTokenRefreshResult> {
+  const cancellationEpoch = tokenRefreshCancellationEpoch
   if (!matchesCurrentTokenSnapshot(failedSnapshot)) {
     return {
       generation: tokenLifecycleStatus.generation,
@@ -158,15 +165,84 @@ export async function refreshCopilotTokenAfterFailure(
     }
   }
 
-  if (reactiveRefreshInFlight)
-    return reactiveRefreshInFlight
+  if (tokenRefreshCancellationInFlight)
+    return recordReactiveTokenRefreshOutcome('cancelled')
+
+  if (reactiveRefreshInFlight) {
+    if (reactiveRefreshFailedGeneration === failedSnapshot.generation)
+      return reactiveRefreshInFlight
+    await reactiveRefreshInFlight
+    if (
+      tokenRefreshCancellationInFlight
+      || cancellationEpoch !== tokenRefreshCancellationEpoch
+    ) {
+      return recordReactiveTokenRefreshOutcome('cancelled')
+    }
+    return await refreshCopilotTokenAfterFailure(failedSnapshot, deps)
+  }
 
   tokenLifecycleStatus.lastReactiveRefreshAt = Date.now()
-  reactiveRefreshInFlight = performReactiveTokenRefresh(deps)
-    .finally(() => {
+  const refreshAbortController = new AbortController()
+  reactiveRefreshAbortController = refreshAbortController
+  reactiveRefreshFailedGeneration = failedSnapshot.generation
+  const refresh = performReactiveTokenRefresh({
+    ...deps,
+    refreshDeps: {
+      ...deps.refreshDeps,
+      signal: deps.refreshDeps?.signal
+        ? AbortSignal.any([deps.refreshDeps.signal, refreshAbortController.signal])
+        : refreshAbortController.signal,
+    },
+  })
+  const trackedRefresh = refresh.finally(() => {
+    if (reactiveRefreshInFlight === trackedRefresh) {
       reactiveRefreshInFlight = undefined
-    })
-  return reactiveRefreshInFlight
+      reactiveRefreshFailedGeneration = undefined
+    }
+    if (reactiveRefreshAbortController === refreshAbortController)
+      reactiveRefreshAbortController = undefined
+  })
+  reactiveRefreshInFlight = trackedRefresh
+  return trackedRefresh
+}
+
+/**
+ * Cancels process-owned scheduled or reactive refresh work used by disposable CLI flows.
+ * Ordinary request aborts intentionally do not call this: long-running services
+ * keep sharing their in-flight refresh after an individual caller disconnects.
+ */
+export function cancelInFlightCopilotTokenRefreshes(
+  reason: Error = new Error('Disposable Copilot token refresh was cancelled.'),
+): Promise<void> {
+  if (tokenRefreshCancellationInFlight) {
+    reactiveRefreshAbortController?.abort(reason)
+    refreshInFlightAbortController?.abort(reason)
+    return tokenRefreshCancellationInFlight
+  }
+
+  tokenRefreshCancellationEpoch++
+  const cancellation = drainInFlightCopilotTokenRefreshes(reason)
+  const trackedCancellation = cancellation.finally(() => {
+    if (tokenRefreshCancellationInFlight === trackedCancellation)
+      tokenRefreshCancellationInFlight = undefined
+  })
+  tokenRefreshCancellationInFlight = trackedCancellation
+  return trackedCancellation
+}
+
+async function drainInFlightCopilotTokenRefreshes(reason: Error): Promise<void> {
+  while (true) {
+    const refreshes = new Set<Promise<unknown>>()
+    if (reactiveRefreshInFlight)
+      refreshes.add(reactiveRefreshInFlight)
+    if (refreshInFlight)
+      refreshes.add(refreshInFlight)
+    if (refreshes.size === 0)
+      return
+    reactiveRefreshAbortController?.abort(reason)
+    refreshInFlightAbortController?.abort(reason)
+    await Promise.all(refreshes)
+  }
 }
 
 function matchesCurrentTokenSnapshot(snapshot: CopilotTokenSnapshot): boolean {
@@ -183,6 +259,8 @@ async function performReactiveTokenRefresh(
       ...deps.refreshDeps,
       useLock: true,
     })
+    if (deps.refreshDeps?.signal?.aborted)
+      return recordReactiveTokenRefreshOutcome('cancelled')
     if (!refreshed) {
       scheduleCopilotTokenRefreshAfterFailure(
         lastKnownRefreshInSeconds ?? 3600,
@@ -193,9 +271,15 @@ async function performReactiveTokenRefresh(
     }
 
     ensureCopilotTokenRefreshScheduled(refreshed.refresh_in, deps.schedulerDeps)
+    if (deps.refreshDeps?.signal?.aborted) {
+      stopCopilotTokenRefresh()
+      return recordReactiveTokenRefreshOutcome('cancelled')
+    }
     return recordReactiveTokenRefreshOutcome('refreshed')
   }
   catch (error) {
+    if (deps.refreshDeps?.signal?.aborted)
+      return recordReactiveTokenRefreshOutcome('cancelled')
     consola.error('Unexpected reactive Copilot token refresh failure:', error)
     return recordReactiveTokenRefreshOutcome('failed')
   }
@@ -220,9 +304,18 @@ export async function refreshTokenWithRetry(deps: RefreshTokenWithRetryDeps = {}
     if (refreshInFlight)
       return refreshInFlight
 
-    refreshInFlight = refreshTokenWithRetryUnlocked(deps)
+    const refreshAbortController = new AbortController()
+    refreshInFlightAbortController = refreshAbortController
+    refreshInFlight = refreshTokenWithRetryUnlocked({
+      ...deps,
+      signal: deps.signal
+        ? AbortSignal.any([deps.signal, refreshAbortController.signal])
+        : refreshAbortController.signal,
+    })
       .finally(() => {
         refreshInFlight = undefined
+        if (refreshInFlightAbortController === refreshAbortController)
+          refreshInFlightAbortController = undefined
       })
     return refreshInFlight
   }
@@ -239,10 +332,16 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
   let lastFailureStatus: number | undefined
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (deps.signal?.aborted)
+      return undefined
     attemptsMade++
     tokenLifecycleStatus.lastRefreshAttemptAt = Date.now()
     try {
-      const response = await fetchToken()
+      const response = await fetchToken(deps.signal)
+      if (deps.signal?.aborted) {
+        consola.debug('Copilot token refresh was cancelled before completion')
+        return undefined
+      }
       applyCopilotTokenResponse(response)
       consola.debug('Copilot token refreshed')
       if (state.showToken) {
@@ -255,6 +354,10 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
       return response
     }
     catch (error) {
+      if (deps.signal?.aborted) {
+        consola.debug('Copilot token refresh was cancelled before completion')
+        return undefined
+      }
       lastFailureKind = classifyTokenRefreshError(error)
       lastFailureStatus = error instanceof HTTPError ? error.response.status : undefined
       if (lastFailureKind === 'permanent_auth') {
@@ -264,7 +367,9 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_DELAYS[attempt] ?? RETRY_DELAYS.at(-1)!
         consola.warn(`Token refresh attempt ${attempt + 1} failed, retrying in ${delay}ms...`, error)
-        await sleepFn(delay)
+        await waitForTokenRefreshRetry(delay, sleepFn, deps.signal)
+        if (deps.signal?.aborted)
+          return undefined
       }
     }
   }
@@ -280,6 +385,41 @@ async function refreshTokenWithRetryUnlocked(deps: RefreshTokenWithRetryDeps = {
     + ` Service may be using a stale token.`,
   )
   return undefined
+}
+
+async function waitForTokenRefreshRetry(
+  delayMs: number,
+  sleepFn: typeof sleep,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!signal || sleepFn !== sleep) {
+    await sleepFn(delayMs)
+    return
+  }
+  if (signal.aborted)
+    return
+
+  await new Promise<void>((resolve) => {
+    let settled = false
+    let onAbort = () => {}
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      if (settled)
+        return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    onAbort = () => {
+      if (timer !== undefined)
+        clearTimeout(timer)
+      finish()
+    }
+    timer = setTimeout(finish, delayMs)
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted)
+      onAbort()
+  })
 }
 
 function classifyTokenRefreshError(error: unknown): TokenRefreshFailureKind {
@@ -424,6 +564,7 @@ export function isCopilotTokenRefreshScheduled(): boolean {
 
 interface SetupGitHubTokenOptions {
   force?: boolean
+  logUser?: boolean
 }
 
 export async function setupGitHubToken(
@@ -437,7 +578,8 @@ export async function setupGitHubToken(
       if (state.showToken) {
         consola.info('GitHub token:', githubToken)
       }
-      await tryLogUser()
+      if (options?.logUser !== false)
+        await tryLogUser()
 
       return
     }
@@ -457,7 +599,8 @@ export async function setupGitHubToken(
     if (state.showToken) {
       consola.info('GitHub token:', token)
     }
-    await tryLogUser()
+    if (options?.logUser !== false)
+      await tryLogUser()
   }
   catch (error) {
     if (error instanceof HTTPError) {

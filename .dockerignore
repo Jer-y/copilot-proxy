@@ -18,6 +18,10 @@ github_token
 dist/
 tests/
 *.md
+!README.md
+!README.zh-CN.md
+!SECURITY.md
+!docs/**/*.md
 
 .eslintcache
 .playwright-cli/

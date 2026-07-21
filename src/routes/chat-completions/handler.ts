@@ -17,6 +17,7 @@ import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { resolveRoute } from '~/lib/routing-policy'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
+import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
@@ -59,7 +60,7 @@ export async function handleCompletion(c: Context) {
 
   payload = normalizeChatCompletionTokenLimit(
     payload,
-    selectedModel?.capabilities.limits.max_output_tokens,
+    selectedModel?.capabilities.limits?.max_output_tokens,
   )
 
   const route = resolveRoute('chat-completions', payload.model, throwOpenAIInvalidRequestError, {
@@ -78,7 +79,8 @@ export async function handleCompletion(c: Context) {
 
 /** Direct path: model supports chat-completions */
 async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayload) {
-  const result = await createChatCompletions(payload)
+  const setupSignal = getSetupProbeSignal(c)
+  const result = await createChatCompletions(payload, setupSignal ? { signal: setupSignal } : undefined)
 
   if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {

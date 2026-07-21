@@ -8,6 +8,11 @@ import path from 'node:path'
 import process from 'node:process'
 import consola from 'consola'
 import { ensureDaemonLogFile, readLastLogLines, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
+import {
+  findCittyRootCommand,
+  resolveCittyBooleanOption,
+  START_CITTY_STRING_OPTIONS,
+} from '~/lib/citty-argv'
 import { PATHS } from '~/lib/paths'
 
 const TASK_NAME = 'CopilotProxy'
@@ -145,7 +150,11 @@ interface BuildTaskXmlOptions {
 }
 
 export function buildTaskXml(execPath: string, args: string[], options: BuildTaskXmlOptions = {}): string {
-  const usesProcessLogger = args.includes('--_log-file')
+  const rootCommand = findCittyRootCommand(args.slice(1))
+  const usesProcessLogger = rootCommand?.command === 'start'
+    && resolveCittyBooleanOption(rootCommand.rawArgs, '_log-file', {
+      stringOptions: START_CITTY_STRING_OPTIONS,
+    }).value === true
   const commandParts = [winQuoteArg(execPath), ...args.map(a => winQuoteArg(a))]
   // The process-level rotating writer must be able to rename daemon.log on
   // Windows. Keeping cmd.exe's append redirection open would lock that file.

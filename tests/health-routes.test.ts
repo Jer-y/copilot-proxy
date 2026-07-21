@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { state } from '~/lib/state'
 import { refreshTokenWithRetry, startCopilotTokenRefresh, stopCopilotTokenRefresh } from '~/lib/token'
+import { refreshModelsSafely } from '~/lib/utils'
 import { server } from '~/server'
 import { fetchAuthenticatedCopilot, resetCopilotRecoveryStateForTests } from '~/services/copilot/authenticated-fetch'
 
@@ -13,6 +14,7 @@ describe('health routes', () => {
     accountType: state.accountType,
     concurrencyLimiter: state.concurrencyLimiter,
     copilotToken: state.copilotToken,
+    modelCatalogLifecycle: state.modelCatalogLifecycle,
     models: state.models,
     nativeServiceInstanceToken: state.nativeServiceInstanceToken,
   }
@@ -23,6 +25,7 @@ describe('health routes', () => {
     state.accountType = 'individual'
     state.concurrencyLimiter = undefined
     state.copilotToken = undefined
+    state.modelCatalogLifecycle = undefined
     state.models = undefined
     state.nativeServiceInstanceToken = undefined
   })
@@ -33,6 +36,7 @@ describe('health routes', () => {
     state.accountType = original.accountType
     state.concurrencyLimiter = original.concurrencyLimiter
     state.copilotToken = original.copilotToken
+    state.modelCatalogLifecycle = original.modelCatalogLifecycle
     state.models = original.models
     state.nativeServiceInstanceToken = original.nativeServiceInstanceToken
   })
@@ -93,6 +97,7 @@ describe('health routes', () => {
         globalCircuit: { phase: 'closed' },
       },
       concurrency: {
+        enabled: true,
         maxConcurrency: 4,
         maxQueue: 8,
         active: 0,
@@ -149,6 +154,35 @@ describe('health routes', () => {
       })
       await inFlight
     }
+  })
+
+  test('keeps readiness with an explicit warning while preserving a stale catalog', async () => {
+    await configureReadyState()
+    const previousModels = state.models
+    const times = [2_000, 2_100]
+
+    expect(await refreshModelsSafely(async () => {
+      throw new Error('forced model refresh failure')
+    }, { now: () => times.shift() ?? 0 })).toBe(false)
+
+    const response = await server.request('/readyz')
+    const body = await response.json() as { reasons: string[], warnings: string[] } & Record<string, unknown>
+    expect(response.status).toBe(200)
+    expect(response.headers.get('retry-after')).toBeNull()
+    expect(state.models).toBe(previousModels)
+    expect(body).toMatchObject({
+      status: 'ready',
+      warnings: expect.arrayContaining(['model_catalog_stale']),
+      modelsAvailable: 1,
+      modelCatalog: {
+        status: 'stale',
+        consecutiveRefreshFailures: 1,
+        lastRefreshAttemptAt: 2_000,
+        lastRefreshFailureAt: 2_100,
+        lastRefreshSuccessAt: 1_100,
+      },
+    })
+    expect(body.reasons).not.toContain('model_catalog_stale')
   })
 
   test('returns 503 and Retry-After while the global recovery circuit is open', async () => {
@@ -208,6 +242,35 @@ describe('health routes', () => {
     expect(body.reasons).not.toContain('copilot_upstream_circuit_not_closed')
     expect(body.recovery.globalCircuit.phase).toBe('half_open')
   })
+
+  test('omits Retry-After for unrelated degradation while the global circuit is half-open', async () => {
+    await configureReadyState()
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const cooldownStartedAt = Date.now() - 60_001
+    for (const model of ['gpt-health-degraded-half-open-a', 'gpt-health-degraded-half-open-b']) {
+      await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model,
+        request: async () => new Response('Forbidden\n', {
+          status: 403,
+          headers: {
+            'Content-Type': 'text/plain',
+            'X-GitHub-Request-Id': crypto.randomUUID(),
+          },
+        }),
+      }, { now: () => cooldownStartedAt, refreshToken })
+    }
+    state.models = undefined
+
+    const response = await server.request('/readyz')
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).toBeNull()
+    expect(await response.json()).toMatchObject({
+      status: 'degraded',
+      reasons: ['model_catalog_unavailable'],
+      recovery: { globalCircuit: { phase: 'half_open' } },
+    })
+  })
 })
 
 async function configureReadyState(expiresAt = Date.now() + 3_600_000): Promise<void> {
@@ -223,5 +286,10 @@ async function configureReadyState(expiresAt = Date.now() + 3_600_000): Promise<
     object: 'list',
     data: [{ id: 'gpt-test' }],
   } as ModelsResponse
+  state.modelCatalogLifecycle = {
+    consecutiveRefreshFailures: 0,
+    lastRefreshAttemptAt: 1_000,
+    lastRefreshSuccessAt: 1_100,
+  }
   startCopilotTokenRefresh(3_600)
 }

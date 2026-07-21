@@ -8,9 +8,10 @@ import { assertProxyEndpointAvailable } from './daemon/service-env'
 import { ensurePaths, PATHS } from './lib/paths'
 import { initializeNodeHttpClient } from './lib/proxy'
 import { state } from './lib/state'
-import { setupGitHubToken } from './lib/token'
+import { setupGitHubToken, writeGithubTokenFile } from './lib/token'
 
 interface RunAuthOptions {
+  ifNeeded: boolean
   verbose: boolean
   showToken: boolean
   proxyEnv: boolean
@@ -32,8 +33,24 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
   initializeNodeHttpClient({ proxyEnv: options.proxyEnv })
 
   await ensurePaths()
-  await setupGitHubToken({ force: true })
-  consola.success('GitHub token written to', PATHS.GITHUB_TOKEN_PATH)
+  const environmentToken = process.env.GH_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN?.trim()
+  if (options.ifNeeded && environmentToken) {
+    await writeGithubTokenFile(PATHS.GITHUB_TOKEN_PATH, environmentToken)
+    delete process.env.GH_TOKEN
+    delete process.env.GITHUB_TOKEN
+    consola.success('GitHub authentication input was saved securely for startup.')
+    return
+  }
+
+  await setupGitHubToken({
+    force: !options.ifNeeded,
+    logUser: !options.ifNeeded,
+  })
+  if (options.ifNeeded)
+    consola.success('GitHub authentication input is available.')
+  else
+    consola.success('GitHub token written to', PATHS.GITHUB_TOKEN_PATH)
 }
 
 export const auth = defineCommand({
@@ -63,9 +80,15 @@ export const auth = defineCommand({
       type: 'string',
       description: 'Persist a GitHub token securely, then exit without starting the device flow',
     },
+    '_if-needed': {
+      type: 'boolean',
+      default: false,
+      description: 'Internal: authenticate only when no startup token input is available',
+    },
   },
   run({ args }) {
     return runAuth({
+      ifNeeded: args['_if-needed'],
       verbose: args.verbose,
       showToken: args['show-token'],
       proxyEnv: args['proxy-env'],

@@ -2,21 +2,23 @@
 
 import type { Server, ServerHandler } from 'srvx'
 import type { DaemonConfig } from '~/daemon/config'
+import type { Model } from '~/services/copilot/get-models'
 import fs from 'node:fs'
 import process from 'node:process'
 import { defineCommand } from 'citty'
 import clipboard from 'clipboardy'
 import consola from 'consola'
 import { serve } from 'crossws/server'
-import invariant from 'tiny-invariant'
 
 import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
+import { buildClaudeLaunchCommand } from './lib/client-setup'
 import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
 import { PATHS } from './lib/paths'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
+import { selectableDirectModelIdsForRoute } from './lib/product-capabilities'
+import { gatewayPresetEnvironmentError, isRunPresetName, resolveRunPreset, RUN_PRESET_NAMES, selectStartPreset, wasRunOptionPassed } from './lib/run-presets'
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
-import { generateEnvScript } from './lib/shell'
 import { state } from './lib/state'
 import { toAnthropicClientModelName } from './routes/messages/model-normalization'
 import {
@@ -71,6 +73,8 @@ const defaultWebSocketShutdownDependencies: WebSocketShutdownDependencies = {
   closeResponsesWebSocketsGracefully,
   forceCloseResponsesWebSockets,
 }
+
+const HOSTED_DIAGNOSTICS_DASHBOARD_URL = 'https://jer-y.github.io/copilot-proxy'
 
 const httpRequestDrainTrackers = new WeakMap<object, HttpRequestDrainTracker>()
 
@@ -184,10 +188,62 @@ function formatHostForUrl(host: string): string {
   return host
 }
 
+export function buildDiagnosticsDashboardUrl(serverUrl: string): string {
+  const dashboardUrl = new URL(HOSTED_DIAGNOSTICS_DASHBOARD_URL)
+  dashboardUrl.searchParams.set('endpoint', `${serverUrl}/diagnostics`)
+  return dashboardUrl.toString()
+}
+
+type ClaudeCodeModelPrompt = (
+  message: string,
+  modelIds: string[],
+) => Promise<string>
+
+const defaultClaudeCodeModelPrompt: ClaudeCodeModelPrompt = async (message, modelIds) => await consola.prompt(
+  message,
+  {
+    type: 'select',
+    options: modelIds,
+  },
+) as string
+
+export async function promptForClaudeCodeLaunchCommand(
+  serverUrl: string,
+  modelIds: string[],
+  prompt: ClaudeCodeModelPrompt = defaultClaudeCodeModelPrompt,
+): Promise<string> {
+  const selectedModel = await prompt(
+    'Select a model to use with Claude Code',
+    modelIds,
+  )
+  const selectedSmallModel = await prompt(
+    'Select a small model to use with Claude Code',
+    modelIds,
+  )
+
+  return buildClaudeLaunchCommand({
+    baseUrl: serverUrl,
+    model: toAnthropicClientModelName(selectedModel),
+    smallModel: toAnthropicClientModelName(selectedSmallModel),
+  })
+}
+
+export function selectClaudeCodeModelIds(models: Model[]): string[] {
+  const modelIds = selectableDirectModelIdsForRoute(models, 'anthropicMessages')
+  if (modelIds.length === 0) {
+    throw new Error('No current Copilot model can serve Claude Code through a faithful direct Messages route.')
+  }
+  return modelIds
+}
+
 export async function runServer(options: RunServerOptions): Promise<void> {
   await initializeServer(options)
 
   const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
+  const dashboardUrl = buildDiagnosticsDashboardUrl(serverUrl)
+  const claudeCodeModelIds = options.claudeCode
+    ? selectClaudeCodeModelIds(state.models?.data ?? [])
+    : []
 
   try {
     const appServer = createAppServer(options)
@@ -203,42 +259,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       )
     }
     consola.box(
-      `🌐 Usage Viewer: https://jer-y.github.io/copilot-proxy?endpoint=${serverUrl}/usage`,
+      `🌐 Diagnostics Dashboard: ${dashboardUrl}`,
     )
 
     if (options.claudeCode) {
-      invariant(state.models, 'Models should be loaded by now')
-
-      const selectedModel = await consola.prompt(
-        'Select a model to use with Claude Code',
-        {
-          type: 'select',
-          options: state.models.data.map(model => model.id),
-        },
-      )
-
-      const selectedSmallModel = await consola.prompt(
-        'Select a small model to use with Claude Code',
-        {
-          type: 'select',
-          options: state.models.data.map(model => model.id),
-        },
-      )
-      const clientModel = toAnthropicClientModelName(selectedModel)
-      const clientSmallModel = toAnthropicClientModelName(selectedSmallModel)
-
-      const command = generateEnvScript(
-        {
-          ANTHROPIC_BASE_URL: serverUrl,
-          ANTHROPIC_AUTH_TOKEN: 'dummy',
-          ANTHROPIC_MODEL: clientModel,
-          ANTHROPIC_DEFAULT_SONNET_MODEL: clientModel,
-          ANTHROPIC_SMALL_FAST_MODEL: clientSmallModel,
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: clientSmallModel,
-          DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1',
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        },
-        'claude',
+      const command = await promptForClaudeCodeLaunchCommand(
+        serverUrl,
+        claudeCodeModelIds,
       )
 
       try {
@@ -267,7 +294,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 }
 
 export function createAppServer(
-  options: Pick<RunServerOptions, 'host' | 'port'>,
+  options: Pick<RunServerOptions, 'host' | 'port'> & { silent?: boolean },
   dependencies: AppServerDependencies = defaultAppServerDependencies,
   fetchHandler: ServerHandler = server.fetch as ServerHandler,
 ): Server {
@@ -277,6 +304,7 @@ export function createAppServer(
     fetch: request => httpRequestDrainTracker.fetch(request, fetchHandler),
     port: options.port,
     hostname: options.host,
+    silent: options.silent,
     gracefulShutdown: false,
     websocket: dependencies.responsesWebSocketOptions,
     bun: {
@@ -478,6 +506,12 @@ export const start = defineCommand({
       default: DEFAULT_HOST,
       description: 'Host/IP to bind to. Use 0.0.0.0 only when intentionally exposing the port',
     },
+    'preset': {
+      type: 'enum',
+      options: [...RUN_PRESET_NAMES],
+      default: 'custom',
+      description: 'Runtime preset; plain start keeps the legacy unbounded custom behavior',
+    },
     'verbose': {
       alias: 'v',
       type: 'boolean',
@@ -509,15 +543,15 @@ export const start = defineCommand({
     },
     'max-concurrency': {
       type: 'string',
-      description: 'Maximum concurrent Copilot upstream requests (disabled when omitted)',
+      description: 'Override preset concurrency; custom is unbounded when this is omitted',
     },
     'max-queue': {
       type: 'string',
-      description: 'Maximum requests waiting for a concurrency slot (default: 50; 0 disables queueing)',
+      description: 'Override the preset queue (custom + max-concurrency defaults to 50; 0 disables queueing)',
     },
     'queue-timeout-ms': {
       type: 'string',
-      description: 'Maximum time to wait for a concurrency slot (default: 30000; 0 disables waiting)',
+      description: 'Override preset queue wait (custom + max-concurrency defaults to 30000; 0 disables waiting)',
     },
     'headers-timeout-ms': {
       type: 'string',
@@ -542,7 +576,7 @@ export const start = defineCommand({
       type: 'boolean',
       default: false,
       description:
-        'Generate a command to launch Claude Code with Copilot API config',
+        'Generate a command to launch Claude Code with a direct Copilot Messages model',
     },
     'show-token': {
       type: 'boolean',
@@ -558,7 +592,7 @@ export const start = defineCommand({
       alias: 'd',
       type: 'boolean',
       default: false,
-      description: 'Run as a legacy app-managed background daemon',
+      description: 'Deprecated: run the legacy app-managed daemon; prefer `enable`',
     },
     '_supervisor': {
       type: 'boolean',
@@ -584,7 +618,7 @@ export const start = defineCommand({
       description: 'Internal: identify the installed native-service instance',
     },
   },
-  async run({ args }) {
+  async run({ args, rawArgs }) {
     if (args['_log-file']) {
       const { installRotatingProcessLog } = await import('~/daemon/log-file')
       installRotatingProcessLog()
@@ -605,9 +639,14 @@ export const start = defineCommand({
       process.exit(1)
     }
 
-    const host = validateHost(args.host)
-    if (host === null) {
+    const parsedHost = validateHost(args.host)
+    if (parsedHost === null) {
       consola.error(`Invalid host: ${args.host}`)
+      process.exit(1)
+    }
+
+    if (!isRunPresetName(args.preset)) {
+      consola.error(`Invalid preset: ${args.preset} (must be one of: ${RUN_PRESET_NAMES.join(', ')})`)
       process.exit(1)
     }
 
@@ -623,25 +662,47 @@ export const start = defineCommand({
       consola.error(`Invalid max-concurrency: ${args['max-concurrency']} (must be a positive safe integer)`)
       process.exit(1)
     }
-    const maxConcurrency = maxConcurrencyResult.value
+    const parsedMaxConcurrency = maxConcurrencyResult.value
 
     const maxQueueResult = validateMaxQueue(args['max-queue'])
     if (!maxQueueResult.valid) {
       consola.error(`Invalid max-queue: ${args['max-queue']} (must be a non-negative safe integer)`)
       process.exit(1)
     }
-    const maxQueue = maxQueueResult.value
+    const parsedMaxQueue = maxQueueResult.value
 
     const queueTimeoutResult = validateQueueTimeoutMs(args['queue-timeout-ms'])
     if (!queueTimeoutResult.valid) {
       consola.error(`Invalid queue-timeout-ms: ${args['queue-timeout-ms']} (must be between 0 and ${MAX_TIMER_DELAY_MS})`)
       process.exit(1)
     }
-    const queueTimeoutMs = queueTimeoutResult.value
+    const parsedQueueTimeoutMs = queueTimeoutResult.value
+
+    const presetName = selectStartPreset(args.preset, rawArgs, args._service)
+    const preset = resolveRunPreset(presetName, {
+      ...(wasRunOptionPassed(rawArgs, 'host', 'H') && { host: parsedHost }),
+      ...(wasRunOptionPassed(rawArgs, 'max-concurrency') && { maxConcurrency: parsedMaxConcurrency }),
+      ...(wasRunOptionPassed(rawArgs, 'max-queue') && { maxQueue: parsedMaxQueue }),
+      ...(wasRunOptionPassed(rawArgs, 'queue-timeout-ms') && { queueTimeoutMs: parsedQueueTimeoutMs }),
+    })
+    const host = preset.host
+    const maxConcurrency = preset.maxConcurrency
+    const maxQueue = preset.maxQueue
+    const queueTimeoutMs = preset.queueTimeoutMs
 
     if (maxConcurrency === undefined && (maxQueue !== undefined || queueTimeoutMs !== undefined)) {
       consola.error('--max-queue and --queue-timeout-ms require --max-concurrency')
       process.exit(1)
+    }
+
+    consola.info(`Using ${preset.name} runtime preset: ${preset.description}`)
+    if (preset.name === 'gateway-upstream') {
+      const gatewayEnvironmentError = gatewayPresetEnvironmentError(preset.name)
+      if (gatewayEnvironmentError) {
+        consola.error(gatewayEnvironmentError)
+        process.exit(1)
+      }
+      consola.warn('gateway-upstream is only for a private backend behind an authenticated gateway; never expose this listener directly.')
     }
 
     const headersTimeoutResult = validateTimeoutMs(args['headers-timeout-ms'])
@@ -725,7 +786,7 @@ export const start = defineCommand({
       const mergedConfig = mergeDaemonConfigWithExplicitFlags(
         configResult.config,
         fallbackConfig,
-        process.argv.slice(2),
+        rawArgs,
       )
       if (mergedConfig.showToken) {
         consola.error('Cannot use --show-token in supervisor mode because tokens would be written to daemon logs.')
@@ -748,6 +809,7 @@ export const start = defineCommand({
     }
 
     if (args.daemon) {
+      consola.warn('`start --daemon` is deprecated and will be removed after the v1 migration window. Use `copilot-proxy enable` for a native background service.')
       if (args['claude-code']) {
         consola.error('Cannot use --claude-code with --daemon (interactive mode)')
         process.exit(1)

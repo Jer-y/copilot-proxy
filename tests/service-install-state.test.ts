@@ -45,6 +45,35 @@ describe('native service install control state', () => {
     expect(env.COPILOT_PROXY_DATA_DIR).toBe('/current/data')
   })
 
+  test('pins prefixed control commands using Citty root dispatch semantics', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    saveNativeServiceInstallState({ dataDir: '/installed/data' }, filePath)
+
+    const prefixedEnv: NodeJS.ProcessEnv = { COPILOT_PROXY_DATA_DIR: '/current/data' }
+    applyInstalledNativeServiceDataDir(['-x', '--unknown=value', 'status'], prefixedEnv, filePath)
+    expect(prefixedEnv.COPILOT_PROXY_DATA_DIR).toBe('/installed/data')
+
+    const positionalEnv: NodeJS.ProcessEnv = { COPILOT_PROXY_DATA_DIR: '/current/data' }
+    applyInstalledNativeServiceDataDir(['--unknown', 'value', 'status'], positionalEnv, filePath)
+    expect(positionalEnv.COPILOT_PROXY_DATA_DIR).toBe('/current/data')
+
+    const terminatedEnv: NodeJS.ProcessEnv = { COPILOT_PROXY_DATA_DIR: '/current/data' }
+    applyInstalledNativeServiceDataDir(['--', 'status'], terminatedEnv, filePath)
+    expect(terminatedEnv.COPILOT_PROXY_DATA_DIR).toBe('/current/data')
+  })
+
+  test('does not read installed control state for root help', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    fs.writeFileSync(filePath, '{invalid json', { mode: 0o600 })
+    const env: NodeJS.ProcessEnv = { COPILOT_PROXY_DATA_DIR: '/current/data' }
+
+    expect(applyInstalledNativeServiceDataDir(['--help', 'status'], env, filePath)).toEqual({})
+    expect(applyInstalledNativeServiceDataDir(['status', '-h'], env, filePath)).toEqual({})
+    expect(env.COPILOT_PROXY_DATA_DIR).toBe('/current/data')
+  })
+
   test('persists the proxy-mode needed to validate native restart state', () => {
     const home = makeTempDir()
     const filePath = getNativeServiceControlStatePath({}, home)

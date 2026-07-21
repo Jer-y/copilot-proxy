@@ -17,7 +17,7 @@ export function resetUsageCacheForTests(): void {
   usageInFlight = undefined
 }
 
-async function getCachedCopilotUsage(): Promise<Awaited<ReturnType<typeof getCopilotUsage>>> {
+export async function getCachedCopilotUsage(): Promise<Awaited<ReturnType<typeof getCopilotUsage>>> {
   const now = Date.now()
   if (usageCache && usageCache.expiresAt > now)
     return usageCache.value

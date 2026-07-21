@@ -18,6 +18,7 @@ import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { assertResponsesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
 import { ResponsesPayloadSchema } from '~/lib/schemas'
+import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 import { state } from '~/lib/state'
 import {
   createAnthropicToResponsesStreamState,
@@ -118,7 +119,8 @@ export async function handleResponsesPassthrough(
 
 /** Direct path: model supports responses API */
 async function handleViaResponses(c: Context, payload: ResponsesPayload) {
-  const result = await createResponses(payload)
+  const setupSignal = getSetupProbeSignal(c)
+  const result = await createResponses(payload, setupSignal ? { signal: setupSignal } : undefined)
 
   if (!isResponsesStreamBody(result.body)) {
     if (consola.level >= 4) {
@@ -217,7 +219,8 @@ async function handleViaAnthropic(
     consola.debug('Translated Responses→Anthropic payload summary:', summarizeAnthropicPayload(anthropicPayload))
   }
 
-  const result = await createAnthropicMessages(anthropicPayload)
+  const setupSignal = getSetupProbeSignal(c)
+  const result = await createAnthropicMessages(anthropicPayload, setupSignal ? { signal: setupSignal } : undefined)
 
   // Non-streaming
   if (!result.streaming) {

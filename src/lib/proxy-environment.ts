@@ -1,3 +1,22 @@
+import type {
+  CittyStringOptionDefinition,
+} from './citty-argv'
+
+import { analyzeBootstrapArguments } from '~/daemon/github-token-argv'
+import {
+  AUTH_CITTY_STRING_OPTIONS,
+  findCittyRootCommand,
+  hasCittyRootHelpFlag,
+  resolveCittyBooleanOption,
+  START_CITTY_STRING_OPTIONS,
+} from './citty-argv'
+
+export type {
+  CittyBooleanOptionResolution,
+  CittyStringOptionDefinition,
+} from './citty-argv'
+export { resolveCittyBooleanOption } from './citty-argv'
+
 export const PROXY_ENV_KEYS = [
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -19,6 +38,34 @@ export const PROXY_ENDPOINT_ENV_KEYS = [
 ] as const
 
 export const NETWORK_BOOTSTRAPPED_ENV = 'COPILOT_PROXY_NETWORK_BOOTSTRAPPED'
+
+const NETWORK_COMMAND_STRING_OPTIONS: Record<string, readonly CittyStringOptionDefinition[]> = {
+  'auth': AUTH_CITTY_STRING_OPTIONS,
+  'check-usage': [],
+  'doctor': [
+    { name: 'endpoint' },
+    { name: 'client' },
+    { name: 'timeout-ms' },
+  ],
+  'models': [
+    { name: 'account-type', shortName: 'a' },
+    { name: 'client' },
+  ],
+  'setup': [
+    { name: 'model' },
+    { name: 'small-model' },
+    { name: 'port', shortName: 'p' },
+    { name: 'host', shortName: 'H' },
+    { name: 'account-type', shortName: 'a' },
+    { name: 'preset' },
+    { name: 'shell' },
+  ],
+  'start': START_CITTY_STRING_OPTIONS,
+}
+
+// This bootstrap module is loaded before the runtime guard and before command
+// modules, so it cannot reuse Citty or import their argument definitions. Keep
+// only the string options that can consume a following proxy-looking token.
 
 export function hasProxyEndpointEnvironment(env: NodeJS.ProcessEnv): boolean {
   return PROXY_ENDPOINT_ENV_KEYS.some(key => Boolean(env[key]?.trim()))
@@ -78,14 +125,16 @@ export function withoutProxyEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessE
 }
 
 export function cliEnablesProxyEnvironment(args: string[]): boolean {
-  let enabled = false
-  for (const arg of args) {
-    if (arg === '--proxy-env' || arg === '--proxy-env=true')
-      enabled = true
-    else if (arg === '--no-proxy-env' || arg === '--proxy-env=false')
-      enabled = false
-  }
-  return enabled
+  if (hasCittyRootHelpFlag(args))
+    return false
+  const command = findCittyRootCommand(args)
+  if (!command)
+    return false
+  if (command.command === 'start' || command.command === 'auth')
+    return analyzeBootstrapArguments(args).proxyEnvironment
+  return resolveCittyBooleanOption(command.rawArgs, 'proxy-env', {
+    stringOptions: NETWORK_COMMAND_STRING_OPTIONS[command.command] ?? [],
+  }).value === true
 }
 
 export function shouldRestartWithSanitizedNetworkEnvironment(
@@ -93,12 +142,24 @@ export function shouldRestartWithSanitizedNetworkEnvironment(
   env: NodeJS.ProcessEnv,
   isBun: boolean,
 ): boolean {
-  const command = args[0]
-  const usesNetwork = command === 'start' || command === 'auth' || command === 'check-usage'
+  if (hasCittyRootHelpFlag(args))
+    return false
+  const command = findCittyRootCommand(args)
+  const commandName = command?.command
+  const usesNetwork = commandName === 'start'
+    || commandName === 'auth'
+    || commandName === 'check-usage'
+    || commandName === 'setup'
+    || commandName === 'models'
+    || commandName === 'doctor'
+  const nativeService = command?.command === 'start'
+    && resolveCittyBooleanOption(command.rawArgs, '_service', {
+      stringOptions: START_CITTY_STRING_OPTIONS,
+    }).value === true
   return usesNetwork
     && env[NETWORK_BOOTSTRAPPED_ENV] !== '1'
     && (
-      (command === 'start' && args.includes('--_service'))
+      nativeService
       || (isBun && !cliEnablesProxyEnvironment(args) && hasProxyEndpointEnvironment(env))
     )
 }

@@ -5,12 +5,49 @@ import { resetUsageCacheForTests } from '~/routes/usage/route'
 import { server } from '~/server'
 
 const originalFetch = globalThis.fetch
-const fetchMock = mock(async (): Promise<Response> => Response.json({ quota: 'fresh' }))
+function quota(remaining: number, percentRemaining: number) {
+  return {
+    entitlement: 100,
+    percent_remaining: percentRemaining,
+    remaining,
+    unlimited: false,
+  }
+}
+const publicUsagePayload = {
+  copilot_plan: 'individual',
+  quota_reset_date: '2026-08-01',
+  quota_snapshots: {
+    chat: quota(80, 80),
+    completions: quota(100, 100),
+    premium_interactions: quota(75, 75),
+  },
+}
+const upstreamUsagePayload = {
+  ...publicUsagePayload,
+  access_type_sku: 'copilot_for_individual',
+  analytics_tracking_id: 'must-not-appear-tracking-id',
+  assigned_date: '2026-01-01',
+  organization_enterprise_list: ['must-not-appear-enterprise'],
+  organization_login_list: ['must-not-appear-org-login'],
+  organization_list: [{ name: 'must-not-appear-org' }],
+  quota_snapshots: {
+    ...publicUsagePayload.quota_snapshots,
+    chat: {
+      ...publicUsagePayload.quota_snapshots.chat,
+      nested_private_marker: 'must-not-appear-nested',
+      quota_id: 'must-not-appear-quota-id',
+    },
+    future_private_bucket: {
+      nested_private_marker: 'must-not-appear-future-bucket',
+    },
+  },
+}
+const fetchMock = mock(async (): Promise<Response> => Response.json(upstreamUsagePayload))
 
 beforeEach(() => {
   resetUsageCacheForTests()
   fetchMock.mockClear()
-  fetchMock.mockImplementation(async (): Promise<Response> => Response.json({ quota: 'fresh' }))
+  fetchMock.mockImplementation(async (): Promise<Response> => Response.json(upstreamUsagePayload))
   state.githubToken = 'github-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
@@ -30,8 +67,8 @@ describe('/usage cache', () => {
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
     expect(first.headers.get('cache-control')).toBe('no-store')
-    expect(await first.json()).toEqual({ quota: 'fresh' })
-    expect(await second.json()).toEqual({ quota: 'fresh' })
+    expect(await first.json()).toEqual(publicUsagePayload)
+    expect(await second.json()).toEqual(publicUsagePayload)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
@@ -63,13 +100,13 @@ describe('/usage cache', () => {
     await waitFor(() => fetchMock.mock.calls.length === 1 && resolveUpstream !== undefined)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    resolveUpstream!(Response.json({ quota: 'shared' }))
+    resolveUpstream!(Response.json(upstreamUsagePayload))
     const [firstResponse, secondResponse] = await Promise.all([first, second])
 
     expect(firstResponse.status).toBe(200)
     expect(secondResponse.status).toBe(200)
-    expect(await firstResponse.json()).toEqual({ quota: 'shared' })
-    expect(await secondResponse.json()).toEqual({ quota: 'shared' })
+    expect(await firstResponse.json()).toEqual(publicUsagePayload)
+    expect(await secondResponse.json()).toEqual(publicUsagePayload)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

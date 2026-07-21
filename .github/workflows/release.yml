@@ -105,6 +105,15 @@ jobs:
       - name: Exercise the native service adapter on its host OS
         run: bun test ${{ matrix.adapter_test }} tests/daemon-enable.test.ts tests/service-install-state.test.ts tests/main-entrypoint.test.ts
 
+      - name: Exercise the Windows development launcher on Windows
+        if: runner.os == 'Windows'
+        run: bun test tests/start-bat.test.ts tests/shell.test.ts tests/client-setup.test.ts
+
+      - name: Exercise the Windows launcher from a real UNC path
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/run-windows-unc-launcher-test.ps1
+
   npm-publish:
     needs: [validate, native-service-adapters]
     runs-on: ubuntu-latest

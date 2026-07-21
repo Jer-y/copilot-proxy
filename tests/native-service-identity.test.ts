@@ -1,4 +1,5 @@
 import http from 'node:http'
+import process from 'node:process'
 
 import { afterEach, describe, expect, test } from 'bun:test'
 
@@ -6,8 +7,14 @@ import { NATIVE_SERVICE_INSTANCE_HEADER, probeCopilotProxyServer } from '~/daemo
 import { state } from '~/lib/state'
 import { server } from '~/server'
 
+const originalAllowedHosts = process.env.COPILOT_PROXY_ALLOWED_HOSTS
+
 afterEach(() => {
   state.nativeServiceInstanceToken = undefined
+  if (originalAllowedHosts === undefined)
+    delete process.env.COPILOT_PROXY_ALLOWED_HOSTS
+  else
+    process.env.COPILOT_PROXY_ALLOWED_HOSTS = originalAllowedHosts
 })
 
 describe('native service instance identity', () => {
@@ -51,6 +58,39 @@ describe('native service instance identity', () => {
       await new Promise<void>((resolve, reject) => {
         probeServer.close(error => error ? reject(error) : resolve())
       })
+    }
+  })
+
+  test('readiness reaches the real server with the persisted non-loopback Host header', async () => {
+    state.nativeServiceInstanceToken = 'instance_token_non_loopback'
+    process.env.COPILOT_PROXY_ALLOWED_HOSTS = 'proxy.internal'
+    const liveServer = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: request => server.fetch(request),
+    })
+    const { port } = liveServer
+    if (port === undefined)
+      throw new Error('Expected a TCP listener port')
+
+    try {
+      expect(await probeCopilotProxyServer(
+        '0.0.0.0',
+        port,
+        'instance_token_non_loopback',
+        'proxy.internal',
+      )).toBe(true)
+
+      delete process.env.COPILOT_PROXY_ALLOWED_HOSTS
+      expect(await probeCopilotProxyServer(
+        '0.0.0.0',
+        port,
+        'instance_token_non_loopback',
+        'proxy.internal',
+      )).toBe(false)
+    }
+    finally {
+      await liveServer.stop(true)
     }
   })
 })

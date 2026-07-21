@@ -3,7 +3,7 @@ import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { DEFAULT_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
-import { loadInstalledNativeServiceCommands, waitForNativeServiceReadiness } from '~/daemon/native-service'
+import { loadInstalledNativeServiceCommands, resolveNativeServiceReadinessHost, waitForNativeServiceReadiness } from '~/daemon/native-service'
 import { isDaemonRunning } from '~/daemon/pid'
 import { loadNativeServiceEnvironment } from '~/daemon/service-env'
 import { loadNativeServiceInstallState } from '~/daemon/service-install-state'
@@ -21,15 +21,24 @@ export const restart = defineCommand({
     const nativeService = await loadInstalledNativeServiceCommands()
     if (nativeService) {
       let installState: ReturnType<typeof loadNativeServiceInstallState>
+      let readinessRequestHost: string
       try {
         installState = loadNativeServiceInstallState()
-        loadNativeServiceEnvironment({
+        const persistedEnvironment = loadNativeServiceEnvironment({
           proxyEnv: installState?.config?.proxyEnv
             ?? installState?.proxyEnv
             ?? (config ?? DEFAULT_SERVICE_CONFIG).proxyEnv,
           targetEnv: { ...process.env },
           filePath: PATHS.NATIVE_SERVICE_ENV,
         })
+        const readinessConfig = installState?.config ?? config ?? DEFAULT_SERVICE_CONFIG
+        const resolvedReadinessHost = resolveNativeServiceReadinessHost(
+          readinessConfig.host,
+          persistedEnvironment,
+        )
+        if (!resolvedReadinessHost)
+          throw new Error('The persisted native-service environment has no non-loopback Host available for readiness verification.')
+        readinessRequestHost = resolvedReadinessHost
       }
       catch (error) {
         consola.error('Cannot restart native service because its persisted environment is invalid:', error instanceof Error ? error.message : error)
@@ -42,6 +51,7 @@ export const restart = defineCommand({
       const readinessConfig = installState?.config ?? config ?? DEFAULT_SERVICE_CONFIG
       if (!await waitForNativeServiceReadiness(readinessConfig, {
         expectedInstanceToken: installState?.instanceToken,
+        requestHost: readinessRequestHost,
       })) {
         consola.error(`Native service did not become ready on ${readinessConfig.host}:${readinessConfig.port} within the startup deadline.`)
         process.exit(1)

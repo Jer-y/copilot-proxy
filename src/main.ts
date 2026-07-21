@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
+import type { BootstrapArgumentAnalysis } from './daemon/github-token-argv'
+
 import { spawn } from 'node:child_process'
-import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
+import { analyzeBootstrapArguments } from './daemon/github-token-argv'
 import { applyInstalledNativeServiceDataDir } from './daemon/service-install-state'
 import {
   NETWORK_BOOTSTRAPPED_ENV,
@@ -14,32 +16,14 @@ import {
 } from './lib/proxy-environment'
 import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from './lib/runtime-version'
 
-const INTERNAL_DATA_DIR_FLAG = '--_data-dir'
-const STARTUP_TLS_ENV_KEYS = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const
-
-function applyInternalDataDirArgument(args: string[]): void {
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index]
-    if (arg === '--')
-      break
-
-    const value = arg === INTERNAL_DATA_DIR_FLAG
-      ? args[index + 1]
-      : arg.startsWith(`${INTERNAL_DATA_DIR_FLAG}=`)
-        ? arg.slice(INTERNAL_DATA_DIR_FLAG.length + 1)
-        : undefined
-
-    if (value) {
-      process.env.COPILOT_PROXY_DATA_DIR = path.resolve(value)
-      return
-    }
-  }
-}
-
 // Native services may start without the shell's XDG/LOCALAPPDATA overrides.
-// Apply the non-secret data directory before importing modules that bind PATHS.
-applyInternalDataDirArgument(process.argv.slice(2))
-const controlStateResult = applyInstalledNativeServiceDataDir(process.argv.slice(2))
+// Analyze with the dependency-free Citty-compatible bootstrap parser and apply
+// the non-secret data directory before importing modules that bind PATHS.
+const cliArgs = process.argv.slice(2)
+const bootstrapArguments = analyzeBootstrapArguments(cliArgs)
+if (bootstrapArguments.dataDir)
+  process.env.COPILOT_PROXY_DATA_DIR = path.resolve(bootstrapArguments.dataDir)
+const controlStateResult = applyInstalledNativeServiceDataDir(cliArgs)
 if (controlStateResult.ignoredInvalidStatePath) {
   process.env.COPILOT_PROXY_INVALID_NATIVE_SERVICE_CONTROL_STATE = '1'
   process.stderr.write(
@@ -47,20 +31,25 @@ if (controlStateResult.ignoredInvalidStatePath) {
   )
 }
 
-async function restartWithSanitizedNetworkEnvironmentIfNeeded(args: string[]): Promise<number | undefined> {
+async function restartWithSanitizedNetworkEnvironmentIfNeeded(
+  args: string[],
+  analysis: BootstrapArgumentAnalysis,
+): Promise<number | undefined> {
   if (!shouldRestartWithSanitizedNetworkEnvironment(args, process.env, typeof Bun !== 'undefined'))
     return undefined
 
-  const env = args.includes('--_service')
-    ? await loadNativeServiceProxyEnvironmentForBootstrap(process.env, args.includes('--proxy-env'))
+  const nativeServiceBootstrap = analysis.nativeService
+  const env = nativeServiceBootstrap
+    ? await loadNativeServiceEnvironmentForBootstrap(process.env, analysis.proxyEnvironment)
     : withoutProxyEnvironment(process.env)
-  for (const key of PROXY_ENV_KEYS)
-    delete process.env[key]
-  if (args.includes('--_service')) {
-    for (const key of STARTUP_TLS_ENV_KEYS)
+  env[NETWORK_BOOTSTRAPPED_ENV] = '1'
+  if (nativeServiceBootstrap) {
+    synchronizeProcessEnvironment(env)
+  }
+  else {
+    for (const key of PROXY_ENV_KEYS)
       delete process.env[key]
   }
-  env[NETWORK_BOOTSTRAPPED_ENV] = '1'
   const child = spawn(process.execPath, process.argv.slice(1), {
     env,
     stdio: 'inherit',
@@ -89,7 +78,20 @@ async function restartWithSanitizedNetworkEnvironmentIfNeeded(args: string[]): P
   }
 }
 
-async function loadNativeServiceProxyEnvironmentForBootstrap(
+function synchronizeProcessEnvironment(sourceEnv: NodeJS.ProcessEnv): void {
+  // The bootstrap parent remains alive to forward signals and return the
+  // long-lived service child's exit code. Give it the exact same allowlisted
+  // environment before spawning so it cannot retain ambient credentials or
+  // stale service security settings while it waits.
+  for (const key of Object.keys(process.env))
+    delete process.env[key]
+  for (const [key, value] of Object.entries(sourceEnv)) {
+    if (value !== undefined)
+      process.env[key] = value
+  }
+}
+
+async function loadNativeServiceEnvironmentForBootstrap(
   sourceEnv: NodeJS.ProcessEnv,
   proxyEnv: boolean,
 ): Promise<NodeJS.ProcessEnv> {
@@ -98,26 +100,27 @@ async function loadNativeServiceProxyEnvironmentForBootstrap(
     throw new Error('Native service is missing its persisted --_data-dir argument.')
 
   const filePath = path.join(dataDir, 'service-env.json')
-  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-    || !Object.values(parsed).every(value => typeof value === 'string')) {
-    throw new Error(`Native service environment file is invalid: ${filePath}`)
-  }
-
-  const saved = parsed as Record<string, string>
-  const { buildNativeServiceBootstrapEnvironment } = await import('./daemon/service-env')
+  const {
+    buildNativeServiceBootstrapEnvironment,
+    readNativeServiceEnvironment,
+  } = await import('./daemon/service-env')
+  const saved = readNativeServiceEnvironment(filePath)
   return buildNativeServiceBootstrapEnvironment(sourceEnv, saved, {
     proxyEnv,
   })
 }
 
-async function persistGithubTokenArgumentIfNeeded(args: string[]): Promise<number | undefined> {
-  const { removeGithubTokenArguments } = await import('./daemon/github-token-argv')
-  const sanitized = removeGithubTokenArguments(args)
-  if (sanitized.token === undefined)
+async function persistGithubTokenArgumentIfNeeded(
+  analysis: BootstrapArgumentAnalysis,
+): Promise<number | undefined> {
+  // Citty treats an exact --help/-h anywhere in argv as its builtin root-help
+  // request, even when a declared string option would otherwise consume it as
+  // a value. Help must stay side-effect free and continue into runMain(), which
+  // prints the resolved command usage and exits immediately.
+  if (analysis.rootHelp || analysis.token === undefined)
     return undefined
 
-  const token = sanitized.token.trim()
+  const token = analysis.token.trim()
   if (!token)
     throw new Error('--github-token must not be empty')
 
@@ -132,7 +135,7 @@ async function persistGithubTokenArgumentIfNeeded(args: string[]): Promise<numbe
   // a parent command line for as long as the child runs. Persist and exit
   // promptly on every platform; a second start without the flag is the only
   // portable way to guarantee no long-lived process keeps the token argument.
-  if (args[0] === 'auth') {
+  if (analysis.command === 'auth') {
     process.stderr.write('GitHub token saved securely.\n')
     return 0
   }
@@ -154,26 +157,35 @@ if (typeof Bun === 'undefined' && !isSupportedNodeVersion(process.versions.node)
 // Node APIs introduced in 22.19, so static imports would crash older Node
 // versions before the CLI could print an actionable compatibility error.
 async function run(): Promise<void> {
-  const args = process.argv.slice(2)
-  const tokenBootstrapExitCode = await persistGithubTokenArgumentIfNeeded(args)
+  const args = cliArgs
+  if (bootstrapArguments.misplacedGithubToken && !bootstrapArguments.rootHelp) {
+    process.stderr.write(
+      'Invalid arguments: --github-token was consumed as another option value. Supply that option\'s value before passing --github-token.\n',
+    )
+    process.exitCode = 1
+    return
+  }
+
+  const tokenBootstrapExitCode = await persistGithubTokenArgumentIfNeeded(bootstrapArguments)
   if (tokenBootstrapExitCode !== undefined) {
     process.exitCode = tokenBootstrapExitCode
     return
   }
 
-  if (args.includes('--_log-file')) {
+  if (bootstrapArguments.processLog) {
     const { installRotatingProcessLog } = await import('./daemon/log-file')
     installRotatingProcessLog()
   }
 
-  const bootstrapExitCode = await restartWithSanitizedNetworkEnvironmentIfNeeded(args)
+  const bootstrapExitCode = await restartWithSanitizedNetworkEnvironmentIfNeeded(args, bootstrapArguments)
   if (bootstrapExitCode !== undefined) {
     process.exitCode = bootstrapExitCode
     return
   }
 
   const [
-    { defineCommand, runMain },
+    { defineCommand, renderUsage, runMain },
+    { stripAnsi },
     { auth },
     { checkUsage },
     { disable },
@@ -183,9 +195,13 @@ async function run(): Promise<void> {
     { status },
     { stop },
     { debug },
+    { doctor },
+    { models },
+    { setup },
     { start },
   ] = await Promise.all([
     import('citty'),
+    import('consola/utils'),
     import('./auth'),
     import('./check-usage'),
     import('./daemon/disable'),
@@ -195,6 +211,9 @@ async function run(): Promise<void> {
     import('./daemon/status'),
     import('./daemon/stop'),
     import('./debug'),
+    import('./doctor'),
+    import('./models'),
+    import('./setup'),
     import('./start'),
   ])
 
@@ -202,12 +221,35 @@ async function run(): Promise<void> {
     meta: {
       name: 'copilot-proxy',
       description:
-        'A wrapper around GitHub Copilot API to make it OpenAI compatible, making it usable for other tools.',
+        'A local, single-user GitHub Copilot adapter for OpenAI and Anthropic clients.',
     },
-    subCommands: { auth, start, 'check-usage': checkUsage, debug, stop, status, logs, restart, enable, disable },
+    subCommands: {
+      setup,
+      start,
+      models,
+      doctor,
+      auth,
+      'check-usage': checkUsage,
+      debug,
+      stop,
+      status,
+      logs,
+      restart,
+      enable,
+      disable,
+    },
   })
 
-  await runMain(main)
+  await runMain(main, {
+    showUsage: async (command, parent) => {
+      const usage = await renderUsage(command, parent)
+      const publicUsage = usage
+        .split('\n')
+        .filter(line => !stripAnsi(line).includes('--_'))
+        .join('\n')
+      process.stdout.write(`${publicUsage}\n`)
+    },
+  })
 }
 
 void run().catch((error: unknown) => {

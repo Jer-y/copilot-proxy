@@ -6,6 +6,7 @@ import path from 'node:path'
 import process from 'node:process'
 
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
+import { findCittyRootCommand, hasCittyRootHelpFlag } from '~/lib/citty-argv'
 import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
@@ -201,7 +202,9 @@ export function applyInstalledNativeServiceDataDir(
   env: NodeJS.ProcessEnv = process.env,
   filePath = getNativeServiceControlStatePath(env),
 ): ApplyInstalledNativeServiceDataDirResult {
-  const command = args[0] ?? ''
+  if (hasCittyRootHelpFlag(args))
+    return {}
+  const command = findCittyRootCommand(args)?.command ?? ''
   if (!NATIVE_CONTROL_COMMANDS.has(command))
     return {}
 

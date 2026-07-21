@@ -25,6 +25,9 @@ RUN bun install --frozen-lockfile --production --ignore-scripts --no-cache \
   && chown -R bun:bun /app /home/bun/.local
 
 COPY --from=builder --chown=bun:bun /app/dist ./dist
+COPY --chown=bun:bun ./LICENSE ./LICENSE
+COPY --chown=bun:bun ./README.md ./README.zh-CN.md ./SECURITY.md ./
+COPY --chown=bun:bun ./docs ./docs
 
 EXPOSE 4399
 

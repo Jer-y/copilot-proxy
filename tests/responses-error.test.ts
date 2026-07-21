@@ -236,6 +236,47 @@ test('official nullable fields and rich function outputs are forwarded on a dire
   })
 })
 
+test('rich custom tool output sets the vision header on a direct Responses route', async () => {
+  let upstreamBody: Record<string, unknown> | undefined
+  let upstreamHeaders: Headers | undefined
+  fetchMock.mockImplementation(async (_url, init) => {
+    upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    upstreamHeaders = new Headers(init?.headers)
+    return new Response(JSON.stringify({
+      id: 'resp_custom_image',
+      object: 'response',
+      model: 'gpt-5.4',
+      output: [],
+      status: 'completed',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  const input = [{
+    type: 'custom_tool_call_output',
+    call_id: 'call_custom_image',
+    output: [
+      { type: 'input_text', text: 'Screenshot attached' },
+      { type: 'input_image', image_url: 'data:image/png;base64,Y3VzdG9tLXRvb2w=' },
+    ],
+  }]
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input,
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  expect(upstreamHeaders?.get('copilot-vision-request')).toBe('true')
+  expect(upstreamHeaders?.get('x-initiator')).toBe('user')
+  expect(upstreamBody).toMatchObject({ input })
+})
+
 test('/v1/responses official subroutes are forwarded to the Copilot backend', async () => {
   fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
     return new Response(JSON.stringify({

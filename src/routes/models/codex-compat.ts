@@ -3,18 +3,21 @@ import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 
 import { HTTPError } from '~/lib/error'
-import { getModelConfig } from '~/lib/model-config'
 import { throwOpenAIInvalidRequestError } from '~/lib/openai-compat'
 import { modelSupportsResponsesHttp, modelSupportsResponsesWebSocket } from '~/lib/routing-policy'
 import { fetchWithTimeout } from '~/lib/upstream-fetch'
 
 type CodexInputModality = 'text' | 'image'
+type CodexModelVisibility = 'hide' | 'list' | 'none'
 
 interface CodexModelInfo extends Record<string, unknown> {
   slug: string
   input_modalities?: Array<CodexInputModality>
+  visibility?: CodexModelVisibility
+  supported_in_api?: boolean
   supports_search_tool?: boolean
   supports_image_detail_original?: boolean
+  prefer_websockets?: boolean
   supports_websockets?: boolean
 }
 
@@ -46,32 +49,39 @@ export function isCodexModelsRequest(url: URL): boolean {
   return url.searchParams.has('client_version')
 }
 
-export async function toCodexModelsResponse(models: Array<Model>, url: URL): Promise<CodexModelsResponse> {
+export function parseCodexClientVersion(url: URL): string {
   const clientVersion = url.searchParams.get('client_version')
   if (!clientVersion || !CODEX_VERSION_PATTERN.test(clientVersion)) {
     throwOpenAIInvalidRequestError('Invalid Codex client_version')
   }
 
+  return clientVersion
+}
+
+export async function toCodexModelsResponse(models: Array<Model>, url: URL): Promise<CodexModelsResponse> {
+  const clientVersion = parseCodexClientVersion(url)
+
   const bundledCatalog = await fetchCodexBundledCatalog(clientVersion)
   const bundledModelsBySlug = new Map(
     bundledCatalog.models.map(model => [model.slug, model]),
   )
-  const codexModels: Array<CodexModelInfo> = []
-  const droppedModels: Array<string> = []
-
-  for (const model of models) {
-    if (!model.model_picker_enabled || !modelSupportsResponses(model)) {
-      continue
+  const liveModelsById = new Map(models.map(model => [model.id, model]))
+  const codexModels = bundledCatalog.models.map((bundledModel) => {
+    const liveModel = liveModelsById.get(bundledModel.slug)
+    if (
+      liveModel?.model_picker_enabled
+      && modelSupportsCodexPickerTransports(liveModel)
+    ) {
+      return toCodexModelInfo(liveModel, bundledModel)
     }
 
-    const codexModel = toCodexModelInfo(model, bundledModelsBySlug.get(model.id))
-    if (codexModel) {
-      codexModels.push(codexModel)
-    }
-    else {
-      droppedModels.push(model.id)
-    }
-  }
+    return toHiddenCodexModelInfo(liveModel, bundledModel)
+  })
+  const droppedModels = models
+    .filter(model => model.model_picker_enabled
+      && (modelSupportsResponsesHttp(model) || modelSupportsResponsesWebSocket(model))
+      && !bundledModelsBySlug.has(model.id))
+    .map(model => model.id)
 
   if (droppedModels.length > 0) {
     consola.debug(`Dropped Copilot model(s) missing from Codex bundled catalog: ${droppedModels.join(', ')}`)
@@ -90,20 +100,21 @@ export function createCodexModelsResponseEtag(response: CodexModelsResponse): st
   return `"codex-models-${hash.toString(16).padStart(8, '0')}"`
 }
 
-function toCodexModelInfo(model: Model, bundledModel: CodexModelInfo | undefined): CodexModelInfo | undefined {
-  if (!bundledModel) {
-    return undefined
-  }
-
+function toCodexModelInfo(model: Model, bundledModel: CodexModelInfo): CodexModelInfo {
   const context = getCodexContextWindow(model)
-  const inputModalities = getInputModalities(model, bundledModel)
+  const inputModalities = getInputModalities(model)
+  const supportsWebSockets = modelSupportsResponsesWebSocket(model)
   const patchedModel: CodexModelInfo = {
     ...bundledModel,
     supported_in_api: true,
     supports_parallel_tool_calls: getSupportsParallelToolCalls(model),
     supports_image_detail_original: getSupportsImageDetailOriginal(),
     supports_search_tool: getSupportsSearchTool(model, bundledModel),
-    supports_websockets: modelSupportsResponsesWebSocket(model),
+    // Older Codex releases consumed the per-model preference while newer
+    // releases select the transport at provider scope. Keep both catalog
+    // spellings truthful for compatible and forward-compatible clients.
+    prefer_websockets: supportsWebSockets,
+    supports_websockets: supportsWebSockets,
   }
 
   if (inputModalities) {
@@ -118,6 +129,32 @@ function toCodexModelInfo(model: Model, bundledModel: CodexModelInfo | undefined
   }
 
   return patchedModel
+}
+
+function toHiddenCodexModelInfo(
+  model: Model | undefined,
+  bundledModel: CodexModelInfo,
+): CodexModelInfo {
+  const supportsHttp = model ? modelSupportsResponsesHttp(model) : false
+  const supportsWebSockets = model ? modelSupportsResponsesWebSocket(model) : false
+  const patchedModel = model
+    ? toCodexModelInfo(model, bundledModel)
+    : {
+        ...bundledModel,
+        prefer_websockets: false,
+        supports_websockets: false,
+      }
+
+  return {
+    ...patchedModel,
+    visibility: 'hide',
+    supported_in_api: Boolean(
+      model?.model_picker_enabled
+      && (supportsHttp || supportsWebSockets),
+    ),
+    prefer_websockets: supportsWebSockets,
+    supports_websockets: supportsWebSockets,
+  }
 }
 
 async function fetchCodexBundledCatalog(clientVersion: string): Promise<CodexModelsResponse> {
@@ -282,8 +319,9 @@ function pruneCodexCatalogCache(): void {
 }
 
 async function fetchCodexBundledCatalogUncached(clientVersion: string): Promise<CodexModelsResponse> {
+  const catalogPath = codexBundledCatalogPath(clientVersion)
   const response = await fetchWithTimeout(
-    `https://raw.githubusercontent.com/openai/codex/rust-v${clientVersion}/codex-rs/models-manager/models.json`,
+    `https://raw.githubusercontent.com/openai/codex/rust-v${clientVersion}/${catalogPath}`,
     {},
     {
       timeoutMs: CODEX_CATALOG_FETCH_TIMEOUT_MS,
@@ -303,6 +341,24 @@ async function fetchCodexBundledCatalogUncached(clientVersion: string): Promise<
   return catalog
 }
 
+function codexBundledCatalogPath(clientVersion: string): string {
+  const [baseVersion, prerelease = ''] = clientVersion.split('-', 2)
+  const [major, minor, patch] = baseVersion.split('.', 3).map(Number)
+  const alphaMatch = /^alpha\.(\d+)$/i.exec(prerelease)
+  const usesLegacy119AlphaPath = major === 0
+    && minor === 119
+    && patch === 0
+    && alphaMatch !== null
+    && Number(alphaMatch[1]) < 7
+  if (
+    (major === 0 && minor !== undefined && minor < 119)
+    || usesLegacy119AlphaPath
+  ) {
+    return 'codex-rs/core/models.json'
+  }
+  return 'codex-rs/models-manager/models.json'
+}
+
 function isCodexModelsResponse(value: unknown): value is CodexModelsResponse {
   return typeof value === 'object'
     && value !== null
@@ -316,13 +372,12 @@ function isCodexModelInfo(value: unknown): value is CodexModelInfo {
     && typeof (value as { slug?: unknown }).slug === 'string'
 }
 
-function modelSupportsResponses(model: Model): boolean {
-  if (model.supported_endpoints?.length) {
-    return modelSupportsResponsesHttp(model)
-      || modelSupportsResponsesWebSocket(model)
-  }
-
-  return getModelConfig(model.id).supportedApis.includes('responses')
+function modelSupportsCodexPickerTransports(model: Model): boolean {
+  // Current Codex clients choose HTTP versus WebSocket once per provider, not
+  // per selected model. Only dual-transport entries are safe to switch within
+  // one provider-backed picker regardless of that provider setting.
+  return modelSupportsResponsesHttp(model)
+    && modelSupportsResponsesWebSocket(model)
 }
 
 function getCodexContextWindow(model: Model): {
@@ -330,7 +385,7 @@ function getCodexContextWindow(model: Model): {
   effectiveContextWindowPercent: number
   autoCompactTokenLimit: number
 } | undefined {
-  const limits = model.capabilities.limits
+  const limits = model.capabilities.limits ?? {}
   const contextWindow = toPositiveInteger(limits.max_context_window_tokens)
     ?? toPositiveInteger(limits.max_prompt_tokens)
   if (!contextWindow) {
@@ -358,38 +413,18 @@ function toPositiveInteger(value: number | undefined): number | undefined {
   return Math.floor(value)
 }
 
-function getInputModalities(model: Model, bundledModel: CodexModelInfo): Array<CodexInputModality> | undefined {
-  if (model.capabilities.supports.vision === true) {
+function getInputModalities(model: Model): Array<CodexInputModality> {
+  if (model.capabilities.supports?.vision === true) {
     return ['text', 'image']
   }
 
-  if (model.capabilities.supports.vision === false) {
-    return ['text']
-  }
-
-  return getBundledInputModalities(bundledModel)
-}
-
-function getBundledInputModalities(model: CodexModelInfo): Array<CodexInputModality> | undefined {
-  if (!Array.isArray(model.input_modalities)) {
-    return undefined
-  }
-
-  const modalities = model.input_modalities.filter(isCodexInputModality)
-  return modalities.length > 0 ? modalities : undefined
-}
-
-function isCodexInputModality(value: unknown): value is CodexInputModality {
-  return value === 'text' || value === 'image'
+  return ['text']
 }
 
 function getSupportsSearchTool(model: Model, bundledModel: CodexModelInfo): boolean {
-  const upstreamSupport = model.capabilities.supports.web_search
-  if (upstreamSupport !== undefined) {
-    return upstreamSupport
-  }
-
-  return bundledModel.supports_search_tool ?? false
+  return model.capabilities.supports?.web_search
+    ?? bundledModel.supports_search_tool
+    ?? false
 }
 
 function getSupportsImageDetailOriginal(): boolean {
@@ -398,7 +433,5 @@ function getSupportsImageDetailOriginal(): boolean {
 }
 
 function getSupportsParallelToolCalls(model: Model): boolean {
-  return model.capabilities.supports.parallel_tool_calls
-    ?? getModelConfig(model.id).supportsParallelToolCalls
-    ?? false
+  return model.capabilities.supports?.parallel_tool_calls === true
 }

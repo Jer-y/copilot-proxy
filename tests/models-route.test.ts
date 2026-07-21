@@ -44,6 +44,7 @@ beforeEach(() => {
           supports: {
             parallel_tool_calls: true,
             vision: true,
+            web_search: true,
           },
         },
       }),
@@ -79,6 +80,56 @@ describe('/v1/models', () => {
     expect(body.has_more).toBe(false)
   })
 
+  test('keeps the ordinary OpenAI model list compact and compatibility-focused', async () => {
+    const response = await server.request('/v1/models')
+    const body = await response.json() as {
+      data: Array<Record<string, unknown>>
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.data[0]).toEqual({
+      id: 'gpt-5.5',
+      object: 'model',
+      created: 0,
+      owned_by: 'github-copilot',
+      display_name: 'GPT-5.5',
+    })
+  })
+
+  test('keeps model-picker filtering scoped to client-specific catalog behavior', async () => {
+    state.models?.data.push(makeModel('trajectory-compaction', {
+      model_picker_enabled: false,
+      supported_endpoints: ['/responses'],
+    }))
+    fetchMock.mockImplementationOnce(async () => Response.json({
+      models: [
+        makeBundledCodexModel('gpt-5.5'),
+        makeBundledCodexModel('trajectory-compaction'),
+      ],
+    }))
+
+    const openAIResponse = await server.request('/v1/models')
+    const openAIBody = await openAIResponse.json() as {
+      data: Array<{ id: string }>
+    }
+    const codexResponse = await server.request('/v1/models?client_version=0.133.0')
+    const codexBody = await codexResponse.json() as {
+      models: Array<{
+        slug: string
+        visibility: 'hide' | 'list' | 'none'
+        supported_in_api: boolean
+      }>
+    }
+
+    expect(openAIResponse.status).toBe(200)
+    expect(openAIBody.data.map(model => model.id)).toContain('trajectory-compaction')
+    expect(codexResponse.status).toBe(200)
+    expect(codexBody.models.find(model => model.slug === 'trajectory-compaction')).toMatchObject({
+      visibility: 'hide',
+      supported_in_api: false,
+    })
+  })
+
   test('returns Codex model catalog schema for client_version refreshes', async () => {
     const response = await server.request('/v1/models?client_version=0.133.0')
     const body = await response.json() as {
@@ -95,7 +146,9 @@ describe('/v1/models', () => {
         input_modalities: Array<string>
         model_messages?: unknown
         supports_image_detail_original: boolean
+        supports_parallel_tool_calls: boolean
         supports_search_tool: boolean
+        prefer_websockets: boolean
         supports_websockets: boolean
       }>
     }
@@ -114,7 +167,9 @@ describe('/v1/models', () => {
       effective_context_window_percent: 87,
       input_modalities: ['text', 'image'],
       supports_image_detail_original: false,
+      supports_parallel_tool_calls: true,
       supports_search_tool: true,
+      prefer_websockets: true,
       supports_websockets: true,
     })
     expect(body.models[0]?.supported_reasoning_levels.map(level => level.effort)).toEqual([
@@ -128,6 +183,32 @@ describe('/v1/models', () => {
       instructions_template: 'official bundled template',
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/rust-v0.133.0/codex-rs/models-manager/models.json',
+    )
+  })
+
+  test('uses the legacy bundled catalog path for the first command-auth Codex release', async () => {
+    const response = await server.request('/v1/models?client_version=0.118.0')
+
+    expect(response.status).toBe(200)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/rust-v0.118.0/codex-rs/core/models.json',
+    )
+  })
+
+  test('keeps the legacy path through Codex 0.119 alpha 6 and switches at alpha 7', async () => {
+    const legacyResponse = await server.request('/v1/models?client_version=0.119.0-alpha.6')
+    const migratedResponse = await server.request('/v1/models?client_version=0.119.0-alpha.7')
+
+    expect(legacyResponse.status).toBe(200)
+    expect(migratedResponse.status).toBe(200)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/rust-v0.119.0-alpha.6/codex-rs/core/models.json',
+    )
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
+      '/rust-v0.119.0-alpha.7/codex-rs/models-manager/models.json',
+    )
   })
 
   test('rejects invalid Codex client_version before fetching catalog', async () => {
@@ -269,15 +350,15 @@ describe('/v1/models', () => {
     expect(fetchMock).toHaveBeenCalledTimes(CODEX_CATALOG_MAX_FAILURE_KEYS)
   })
 
-  test('filters response-capable Copilot models that are missing from the bundled Codex catalog', async () => {
+  test('filters dual-transport Copilot models that are missing from the bundled Codex catalog', async () => {
     state.models = {
       object: 'list',
       data: [
         makeModel('gpt-5.5', {
-          supported_endpoints: ['/responses'],
+          supported_endpoints: ['/responses', 'ws:/responses'],
         }),
         makeModel('not-in-codex-catalog', {
-          supported_endpoints: ['/responses'],
+          supported_endpoints: ['/responses', 'ws:/responses'],
         }),
       ],
     }
@@ -289,7 +370,7 @@ describe('/v1/models', () => {
     expect(body.models.map(model => model.slug)).toEqual(['gpt-5.5'])
   })
 
-  test('includes HTTP-only and WebSocket-only Responses models with normalized live transport flags', async () => {
+  test('hides transport-exclusive and unavailable bundled models after the Codex client merge', async () => {
     state.models = {
       object: 'list',
       data: [
@@ -300,53 +381,108 @@ describe('/v1/models', () => {
           supported_endpoints: [' /V1/RESPONSES/ '],
         }),
         makeModel('gpt-5.3-codex'),
-      ],
-    }
-    fetchMock.mockImplementationOnce(async () => {
-      return Response.json({
-        models: [
-          makeBundledCodexModel('gpt-5.5', { supports_websockets: false }),
-          makeBundledCodexModel('gpt-5.4', { supports_websockets: true }),
-          makeBundledCodexModel('gpt-5.3-codex', { supports_websockets: true }),
-        ],
-      })
-    })
-
-    const response = await server.request('/v1/models?client_version=0.133.5')
-    const body = await response.json() as {
-      models: Array<{ slug: string, supports_websockets: boolean }>
-    }
-
-    expect(response.status).toBe(200)
-    expect(body.models.map(model => ({
-      slug: model.slug,
-      supportsWebSockets: model.supports_websockets,
-    }))).toEqual([
-      { slug: 'gpt-5.5', supportsWebSockets: true },
-      { slug: 'gpt-5.4', supportsWebSockets: false },
-      { slug: 'gpt-5.3-codex', supportsWebSockets: false },
-    ])
-  })
-
-  test('does not infer search or image support when Copilot omits optional capability fields', async () => {
-    state.models = {
-      object: 'list',
-      data: [
-        makeModel('gpt-5.5', {
-          supported_endpoints: ['/responses'],
-          capabilities: {
-            supports: {},
-          },
+        makeModel('gpt-5.6-sol', {
+          supported_endpoints: [' /V1/RESPONSES/ ', ' ws:/V1/RESPONSES/ '],
         }),
       ],
     }
     fetchMock.mockImplementationOnce(async () => {
       return Response.json({
         models: [
-          makeBundledCodexModel('gpt-5.5', {
-            input_modalities: ['text'],
-            supports_search_tool: false,
-            supports_image_detail_original: true,
+          makeBundledCodexModel('gpt-5.5', { prefer_websockets: true, supports_websockets: false }),
+          makeBundledCodexModel('gpt-5.4', { prefer_websockets: true, supports_websockets: true }),
+          makeBundledCodexModel('gpt-5.3-codex', { prefer_websockets: true, supports_websockets: true }),
+          makeBundledCodexModel('gpt-5.6-sol', { prefer_websockets: false, supports_websockets: false }),
+          makeBundledCodexModel('gpt-5.2', { prefer_websockets: true, supports_websockets: true }),
+        ],
+      })
+    })
+
+    const response = await server.request('/v1/models?client_version=0.133.5')
+    const body = await response.json() as {
+      models: Array<{
+        slug: string
+        visibility: 'hide' | 'list' | 'none'
+        supported_in_api: boolean
+        prefer_websockets: boolean
+        supports_websockets: boolean
+      }>
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        slug: 'gpt-5.5',
+        visibility: 'hide',
+        supported_in_api: true,
+        prefer_websockets: true,
+        supports_websockets: true,
+      }),
+      expect.objectContaining({
+        slug: 'gpt-5.4',
+        visibility: 'hide',
+        supported_in_api: true,
+        prefer_websockets: false,
+        supports_websockets: false,
+      }),
+      expect.objectContaining({
+        slug: 'gpt-5.3-codex',
+        visibility: 'hide',
+        supported_in_api: false,
+        prefer_websockets: false,
+        supports_websockets: false,
+      }),
+      expect.objectContaining({
+        slug: 'gpt-5.6-sol',
+        visibility: 'list',
+        supported_in_api: true,
+        prefer_websockets: true,
+        supports_websockets: true,
+      }),
+      expect.objectContaining({
+        slug: 'gpt-5.2',
+        visibility: 'hide',
+        supported_in_api: false,
+        prefer_websockets: false,
+        supports_websockets: false,
+      }),
+    ]))
+    const bundledModels = [
+      makeBundledCodexModel('gpt-5.5'),
+      makeBundledCodexModel('gpt-5.4'),
+      makeBundledCodexModel('gpt-5.3-codex'),
+      makeBundledCodexModel('gpt-5.6-sol'),
+      makeBundledCodexModel('gpt-5.2'),
+    ]
+    const mergedModels = mergeCodexCatalogLikeApiKeyClient(bundledModels, body.models)
+    expect(mergedModels
+      .filter(model => model.supported_in_api && model.visibility === 'list')
+      .map(model => model.slug)).toEqual(['gpt-5.6-sol'])
+  })
+
+  test('falls back to bundled search support without inferring image or parallel support when Copilot omits capabilities', async () => {
+    const modelWithoutSupports = makeModel('gpt-5.4', {
+      supported_endpoints: ['/responses', 'ws:/responses'],
+    })
+    delete modelWithoutSupports.capabilities.supports
+    state.models = {
+      object: 'list',
+      data: [
+        makeModel('gpt-5.5', {
+          supported_endpoints: ['/responses', 'ws:/responses'],
+          capabilities: {
+            supports: {},
+          },
+        }),
+        modelWithoutSupports,
+      ],
+    }
+    fetchMock.mockImplementationOnce(async () => {
+      return Response.json({
+        models: [
+          makeBundledCodexModel('gpt-5.5'),
+          makeBundledCodexModel('gpt-5.4', {
+            supports_search_tool: undefined,
           }),
         ],
       })
@@ -357,16 +493,41 @@ describe('/v1/models', () => {
       models: Array<{
         input_modalities: Array<string>
         supports_image_detail_original: boolean
+        supports_parallel_tool_calls: boolean
         supports_search_tool: boolean
       }>
     }
 
     expect(response.status).toBe(200)
-    expect(body.models[0]).toMatchObject({
-      input_modalities: ['text'],
-      supports_image_detail_original: false,
-      supports_search_tool: false,
+    expect(body.models).toHaveLength(2)
+    for (const model of body.models) {
+      expect(model).toMatchObject({
+        input_modalities: ['text'],
+        supports_image_detail_original: false,
+        supports_parallel_tool_calls: false,
+      })
+    }
+    expect(body.models.map(model => model.supports_search_tool)).toEqual([true, false])
+  })
+
+  test('honors explicit Copilot search support when the bundled catalog disables it', async () => {
+    fetchMock.mockImplementationOnce(async () => {
+      return Response.json({
+        models: [
+          makeBundledCodexModel('gpt-5.5', {
+            supports_search_tool: false,
+          }),
+        ],
+      })
     })
+
+    const response = await server.request('/v1/models?client_version=0.133.6')
+    const body = await response.json() as {
+      models: Array<{ supports_search_tool: boolean }>
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.models[0]?.supports_search_tool).toBe(true)
   })
 
   test('honors explicit Copilot capability false values', async () => {
@@ -374,11 +535,12 @@ describe('/v1/models', () => {
       object: 'list',
       data: [
         makeModel('gpt-5.5', {
-          supported_endpoints: ['/responses'],
+          supported_endpoints: ['/responses', 'ws:/responses'],
           capabilities: {
             supports: {
               vision: false,
               web_search: false,
+              parallel_tool_calls: false,
             },
           },
         }),
@@ -390,6 +552,7 @@ describe('/v1/models', () => {
       models: Array<{
         input_modalities: Array<string>
         supports_image_detail_original: boolean
+        supports_parallel_tool_calls: boolean
         supports_search_tool: boolean
       }>
     }
@@ -398,6 +561,7 @@ describe('/v1/models', () => {
     expect(body.models[0]).toMatchObject({
       input_modalities: ['text'],
       supports_image_detail_original: false,
+      supports_parallel_tool_calls: false,
       supports_search_tool: false,
     })
   })
@@ -450,9 +614,28 @@ function makeBundledCodexModel(slug: string, overrides: Record<string, unknown> 
     effective_context_window_percent: 95,
     input_modalities: ['text', 'image'],
     supports_image_detail_original: true,
+    supports_parallel_tool_calls: true,
     supports_search_tool: true,
+    visibility: 'list',
+    supported_in_api: true,
+    prefer_websockets: true,
     ...overrides,
   }
+}
+
+function mergeCodexCatalogLikeApiKeyClient(
+  bundledModels: Array<Record<string, unknown> & { slug: string }>,
+  remoteModels: Array<Record<string, unknown> & { slug: string }>,
+) {
+  const mergedModels = bundledModels.map(model => ({ ...model }))
+  for (const remoteModel of remoteModels) {
+    const existingIndex = mergedModels.findIndex(model => model.slug === remoteModel.slug)
+    if (existingIndex === -1)
+      mergedModels.push(remoteModel)
+    else
+      mergedModels[existingIndex] = remoteModel
+  }
+  return mergedModels
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

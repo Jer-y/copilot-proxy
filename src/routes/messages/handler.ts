@@ -9,6 +9,7 @@ import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { assertMessagesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
+import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
@@ -111,7 +112,8 @@ async function handleViaResponses(
     consola.debug('Translated Anthropic→Responses payload summary:', summarizeResponsesPayload(responsesPayload))
   }
 
-  const result = await createResponses(responsesPayload)
+  const setupSignal = getSetupProbeSignal(c)
+  const result = await createResponses(responsesPayload, setupSignal ? { signal: setupSignal } : undefined)
 
   if (!isResponsesStreamBody(result.body)) {
     if (!isResponsesResponseBody(result.body)) {
@@ -269,9 +271,14 @@ async function handleViaNativeAnthropic(
     consola.debug('Native Anthropic passthrough summary:', summarizeAnthropicPayload(payload))
   }
 
-  const result = await createAnthropicMessagesWithThinkingSignatureRetry(payload, {
-    anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
-  })
+  const setupSignal = getSetupProbeSignal(c)
+  const result = await createAnthropicMessagesWithThinkingSignatureRetry(
+    payload,
+    {
+      anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
+      ...(setupSignal && { signal: setupSignal }),
+    },
+  )
 
   if (!result.streaming) {
     if (consola.level >= 4) {

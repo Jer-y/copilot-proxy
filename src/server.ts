@@ -1,13 +1,17 @@
+import type { CopilotProxyEnv } from '~/lib/setup-probe-context'
+
+import consola from 'consola'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
 
 import { NATIVE_SERVICE_INSTANCE_HEADER } from '~/daemon/native-service'
 import { withApprovalRequestContext } from '~/lib/approval'
+import { requestLogger } from '~/lib/request-logger'
 import { isRequestHostAllowed, isRequestOriginAllowed, resolveCorsOrigin } from '~/lib/security'
 import { state } from '~/lib/state'
 
 import { completionRoutes } from './routes/chat-completions/route'
+import { diagnosticsRoute } from './routes/diagnostics/route'
 import { embeddingRoutes } from './routes/embeddings/route'
 import { healthRoutes } from './routes/health/route'
 import { messageRoutes } from './routes/messages/route'
@@ -16,9 +20,9 @@ import { responsesRoutes } from './routes/responses/route'
 import { tokenRoute } from './routes/token/route'
 import { usageRoute } from './routes/usage/route'
 
-export const server = new Hono()
+export const server = new Hono<CopilotProxyEnv>()
 
-server.use(logger())
+server.use(requestLogger(message => consola.log(message)))
 server.use(async (c, next) => {
   if (!isRequestHostAllowed(c.req.raw)) {
     return c.json({
@@ -66,12 +70,15 @@ server.get('/', (c) => {
   return c.text('Server running')
 })
 server.route('/', healthRoutes)
+server.route('/diagnostics', diagnosticsRoute)
+server.route('/diagnostics/', diagnosticsRoute)
 
 server.route('/chat/completions', completionRoutes)
 server.route('/models', modelRoutes)
 server.route('/embeddings', embeddingRoutes)
 server.route('/responses', responsesRoutes)
 server.route('/usage', usageRoute)
+server.route('/usage/', usageRoute)
 server.route('/token', tokenRoute)
 
 // Compatibility with tools that expect v1/ prefix

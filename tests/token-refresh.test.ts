@@ -4,6 +4,7 @@ import { TOKEN_RETRY_DELAYS } from '~/lib/constants'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import {
+  cancelInFlightCopilotTokenRefreshes,
   getCopilotTokenLifecycleStatus,
   getCopilotTokenRefreshDelayMs,
   getCopilotTokenSnapshot,
@@ -164,6 +165,47 @@ describe('refreshTokenWithRetry', () => {
     expect(state.copilotToken).toBe('locked-refresh-token')
   })
 
+  test('cancels a fulfilled token fetch before its continuation can apply or reschedule it', async () => {
+    state.copilotToken = 'token-before-cancel'
+    const failedSnapshot = getCopilotTokenSnapshot()
+    let finishFetch: (() => void) | undefined
+    const fetchFinished = new Promise<void>((resolve) => {
+      finishFetch = resolve
+    })
+    const fetchToken = mock(async (signal?: AbortSignal) => {
+      expect(signal?.aborted).toBe(false)
+      await fetchFinished
+      return {
+        token: 'late-token-after-cancel',
+        refresh_in: 1800,
+        expires_at: Date.now() + 1800 * 1000,
+      }
+    })
+    const setTimeoutFn = mock((_callback: () => void, _delayMs: number) => setTimeout(() => {}, 60_000))
+
+    const refresh = refreshCopilotTokenAfterFailure(failedSnapshot, {
+      refreshDeps: { fetchToken },
+      schedulerDeps: { setTimeoutFn },
+    })
+    expect(fetchToken).toHaveBeenCalledTimes(1)
+
+    finishFetch?.()
+    await cancelInFlightCopilotTokenRefreshes(new Error('Setup probe finished.'))
+    const result = await refresh
+
+    expect(result).toEqual({
+      generation: failedSnapshot.generation,
+      outcome: 'cancelled',
+    })
+    expect(state.copilotToken).toBe('token-before-cancel')
+    expect(setTimeoutFn).toHaveBeenCalledTimes(0)
+    expect(getCopilotTokenLifecycleStatus()).toMatchObject({
+      lastReactiveRefreshOutcome: 'cancelled',
+      reactiveRefreshInFlight: false,
+      refreshScheduled: false,
+    })
+  })
+
   test('does not retry permanent token-endpoint authorization failures', async () => {
     state.copilotToken = 'token-before-permanent-failure'
     const fetchToken = mock(async () => {
@@ -262,6 +304,100 @@ describe('refreshTokenWithRetry', () => {
     expect(alreadyRefreshed.outcome).toBe('already_refreshed')
     expect(unnecessaryFetch).toHaveBeenCalledTimes(0)
     expect(timers).toHaveLength(1)
+  })
+
+  test('starts a new exchange when the next token fails before the prior reactive promise clears', async () => {
+    state.copilotToken = 'first-failed-token'
+    const firstSnapshot = getCopilotTokenSnapshot()
+    let fetchCount = 0
+    const fetchToken = mock(async () => {
+      fetchCount++
+      return {
+        token: `refreshed-token-${fetchCount}`,
+        refresh_in: 1800,
+        expires_at: Date.now() + 1800 * 1000,
+      }
+    })
+    const timers: Array<ReturnType<typeof setTimeout>> = []
+    let nextRefresh: Promise<Awaited<ReturnType<typeof refreshCopilotTokenAfterFailure>>> | undefined
+    const setTimeoutFn = (_callback: () => void, _delayMs: number) => {
+      const timer = setTimeout(() => {}, 60_000)
+      timers.push(timer)
+      if (!nextRefresh) {
+        const nextFailedSnapshot = getCopilotTokenSnapshot()
+        nextRefresh = refreshCopilotTokenAfterFailure(nextFailedSnapshot, {
+          refreshDeps: { fetchToken },
+          schedulerDeps: { setTimeoutFn, clearTimeoutFn: clearTimeout },
+        })
+      }
+      return timer
+    }
+
+    const firstRefresh = await refreshCopilotTokenAfterFailure(firstSnapshot, {
+      refreshDeps: { fetchToken },
+      schedulerDeps: { setTimeoutFn, clearTimeoutFn: clearTimeout },
+    })
+    const secondRefresh = await nextRefresh
+
+    expect(firstRefresh.outcome).toBe('refreshed')
+    expect(secondRefresh?.outcome).toBe('refreshed')
+    expect(fetchToken).toHaveBeenCalledTimes(2)
+    expect(state.copilotToken).toBe('refreshed-token-2')
+    for (const timer of timers)
+      clearTimeout(timer)
+  })
+
+  test('cleanup drains a successor refresh queued behind an older token generation', async () => {
+    state.copilotToken = 'cleanup-failed-token'
+    const failedSnapshot = getCopilotTokenSnapshot()
+    const timers: Array<ReturnType<typeof setTimeout>> = []
+    let fetchCount = 0
+    const fetchToken = mock(async (signal?: AbortSignal) => {
+      fetchCount++
+      if (fetchCount > 1) {
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      }
+      return {
+        token: `cleanup-refreshed-token-${fetchCount}`,
+        refresh_in: 1800,
+        expires_at: Date.now() + 1800 * 1000,
+      }
+    })
+    let successorRefresh: ReturnType<typeof refreshCopilotTokenAfterFailure> | undefined
+    let cleanup: Promise<void> | undefined
+    const clearTimeoutFn = (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer)
+    const setTimeoutFn = (_callback: () => void, _delayMs: number) => {
+      const timer = setTimeout(() => {}, 60_000)
+      timers.push(timer)
+      if (!successorRefresh) {
+        successorRefresh = refreshCopilotTokenAfterFailure(getCopilotTokenSnapshot(), {
+          refreshDeps: { fetchToken },
+          schedulerDeps: { setTimeoutFn, clearTimeoutFn },
+        })
+        cleanup = cancelInFlightCopilotTokenRefreshes(new Error('setup cleanup started'))
+      }
+      return timer
+    }
+
+    const firstRefresh = await refreshCopilotTokenAfterFailure(failedSnapshot, {
+      refreshDeps: { fetchToken },
+      schedulerDeps: { setTimeoutFn, clearTimeoutFn },
+    })
+    await cleanup
+    const successorResult = await successorRefresh
+
+    expect(firstRefresh.outcome).toBe('cancelled')
+    expect(successorResult?.outcome).toBe('cancelled')
+    expect(fetchToken).toHaveBeenCalledTimes(1)
+    expect(getCopilotTokenLifecycleStatus()).toMatchObject({
+      reactiveRefreshInFlight: false,
+      refreshInFlight: false,
+      refreshScheduled: false,
+    })
+    for (const timer of timers)
+      clearTimeout(timer)
   })
 
   test('clamps token refresh delay and leaves room before expiry', () => {

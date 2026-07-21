@@ -81,9 +81,11 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   startCopilotTokenRefresh(copilotToken.refresh_in)
   startModelRefresh()
 
-  consola.info(
-    `Available models: \n${state.models?.data.map(model => `- ${model.id}`).join('\n')}`,
-  )
+  consola.info(formatModelInventorySummary(state.models?.data.length ?? 0))
+}
+
+export function formatModelInventorySummary(count: number): string {
+  return `Loaded ${count} Copilot model${count === 1 ? '' : 's'}. Run \`copilot-proxy models\` for details.`
 }
 
 export function consumeGithubToken(

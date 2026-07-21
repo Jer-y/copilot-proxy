@@ -90,8 +90,17 @@ jobs:
       - name: Exercise the native service adapter on its host OS
         run: bun test ${{ matrix.adapter_test }} tests/daemon-enable.test.ts tests/service-install-state.test.ts tests/main-entrypoint.test.ts
 
+      - name: Exercise the Windows development launcher on Windows
+        if: runner.os == 'Windows'
+        run: bun test tests/start-bat.test.ts tests/shell.test.ts tests/client-setup.test.ts
+
+      - name: Exercise the Windows launcher from a real UNC path
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/run-windows-unc-launcher-test.ps1
+
   deploy-pages:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [test, native-service-adapters]
     runs-on: ubuntu-latest
     permissions:
@@ -113,6 +122,9 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
+      - name: Stamp Pages artifact revision
+        run: printf '%s\n' "$GITHUB_SHA" > pages/deployment-revision.txt
+
       - name: Archive Pages artifact
         run: |
           tar \
@@ -132,6 +144,88 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Verify deployment still targets main HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$GITHUB_SHA" != "$current_main_sha" ]]; then
+            echo "::error::Refusing to deploy ${GITHUB_SHA}; current main is ${current_main_sha}."
+            exit 1
+          fi
+
       - name: Deploy validated Pages artifact
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+
+      - name: Verify public Diagnostics dashboard
+        env:
+          DASHBOARD_URL: ${{ steps.deployment.outputs.page_url }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          page_file="$RUNNER_TEMP/deployed-dashboard.html"
+          revision_file="$RUNNER_TEMP/deployed-dashboard-revision.txt"
+          public_url="${DASHBOARD_URL%/}/?deployment=${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"
+          revision_url="${DASHBOARD_URL%/}/deployment-revision.txt?deployment=${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"
+
+          verify_page() {
+            grep -Fq '<meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />' "$page_file" &&
+              grep -Fq 'content="diagnostics exact-endpoints redirect-error credentials-omit"' "$page_file" &&
+              grep -Fq '<title>Copilot Proxy Diagnostics</title>' "$page_file" &&
+              grep -Fq '["/diagnostics", "/diagnostics/", "/usage", "/usage/"]' "$page_file" &&
+              grep -Fq 'credentials: "omit"' "$page_file" &&
+              grep -Fq 'redirect: "error"' "$page_file"
+          }
+
+          for attempt in {1..12}; do
+            rm -f "$page_file" "$revision_file"
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              --connect-timeout 5 \
+              --max-time 15 \
+              --header 'Cache-Control: no-cache' \
+              --header 'Pragma: no-cache' \
+              --output "$page_file" \
+              "${public_url}-${attempt}"
+            then
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --location \
+                --connect-timeout 5 \
+                --max-time 15 \
+                --header 'Cache-Control: no-cache' \
+                --header 'Pragma: no-cache' \
+                --output "$revision_file" \
+                "${revision_url}-${attempt}" \
+                && verify_page \
+                && grep -Fxq "$GITHUB_SHA" "$revision_file"
+              then
+                latest_main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+                if [[ "$GITHUB_SHA" != "$latest_main_sha" ]]; then
+                  echo "::error::The public dashboard revision ${GITHUB_SHA} is no longer current main (${latest_main_sha})."
+                  exit 1
+                fi
+                echo "Verified public Diagnostics dashboard at ${DASHBOARD_URL}"
+                exit 0
+              fi
+            fi
+
+            if (( attempt < 12 )); then
+              echo "Public dashboard is not current yet (attempt ${attempt}/12); retrying in 5 seconds."
+              sleep 5
+            fi
+          done
+
+          echo "::error::The deployed public dashboard does not contain the required Diagnostics version and security capabilities."
+          exit 1

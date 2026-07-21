@@ -28,6 +28,40 @@ function isFunctionCallOutput(item: unknown): item is ResponsesFunctionCallOutpu
   return isRecord(item) && item.type === 'function_call_output'
 }
 
+function isCustomToolCallOutput(item: unknown): item is ResponsesCustomToolCallOutputItem {
+  return isRecord(item) && item.type === 'custom_tool_call_output'
+}
+
+function isRichToolCallOutput(
+  item: unknown,
+): item is ResponsesFunctionCallOutputItem | ResponsesCustomToolCallOutputItem {
+  return isFunctionCallOutput(item) || isCustomToolCallOutput(item)
+}
+
+function isFunctionCall(item: unknown): item is ResponsesFunctionCallItem {
+  return isRecord(item)
+    && item.type === 'function_call'
+    && typeof item.call_id === 'string'
+    && typeof item.name === 'string'
+    && typeof item.arguments === 'string'
+}
+
+function isCustomToolCall(item: unknown): item is ResponsesCustomToolCallItem {
+  return isRecord(item)
+    && item.type === 'custom_tool_call'
+    && typeof item.call_id === 'string'
+    && typeof item.name === 'string'
+    && typeof item.input === 'string'
+}
+
+function isValidAssistantMessage(item: unknown): item is ResponsesMessageInputItem {
+  if (!isMessageInput(item) || item.role !== 'assistant')
+    return false
+
+  return typeof item.content === 'string'
+    || (Array.isArray(item.content) && item.content.every(part => isRecord(part) && typeof part.type === 'string'))
+}
+
 const VISION_TYPES = new Set([
   'input_image',
   'image',
@@ -227,8 +261,9 @@ export function analyzeResponsesPayloadForCopilot(
   const inputArray = Array.isArray(payload.input) ? payload.input : []
   const hasVision = inputArray.length > 0 && hasVisionInput(inputArray)
   const isAgentCall = inputArray.some(item =>
-    (isMessageInput(item) && item.role === 'assistant')
-    || (isRecord(item) && item.type === 'function_call'),
+    isValidAssistantMessage(item)
+    || isFunctionCall(item)
+    || isCustomToolCall(item),
   )
 
   return {
@@ -275,13 +310,17 @@ export async function forwardResponsesEndpoint(
 function hasVisionInput(input: Array<ResponsesInputItem>): boolean {
   return input.some((item) => {
     if (isMessageInput(item) && Array.isArray(item.content)) {
-      return item.content.some(part => isRecord(part) && typeof part.type === 'string' && VISION_TYPES.has(part.type))
+      return contentPartsHaveVision(item.content)
     }
 
-    return isFunctionCallOutput(item)
+    return isRichToolCallOutput(item)
       && Array.isArray(item.output)
-      && item.output.some(part => isRecord(part) && typeof part.type === 'string' && VISION_TYPES.has(part.type))
+      && contentPartsHaveVision(item.output)
   })
+}
+
+function contentPartsHaveVision(parts: unknown[]): boolean {
+  return parts.some(part => isRecord(part) && typeof part.type === 'string' && VISION_TYPES.has(part.type))
 }
 
 function parseUpstreamError(errorText: string): ResponsesResponseError | undefined {
@@ -350,6 +389,8 @@ export interface ResponsesPayloadSummary {
   messageItems: number
   functionCalls: number
   functionCallOutputs: number
+  customToolCalls: number
+  customToolCallOutputs: number
   imageParts: number
   inlineDataUrlImages: number
   inlineImageChars: number
@@ -366,6 +407,8 @@ export function summarizeResponsesPayload(payload: ResponsesPayload): ResponsesP
     messageItems: 0,
     functionCalls: 0,
     functionCallOutputs: 0,
+    customToolCalls: 0,
+    customToolCallOutputs: 0,
     imageParts: 0,
     inlineDataUrlImages: 0,
     inlineImageChars: 0,
@@ -380,23 +423,8 @@ export function summarizeResponsesPayload(payload: ResponsesPayload): ResponsesP
     if (isMessageInput(item)) {
       summary.messageItems++
 
-      if (!Array.isArray(item.content)) {
-        continue
-      }
-
-      for (const part of item.content) {
-        const inlineImageChars = getInlineImageChars(part)
-        if (inlineImageChars === undefined) {
-          continue
-        }
-
-        summary.imageParts++
-        summary.inlineImageChars += inlineImageChars
-        summary.maxInlineImageChars = Math.max(summary.maxInlineImageChars, inlineImageChars)
-
-        if (hasInlineImageData(part)) {
-          summary.inlineDataUrlImages++
-        }
+      if (Array.isArray(item.content)) {
+        summarizeImageParts(summary, item.content)
       }
 
       continue
@@ -407,31 +435,40 @@ export function summarizeResponsesPayload(payload: ResponsesPayload): ResponsesP
       continue
     }
 
-    if (isFunctionCallOutput(item)) {
-      summary.functionCallOutputs++
+    if (isRecord(item) && item.type === 'custom_tool_call') {
+      summary.customToolCalls++
+      continue
+    }
 
-      if (!Array.isArray(item.output)) {
-        continue
+    if (isRichToolCallOutput(item)) {
+      if (isFunctionCallOutput(item)) {
+        summary.functionCallOutputs++
+      }
+      else {
+        summary.customToolCallOutputs++
       }
 
-      for (const part of item.output) {
-        const inlineImageChars = getInlineImageChars(part)
-        if (inlineImageChars === undefined) {
-          continue
-        }
-
-        summary.imageParts++
-        summary.inlineImageChars += inlineImageChars
-        summary.maxInlineImageChars = Math.max(summary.maxInlineImageChars, inlineImageChars)
-
-        if (hasInlineImageData(part)) {
-          summary.inlineDataUrlImages++
-        }
+      if (Array.isArray(item.output)) {
+        summarizeImageParts(summary, item.output)
       }
     }
   }
 
   return summary
+}
+
+function summarizeImageParts(summary: ResponsesPayloadSummary, parts: unknown[]): void {
+  for (const part of parts) {
+    const inlineImageChars = getInlineImageChars(part)
+    if (inlineImageChars === undefined) {
+      continue
+    }
+
+    summary.imageParts++
+    summary.inlineDataUrlImages++
+    summary.inlineImageChars += inlineImageChars
+    summary.maxInlineImageChars = Math.max(summary.maxInlineImageChars, inlineImageChars)
+  }
 }
 
 function getInlineImageChars(part: unknown): number | undefined {
@@ -462,10 +499,6 @@ function getInlineImageChars(part: unknown): number | undefined {
   }
 
   return undefined
-}
-
-function hasInlineImageData(part: unknown): boolean {
-  return getInlineImageChars(part) !== undefined
 }
 
 // Payload types
@@ -579,6 +612,24 @@ export interface ResponsesFunctionCallOutputItem {
   is_error?: boolean
 }
 
+export interface ResponsesCustomToolCallItem {
+  type: 'custom_tool_call'
+  call_id: string
+  name: string
+  input: string
+  id?: string
+  status?: 'completed' | 'in_progress' | 'incomplete'
+  [key: string]: unknown
+}
+
+export interface ResponsesCustomToolCallOutputItem {
+  type: 'custom_tool_call_output'
+  call_id: string
+  output: string | Array<ResponsesFunctionCallOutputContent>
+  id?: string
+  [key: string]: unknown
+}
+
 export type ResponsesFunctionCallOutputContent
   = | { type: 'input_text', text: string, [key: string]: unknown }
     | { type: 'input_image', image_url?: string | null, file_id?: string | null, [key: string]: unknown }
@@ -588,6 +639,8 @@ export type ResponsesInputItem
   = | ResponsesMessageInputItem
     | ResponsesFunctionCallItem
     | ResponsesFunctionCallOutputItem
+    | ResponsesCustomToolCallItem
+    | ResponsesCustomToolCallOutputItem
     | ResponsesOtherInputItem
 
 export interface ResponsesTool {

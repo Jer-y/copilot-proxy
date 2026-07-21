@@ -3,9 +3,15 @@ import path from 'node:path'
 
 import consola from 'consola'
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
+import {
+  resolveCittyBooleanOption,
+  START_CITTY_STRING_OPTIONS,
+  wasCittyStringOptionPassed,
+} from '~/lib/citty-argv'
 import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { PATHS } from '~/lib/paths'
+import { RUN_PRESETS } from '~/lib/run-presets'
 import { DEFAULT_HOST } from '~/lib/security'
 
 export interface DaemonConfig {
@@ -30,7 +36,7 @@ export interface DaemonConfig {
 const VALID_ACCOUNT_TYPES = ['individual', 'business', 'enterprise']
 export const MAX_DAEMON_CONFIG_BACKUPS = 5
 
-export const DEFAULT_SERVICE_CONFIG: DaemonConfig = {
+export const LEGACY_UNBOUNDED_SERVICE_CONFIG: DaemonConfig = {
   port: 4399,
   host: DEFAULT_HOST,
   verbose: false,
@@ -39,6 +45,13 @@ export const DEFAULT_SERVICE_CONFIG: DaemonConfig = {
   rateLimitWait: false,
   showToken: false,
   proxyEnv: false,
+}
+
+export const DEFAULT_SERVICE_CONFIG: DaemonConfig = {
+  ...LEGACY_UNBOUNDED_SERVICE_CONFIG,
+  maxConcurrency: RUN_PRESETS.service.maxConcurrency,
+  maxQueue: RUN_PRESETS.service.maxQueue,
+  queueTimeoutMs: RUN_PRESETS.service.queueTimeoutMs,
 }
 
 export type DaemonConfigRecoveryReason = 'missing' | 'invalid' | 'unreadable'
@@ -178,29 +191,17 @@ function wasCliOptionPassed(
   alias?: string,
   booleanFlag = false,
 ): boolean {
-  const longFlag = `--${name}`
-  const negatedLongFlag = `--no-${name}`
-  const shortFlag = alias ? `-${alias}` : undefined
-
-  for (const arg of rawArgs) {
-    if (arg === '--') {
-      break
-    }
-
-    if (arg === longFlag || arg.startsWith(`${longFlag}=`)) {
-      return true
-    }
-
-    if (booleanFlag && (arg === negatedLongFlag || arg.startsWith(`${negatedLongFlag}=`))) {
-      return true
-    }
-
-    if (shortFlag && (arg === shortFlag || arg.startsWith(`${shortFlag}=`))) {
-      return true
-    }
+  if (booleanFlag) {
+    const resolution = resolveCittyBooleanOption(rawArgs, name, {
+      shortName: alias,
+      stringOptions: START_CITTY_STRING_OPTIONS,
+    })
+    return resolution.positiveValue !== undefined || resolution.negated
   }
-
-  return false
+  return wasCittyStringOptionPassed(rawArgs, name, {
+    shortName: alias,
+    stringOptions: START_CITTY_STRING_OPTIONS,
+  })
 }
 
 function validateDaemonConfig(data: Record<string, unknown>): DaemonConfig | null {

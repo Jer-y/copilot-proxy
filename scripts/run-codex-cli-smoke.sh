@@ -5,6 +5,12 @@ set -euo pipefail
 # This gate deliberately invokes the installed `codex` command. Do not replace
 # either transport run with a mock client, direct proxy call, or protocol fixture.
 
+CODEX_SMOKE_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./codex-smoke-log-evidence.sh
+source "$CODEX_SMOKE_SCRIPT_DIR/codex-smoke-log-evidence.sh"
+# shellcheck source=./codex-smoke-worktree-guard.sh
+source "$CODEX_SMOKE_SCRIPT_DIR/codex-smoke-worktree-guard.sh"
+
 : "${COPILOT_LIVE_CODEX_SMOKE:?set COPILOT_LIVE_CODEX_SMOKE=1 to run the real Codex CLI smoke}"
 : "${CODEX_SMOKE_MODEL:?set CODEX_SMOKE_MODEL to a current Responses model with ws:/responses}"
 : "${CODEX_SMOKE_ACCOUNT_TYPE:?set CODEX_SMOKE_ACCOUNT_TYPE to individual, business, or enterprise}"
@@ -36,10 +42,11 @@ if ! [[ "$CODEX_SMOKE_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] \
   exit 1
 fi
 
-for command_name in bun codex curl jq lsof rg "$CODEX_TIMEOUT_BIN"; do
+for command_name in bun cmp codex cp curl git jq lsof rg "$CODEX_TIMEOUT_BIN"; do
   command -v "$command_name" >/dev/null
 done
 
+CODEX_SMOKE_REPOSITORY_ROOT="$(git -C "$CODEX_SMOKE_SCRIPT_DIR" rev-parse --show-toplevel)"
 mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
 CODEX_SMOKE_ROOT="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/codex-proxy-smoke.XXXXXX")"
 CODEX_SMOKE_PROXY_LOG="$CODEX_SMOKE_ROOT/proxy.log"
@@ -47,9 +54,11 @@ CODEX_SMOKE_WORK="$CODEX_SMOKE_ROOT/work"
 CODEX_SMOKE_HTTP_HOME="$CODEX_SMOKE_ROOT/codex-http"
 CODEX_SMOKE_WS_HOME="$CODEX_SMOKE_ROOT/codex-websocket"
 CODEX_SMOKE_TMP="$CODEX_SMOKE_ROOT/tmp"
+CODEX_SMOKE_SNAPSHOT_HELPER="$CODEX_SMOKE_ROOT/capture-worktree-snapshot.ts"
 CODEX_SMOKE_INSTANCE_TOKEN="codex-smoke-$$-$(date +%s)"
 CODEX_SMOKE_SUCCESS=0
 CODEX_SMOKE_PHASE=preflight
+CODEX_SMOKE_WORKTREE_SNAPSHOT_READY=0
 mkdir -p "$CODEX_SMOKE_WORK" "$CODEX_SMOKE_HTTP_HOME/home" "$CODEX_SMOKE_WS_HOME/home" "$CODEX_SMOKE_TMP"
 
 cleanup_codex_smoke() {
@@ -75,12 +84,16 @@ cleanup_codex_smoke() {
     exit_status=1
   fi
 
-  if ! git status --porcelain=v1 -z >"$CODEX_SMOKE_ROOT/git-status.after"; then
-    echo "Failed to inspect the repository after the Codex smoke." >&2
+  if [[ "$CODEX_SMOKE_WORKTREE_SNAPSHOT_READY" -ne 1 ]]; then
+    echo "The initial content-sensitive Codex smoke worktree snapshot is unavailable; repository preservation could not be verified." >&2
     exit_status=1
-  elif [[ ! -f "$CODEX_SMOKE_ROOT/git-status.before" ]] \
-    || ! cmp -s "$CODEX_SMOKE_ROOT/git-status.before" "$CODEX_SMOKE_ROOT/git-status.after"; then
-    echo "The Codex smoke changed the repository worktree." >&2
+  elif ! verify_codex_smoke_worktree_unchanged \
+    "$CODEX_SMOKE_REPOSITORY_ROOT" \
+    "$CODEX_SMOKE_SNAPSHOT_HELPER" \
+    "$CODEX_SMOKE_ROOT/git-status.before" \
+    "$CODEX_SMOKE_ROOT/worktree.before" \
+    "$CODEX_SMOKE_ROOT/git-status.after" \
+    "$CODEX_SMOKE_ROOT/worktree.after"; then
     exit_status=1
   fi
 
@@ -89,10 +102,13 @@ cleanup_codex_smoke() {
     exit_status=1
   fi
   if [[ "$exit_status" -eq 0 && "$CODEX_SMOKE_SUCCESS" -eq 1 ]]; then
-    printf 'real_codex_cli_smoke=passed date_utc=%s git_sha=%s dirty=%s codex_version=%s model=%s account_type=%s http_turns=%s websocket_turns=%s websocket_terminals=%s websocket_completed=%s local_101=%s upstream_101=%s websocket_connections=%s websocket_single_socket=true websocket_store_false=%s websocket_first_previous_absent=%s websocket_previous_chain=%s websocket_http_fallbacks=0%s\n' \
+    printf 'real_codex_cli_smoke=passed date_utc=%s git_sha=%s dirty=%s codex_version=%s model=%s account_type=%s http_catalog_200=%s websocket_catalog_200=%s http_turns=%s http_function_calls=%s http_function_call_outputs=%s http_custom_tool_calls=%s http_custom_tool_call_outputs=%s websocket_turns=%s websocket_terminals=%s websocket_completed=%s local_101=%s upstream_101=%s websocket_connections=%s websocket_single_socket=true websocket_store_false=%s websocket_first_previous_absent=%s websocket_previous_chain=%s websocket_http_fallbacks=0%s\n' \
       "$CODEX_SMOKE_DATE_UTC" "$CODEX_SMOKE_GIT_SHA" "$CODEX_SMOKE_DIRTY" \
       "$CODEX_SMOKE_CLIENT_VERSION" "$CODEX_SMOKE_MODEL" "$CODEX_SMOKE_ACCOUNT_TYPE" \
-      "$CODEX_HTTP_POSTS" "$CODEX_WS_FORWARDED" "$CODEX_WS_TERMINAL" \
+      "$CODEX_HTTP_CATALOG_200" "$CODEX_WS_CATALOG_200" \
+      "$CODEX_HTTP_POSTS" "$CODEX_HTTP_FUNCTION_CALLS" \
+      "$CODEX_HTTP_FUNCTION_CALL_OUTPUTS" "$CODEX_HTTP_CUSTOM_TOOL_CALLS" \
+      "$CODEX_HTTP_CUSTOM_TOOL_CALL_OUTPUTS" "$CODEX_WS_FORWARDED" "$CODEX_WS_TERMINAL" \
       "$CODEX_WS_COMPLETED" "$CODEX_WS_DOWNSTREAM_101" "$CODEX_WS_UPSTREAM_101" \
       "$CODEX_WS_CONNECTION_COUNT" "$CODEX_WS_STORE_FALSE" \
       "$CODEX_WS_PREVIOUS_ABSENT" "$CODEX_WS_PREVIOUS_MATCHES" \
@@ -106,7 +122,21 @@ trap cleanup_codex_smoke EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-git status --porcelain=v1 -z >"$CODEX_SMOKE_ROOT/git-status.before"
+CODEX_SMOKE_PHASE=worktree_snapshot
+if ! cp -- "$CODEX_SMOKE_SCRIPT_DIR/capture-worktree-snapshot.ts" \
+  "$CODEX_SMOKE_SNAPSHOT_HELPER"; then
+  echo "Failed to stage the content-sensitive Codex smoke worktree snapshot helper." >&2
+  exit 1
+fi
+if ! capture_codex_smoke_worktree_state \
+  "$CODEX_SMOKE_REPOSITORY_ROOT" \
+  "$CODEX_SMOKE_SNAPSHOT_HELPER" \
+  "$CODEX_SMOKE_ROOT/git-status.before" \
+  "$CODEX_SMOKE_ROOT/worktree.before"; then
+  echo "Failed to capture the repository before the Codex smoke with a content-sensitive snapshot." >&2
+  exit 1
+fi
+CODEX_SMOKE_WORKTREE_SNAPSHOT_READY=1
 CODEX_SMOKE_DATE_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 CODEX_SMOKE_GIT_SHA="$(git rev-parse --verify HEAD)"
 CODEX_SMOKE_DIRTY=false
@@ -186,7 +216,6 @@ run_real_codex() {
     SHELL="${SHELL:-/bin/sh}" \
     NO_PROXY='127.0.0.1,localhost' \
     no_proxy='127.0.0.1,localhost' \
-    OPENAI_API_KEY=dummy \
     RUST_LOG=warn \
     NO_COLOR=1 \
     FORCE_COLOR=0 \
@@ -204,7 +233,7 @@ run_real_codex() {
       --output-last-message "$final_path" \
       -c 'model_provider="copilot-proxy-smoke"' \
       -c 'shell_environment_policy={inherit="none"}' \
-      -c "model_providers.copilot-proxy-smoke={name=\"Copilot Proxy Smoke\",base_url=\"http://127.0.0.1:$CODEX_SMOKE_PORT/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\",request_max_retries=0,stream_max_retries=0,supports_websockets=$supports_websockets,websocket_connect_timeout_ms=10000}" \
+      -c "model_providers.copilot-proxy-smoke={name=\"Copilot Proxy Smoke\",base_url=\"http://127.0.0.1:$CODEX_SMOKE_PORT/v1\",auth={command=\"bun\",args=[\"-e\",\"process.stdout.write('dummy')\"]},wire_api=\"responses\",request_max_retries=0,stream_max_retries=0,supports_websockets=$supports_websockets,websocket_connect_timeout_ms=10000}" \
       "$prompt" \
     >"$events_path" 2>"$diagnostics_path" </dev/null
   status=$?
@@ -291,8 +320,33 @@ count_matches() {
   return "$status"
 }
 
+sum_request_summary_field() {
+  local field=$1
+  local file=$2
+
+  awk -v field="$field" '
+    /Responses API request summary:/ {
+      in_summary = 1
+      next
+    }
+    in_summary && index($0, field ": ") {
+      value = $0
+      sub(".*" field ": ", "", value)
+      sub("[^0-9].*", "", value)
+      if (value ~ /^[0-9]+$/)
+        total += value
+    }
+    in_summary && /^[[:space:]]*}/ {
+      in_summary = 0
+    }
+    END { print total + 0 }
+  ' "$file"
+}
+
 CODEX_HTTP_SENTINEL="codex-http-tool-loop-$(date +%s)-$$"
 printf '%s\n' "$CODEX_HTTP_SENTINEL" >"$CODEX_SMOKE_WORK/http-sentinel.txt"
+# Catalog evidence below is sliced from this point so only the real HTTP Codex
+# invocation can satisfy it.
 CODEX_HTTP_LOG_START="$(wc -l <"$CODEX_SMOKE_PROXY_LOG")"
 CODEX_SMOKE_PHASE=http_cli
 run_real_codex \
@@ -306,6 +360,9 @@ assert_codex_tool_loop \
   "$CODEX_SMOKE_ROOT/http-events.jsonl" \
   "$CODEX_SMOKE_ROOT/http-final.txt" \
   "$CODEX_HTTP_SENTINEL"
+assert_no_match_i 'fallback metadata|fallback model metadata|used_fallback_model_metadata' \
+  "$CODEX_SMOKE_ROOT/http-diagnostics.log"
+assert_no_match_i 'used_fallback_model_metadata' "$CODEX_SMOKE_ROOT/http-events.jsonl"
 CODEX_SMOKE_PHASE=http_transport_evidence
 tail -n "+$((CODEX_HTTP_LOG_START + 1))" "$CODEX_SMOKE_PROXY_LOG" >"$CODEX_SMOKE_ROOT/http-proxy.log"
 CODEX_HTTP_POSTS="$(count_matches '--> POST /v1/responses 200' "$CODEX_SMOKE_ROOT/http-proxy.log")"
@@ -314,16 +371,28 @@ CODEX_HTTP_HEADERS="$(count_matches 'Upstream /responses headers received:' "$CO
 CODEX_HTTP_STREAM_TRUE="$(count_matches 'stream: true' "$CODEX_SMOKE_ROOT/http-proxy.log")"
 CODEX_HTTP_FIRST_EVENTS="$(count_matches 'Upstream /responses first SSE event:' "$CODEX_SMOKE_ROOT/http-proxy.log")"
 CODEX_HTTP_COMPLETED="$(count_matches "event: 'response.completed'" "$CODEX_SMOKE_ROOT/http-proxy.log")"
+CODEX_HTTP_CATALOG_200="$(require_codex_catalog_success \
+  "$CODEX_SMOKE_ROOT/http-proxy.log" "$CODEX_SMOKE_CLIENT_VERSION" HTTP)"
+CODEX_HTTP_FUNCTION_CALLS="$(sum_request_summary_field 'functionCalls' "$CODEX_SMOKE_ROOT/http-proxy.log")"
+CODEX_HTTP_FUNCTION_CALL_OUTPUTS="$(sum_request_summary_field 'functionCallOutputs' "$CODEX_SMOKE_ROOT/http-proxy.log")"
+CODEX_HTTP_CUSTOM_TOOL_CALLS="$(sum_request_summary_field 'customToolCalls' "$CODEX_SMOKE_ROOT/http-proxy.log")"
+CODEX_HTTP_CUSTOM_TOOL_CALL_OUTPUTS="$(sum_request_summary_field 'customToolCallOutputs' "$CODEX_SMOKE_ROOT/http-proxy.log")"
 if [[ "$CODEX_HTTP_POSTS" -lt 2 || "$CODEX_HTTP_SUMMARIES" -lt 2 \
   || "$CODEX_HTTP_HEADERS" -lt 2 || "$CODEX_HTTP_STREAM_TRUE" -lt 2 \
   || "$CODEX_HTTP_FIRST_EVENTS" -lt 2 || "$CODEX_HTTP_COMPLETED" -lt 2 ]]; then
-  printf 'Unexpected HTTP smoke counts: posts=%s summaries=%s headers=%s stream_true=%s first_events=%s completed=%s\n' \
+  printf 'Unexpected HTTP smoke counts: catalog_200=%s posts=%s summaries=%s headers=%s stream_true=%s first_events=%s completed=%s\n' \
+    "$CODEX_HTTP_CATALOG_200" \
     "$CODEX_HTTP_POSTS" "$CODEX_HTTP_SUMMARIES" "$CODEX_HTTP_HEADERS" \
     "$CODEX_HTTP_STREAM_TRUE" "$CODEX_HTTP_FIRST_EVENTS" "$CODEX_HTTP_COMPLETED" >&2
   exit 1
 fi
-rg -q 'functionCalls: [1-9][0-9]*' "$CODEX_SMOKE_ROOT/http-proxy.log"
-rg -q 'functionCallOutputs: [1-9][0-9]*' "$CODEX_SMOKE_ROOT/http-proxy.log"
+if ! { [[ "$CODEX_HTTP_FUNCTION_CALLS" -gt 0 && "$CODEX_HTTP_FUNCTION_CALL_OUTPUTS" -gt 0 ]] \
+  || [[ "$CODEX_HTTP_CUSTOM_TOOL_CALLS" -gt 0 && "$CODEX_HTTP_CUSTOM_TOOL_CALL_OUTPUTS" -gt 0 ]]; }; then
+  printf 'Missing paired HTTP tool evidence: function_calls=%s function_call_outputs=%s custom_tool_calls=%s custom_tool_call_outputs=%s\n' \
+    "$CODEX_HTTP_FUNCTION_CALLS" "$CODEX_HTTP_FUNCTION_CALL_OUTPUTS" \
+    "$CODEX_HTTP_CUSTOM_TOOL_CALLS" "$CODEX_HTTP_CUSTOM_TOOL_CALL_OUTPUTS" >&2
+  exit 1
+fi
 assert_no_match 'Responses WebSocket downstream upgrade completed:' "$CODEX_SMOKE_ROOT/http-proxy.log"
 
 CODEX_SMOKE_PHASE=websocket_catalog
@@ -334,6 +403,8 @@ curl -fsS --max-time "$CODEX_SMOKE_TIMEOUT_SECONDS" \
 
 CODEX_WS_SENTINEL="codex-ws-tool-loop-$(date +%s)-$$"
 printf '%s\n' "$CODEX_WS_SENTINEL" >"$CODEX_SMOKE_WORK/ws-sentinel.txt"
+# Keep the independent capability curl above outside this slice: only the real
+# WebSocket Codex invocation may satisfy the catalog-response assertion.
 CODEX_WS_LOG_START="$(wc -l <"$CODEX_SMOKE_PROXY_LOG")"
 CODEX_SMOKE_PHASE=websocket_cli
 run_real_codex \
@@ -347,6 +418,9 @@ assert_codex_tool_loop \
   "$CODEX_SMOKE_ROOT/ws-events.jsonl" \
   "$CODEX_SMOKE_ROOT/ws-final.txt" \
   "$CODEX_WS_SENTINEL"
+assert_no_match_i 'fallback metadata|fallback model metadata|used_fallback_model_metadata' \
+  "$CODEX_SMOKE_ROOT/ws-diagnostics.log"
+assert_no_match_i 'used_fallback_model_metadata' "$CODEX_SMOKE_ROOT/ws-events.jsonl"
 CODEX_SMOKE_PHASE=websocket_transport_evidence
 tail -n "+$((CODEX_WS_LOG_START + 1))" "$CODEX_SMOKE_PROXY_LOG" >"$CODEX_SMOKE_ROOT/ws-proxy.log"
 
@@ -362,11 +436,14 @@ CODEX_WS_PREVIOUS_ABSENT="$(count_matches 'hasPreviousResponseId: false' "$CODEX
 CODEX_WS_PREVIOUS_PRESENT="$(count_matches 'hasPreviousResponseId: true' "$CODEX_SMOKE_ROOT/ws-proxy.log")"
 CODEX_WS_PREVIOUS_MATCHES="$(count_matches 'previousResponseIdMatchesLast: true' "$CODEX_SMOKE_ROOT/ws-proxy.log")"
 CODEX_WS_PREVIOUS_MISMATCHES="$(count_matches 'previousResponseIdMatchesLast: false' "$CODEX_SMOKE_ROOT/ws-proxy.log")"
+CODEX_WS_CATALOG_200="$(require_codex_catalog_success \
+  "$CODEX_SMOKE_ROOT/ws-proxy.log" "$CODEX_SMOKE_CLIENT_VERSION" WebSocket)"
 CODEX_WS_CHAINED_TURNS=$((CODEX_WS_FORWARDED - 1))
 if [[ "$CODEX_WS_FORWARDED" -lt 2 || "$CODEX_WS_TERMINAL" -ne "$CODEX_WS_FORWARDED" \
   || "$CODEX_WS_UPSTREAM_101" -ne 1 || "$CODEX_WS_COMPLETED" -ne "$CODEX_WS_FORWARDED" \
   || "$CODEX_WS_DOWNSTREAM_101" -lt 1 ]]; then
-  printf 'Unexpected WebSocket smoke counts: downstream_101=%s upstream_101=%s forwarded=%s terminal=%s completed=%s\n' \
+  printf 'Unexpected WebSocket smoke counts: catalog_200=%s downstream_101=%s upstream_101=%s forwarded=%s terminal=%s completed=%s\n' \
+    "$CODEX_WS_CATALOG_200" \
     "$CODEX_WS_DOWNSTREAM_101" "$CODEX_WS_UPSTREAM_101" "$CODEX_WS_FORWARDED" \
     "$CODEX_WS_TERMINAL" "$CODEX_WS_COMPLETED" >&2
   exit 1

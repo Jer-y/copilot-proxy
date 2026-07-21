@@ -1,940 +1,1437 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-Xtkpg2g63lrqzrsNufA2mh76N32nytV3lO6Uzbw584s='; style-src 'unsafe-inline'; img-src data:; connect-src http: https:; base-uri 'none'; object-src 'none'; form-action 'self'"
+      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-zb8lzkNuW5nHVnyvGtja6wNnA3G6CzTU9Yxjjs/utz8='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     />
-    <title>Copilot API Usage Dashboard</title>
+    <meta name="color-scheme" content="dark" />
+    <meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />
+    <meta
+      name="copilot-proxy-dashboard-capabilities"
+      content="diagnostics exact-endpoints redirect-error credentials-omit"
+    />
     <link rel="icon" href="data:," />
-
+    <title>Copilot Proxy Diagnostics</title>
     <style>
-      /* Gruvbox-themed color palette */
       :root {
-        /* Main Color Palette */
-        --color-red: #cc241d;
-        --color-green: #98971a;
-        --color-yellow: #d79921;
-        --color-blue: #458588;
-        --color-purple: #b16286;
-        --color-aqua: #689d6a;
-        --color-orange: #d65d0e;
-        --color-gray: #a89984;
-
-        /* Accent/Lighter/Darker Shades of Main Colors */
-        --color-red-accent: #fb4934;
-        --color-green-accent: #b8bb26;
-        --color-yellow-accent: #fabd2f;
-        --color-blue-accent: #83a598;
-        --color-purple-accent: #d3869b;
-        --color-aqua-accent: #8ec07c;
-        --color-orange-accent: #fe8019;
-        --color-gray-accent: #928374;
-
-        /* Background Colors */
-        --color-bg-darkest: #1d2021; /* bg0_h */
-        --color-bg: #282828; /* bg and bg0 */
-        --color-bg-light-1: #3c3836; /* bg1 */
-        --color-bg-light-2: #504945; /* bg2 */
-        --color-bg-light-3: #665c54; /* bg3 */
-        --color-bg-light-4: #7c6f64; /* bg4 */
-        --color-bg-soft: #32302f; /* bg0_s */
-
-        /* Foreground Colors */
-        --color-fg-darker: #a89984; /* fg4 - duplicate of gray */
-        --color-fg-dark: #bdae93; /* fg3 */
-        --color-fg-medium: #d5c4a1; /* fg2 */
-        --color-fg-light: #ebdbb2; /* fg and fg1 */
-        --color-fg-lightest: #fbf1c7; /* fg0 */
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        --bg: #08111f;
+        --surface: #0f1b2d;
+        --surface-raised: #14243a;
+        --line: #253a55;
+        --text: #f5f8fc;
+        --muted: #9db0c7;
+        --ready: #42d69a;
+        --ready-soft: rgba(66, 214, 154, 0.13);
+        --warn: #ffbd5c;
+        --warn-soft: rgba(255, 189, 92, 0.14);
+        --danger: #ff7b87;
+        --danger-soft: rgba(255, 123, 135, 0.13);
+        --accent: #7aa8ff;
+        --accent-soft: rgba(122, 168, 255, 0.13);
+        --radius: 18px;
+        --shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
       }
 
-      /* Custom styles using the new palette */
       * {
         box-sizing: border-box;
       }
 
+      html {
+        min-width: 320px;
+        background: var(--bg);
+      }
+
       body {
-        margin: 0;
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-          "Segoe UI", sans-serif;
-        background-color: var(--color-bg-darkest);
-        color: var(--color-fg-light);
-      }
-
-      /* Custom progress bar styles */
-      .progress-bar-bg {
-        background-color: var(--color-bg-light-1);
-      }
-      .progress-bar-fg {
-        transition: width 0.5s ease-in-out;
-      }
-
-      /* Custom scrollbar for the raw data view */
-      .code-block::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-      .code-block::-webkit-scrollbar-track {
-        background: var(--color-bg);
-      }
-      .code-block::-webkit-scrollbar-thumb {
-        background: var(--color-bg-light-3);
-      }
-      .code-block::-webkit-scrollbar-thumb:hover {
-        background: var(--color-bg-light-4);
-      }
-
-      /* Style for focus rings to use variables */
-      .input-focus:focus {
-        --tw-ring-color: var(--color-blue);
-        border-color: var(--color-blue);
-        box-shadow: 0 0 0 1px var(--color-blue);
-        outline: none;
-      }
-
-      .antialiased {
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
-      }
-      .min-h-screen {
         min-height: 100vh;
+        margin: 0;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 10% -10%, rgba(71, 111, 190, 0.27), transparent 32rem),
+          radial-gradient(circle at 95% 5%, rgba(36, 154, 128, 0.16), transparent 30rem),
+          var(--bg);
       }
-      .max-w-7xl {
-        max-width: 80rem;
-      }
-      .mx-auto {
-        margin-left: auto;
-        margin-right: auto;
-      }
-      .mt-1 {
-        margin-top: 0.25rem;
-      }
-      .mt-2 {
-        margin-top: 0.5rem;
-      }
-      .mb-2 {
-        margin-bottom: 0.5rem;
-      }
-      .mb-3 {
-        margin-bottom: 0.75rem;
-      }
-      .mb-6 {
-        margin-bottom: 1.5rem;
-      }
-      .mr-3 {
-        margin-right: 0.75rem;
-      }
-      .p-3 {
-        padding: 0.75rem;
-      }
-      .p-4 {
-        padding: 1rem;
-      }
-      .px-2 {
-        padding-left: 0.5rem;
-        padding-right: 0.5rem;
-      }
-      .px-3 {
-        padding-left: 0.75rem;
-        padding-right: 0.75rem;
-      }
-      .px-4 {
-        padding-left: 1rem;
-        padding-right: 1rem;
-      }
-      .px-5 {
-        padding-left: 1.25rem;
-        padding-right: 1.25rem;
-      }
-      .py-0\.5 {
-        padding-top: 0.125rem;
-        padding-bottom: 0.125rem;
-      }
-      .py-1\.5 {
-        padding-top: 0.375rem;
-        padding-bottom: 0.375rem;
-      }
-      .py-4 {
-        padding-top: 1rem;
-        padding-bottom: 1rem;
-      }
-      .py-16 {
-        padding-top: 4rem;
-        padding-bottom: 4rem;
-      }
-      .py-20 {
-        padding-top: 5rem;
-        padding-bottom: 5rem;
-      }
-      .pl-4 {
-        padding-left: 1rem;
-      }
-      .flex {
-        display: flex;
-      }
-      .grid {
-        display: grid;
-      }
-      .flex-col {
-        flex-direction: column;
-      }
-      .items-center {
-        align-items: center;
-      }
-      .justify-center {
-        justify-content: center;
-      }
-      .justify-between {
-        justify-content: space-between;
-      }
-      .gap-2 {
-        gap: 0.5rem;
-      }
-      .gap-3 {
-        gap: 0.75rem;
-      }
-      .gap-4 {
-        gap: 1rem;
-      }
-      .grid-cols-1 {
-        grid-template-columns: repeat(1, minmax(0, 1fr));
-      }
-      .w-full {
-        width: 100%;
-      }
-      .h-2 {
-        height: 0.5rem;
-      }
-      .h-4,
-      .w-4 {
-        width: 1rem;
-        height: 1rem;
-      }
-      .h-5,
-      .w-5 {
-        width: 1.25rem;
-        height: 1.25rem;
-      }
-      .h-7,
-      .w-7 {
-        width: 1.75rem;
-        height: 1.75rem;
-      }
-      .h-10,
-      .w-10 {
-        width: 2.5rem;
-        height: 2.5rem;
-      }
-      .h-12,
-      .w-12 {
-        width: 3rem;
-        height: 3rem;
-      }
-      .border {
-        border: 1px solid;
-      }
-      .border-4 {
-        border-width: 4px;
-        border-style: solid;
-      }
-      .border-transparent {
-        border-color: transparent;
-      }
-      .rounded-full {
-        border-radius: 9999px;
-      }
-      .relative {
-        position: relative;
-      }
-      .whitespace-nowrap {
-        white-space: nowrap;
-      }
-      .text-center {
-        text-align: center;
-      }
-      .text-xs {
-        font-size: 0.75rem;
-        line-height: 1rem;
-      }
-      .text-sm {
-        font-size: 0.875rem;
-        line-height: 1.25rem;
-      }
-      .text-md {
-        font-size: 1rem;
-        line-height: 1.5rem;
-      }
-      .text-lg {
-        font-size: 1.125rem;
-        line-height: 1.75rem;
-      }
-      .text-xl {
-        font-size: 1.25rem;
-        line-height: 1.75rem;
-      }
-      .text-2xl {
-        font-size: 1.5rem;
-        line-height: 2rem;
-      }
-      .font-mono {
-        font-family:
-          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-          "Liberation Mono", "Courier New", monospace;
-      }
-      .font-medium {
-        font-weight: 500;
-      }
-      .font-semibold {
-        font-weight: 600;
-      }
-      .font-bold {
-        font-weight: 700;
-      }
-      .capitalize {
-        text-transform: capitalize;
-      }
-      .underline {
-        text-decoration-line: underline;
-      }
-      .transition,
-      .transition-colors {
-        transition-duration: 150ms;
-        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-      }
-      footer a:hover {
-        color: var(--color-fg-light) !important;
-      }
-      .transition-colors {
-        transition-property:
-          color, background-color, border-color, text-decoration-color, fill,
-          stroke;
-      }
-      .mx-auto.h-10 {
-        display: block;
-      }
+
       button,
       input {
-        border-radius: 0;
         font: inherit;
       }
+
       button {
         cursor: pointer;
+      }
+
+      button:focus-visible,
+      input:focus-visible {
+        outline: 3px solid rgba(122, 168, 255, 0.5);
+        outline-offset: 2px;
+      }
+
+      .shell {
+        width: min(1240px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 52px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 26px;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--accent);
+        font-size: 0.76rem;
+        font-weight: 750;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 8px;
+        font-size: clamp(1.7rem, 4vw, 2.65rem);
+        line-height: 1.08;
+        letter-spacing: -0.035em;
+      }
+
+      .subtitle {
+        max-width: 680px;
+        margin-bottom: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .endpoint-form {
+        display: flex;
+        width: min(100%, 520px);
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(10, 20, 35, 0.78);
+        box-shadow: var(--shadow);
+      }
+
+      .endpoint-form label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
         border: 0;
       }
-      .animate-spin {
-        animation: spin 1s linear infinite;
+
+      .endpoint-form input {
+        min-width: 0;
+        flex: 1;
+        border: 0;
+        padding: 10px 12px;
+        color: var(--text);
+        background: transparent;
       }
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
+
+      .endpoint-form button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 16px;
+        color: #07111e;
+        background: var(--accent);
+        font-weight: 750;
       }
-      @media (min-width: 640px) {
-        .sm\:p-6 {
-          padding: 1.5rem;
-        }
-        .sm\:flex-row {
-          flex-direction: row;
-        }
-        .sm\:w-auto {
-          width: auto;
-        }
+
+      .endpoint-form button:disabled {
+        cursor: wait;
+        opacity: 0.65;
       }
-      @media (min-width: 768px) {
-        .md\:grid-cols-2 {
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(145deg, rgba(19, 35, 57, 0.96), rgba(11, 23, 40, 0.96));
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(250px, 0.75fr);
+        gap: 28px;
+        margin-bottom: 18px;
+        padding: clamp(24px, 4vw, 38px);
+      }
+
+      .hero::after {
+        position: absolute;
+        width: 260px;
+        height: 260px;
+        right: -110px;
+        top: -130px;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        content: "";
+        filter: blur(2px);
+      }
+
+      .status-line {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 15px;
+      }
+
+      .status-dot {
+        width: 13px;
+        height: 13px;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: var(--muted);
+        box-shadow: 0 0 0 7px rgba(157, 176, 199, 0.1);
+      }
+
+      .status-dot.ready {
+        background: var(--ready);
+        box-shadow: 0 0 0 7px var(--ready-soft);
+      }
+
+      .status-dot.degraded,
+      .status-dot.error {
+        background: var(--warn);
+        box-shadow: 0 0 0 7px var(--warn-soft);
+      }
+
+      .status-label {
+        font-size: clamp(1.35rem, 3vw, 2rem);
+        font-weight: 790;
+        letter-spacing: -0.02em;
+      }
+
+      .status-summary {
+        max-width: 670px;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 1.02rem;
+        line-height: 1.6;
+      }
+
+      .reason-box {
+        position: relative;
+        z-index: 1;
+        align-self: stretch;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(6, 16, 28, 0.48);
+      }
+
+      .reason-box h2 {
+        margin-bottom: 12px;
+        font-size: 0.78rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .reason-list {
+        display: grid;
+        gap: 9px;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+
+      .reason-list li {
+        display: flex;
+        gap: 9px;
+        color: #ffd9a3;
+        font-size: 0.91rem;
+        line-height: 1.4;
+      }
+
+      .reason-list li::before {
+        color: var(--warn);
+        content: "•";
+      }
+
+      .reason-list li.ok {
+        color: #bcefdc;
+      }
+
+      .reason-list li.ok::before {
+        color: var(--ready);
+        content: "✓";
+      }
+
+      .generated {
+        margin-top: 16px;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 32px;
+      }
+
+      .metric-card {
+        min-height: 154px;
+        padding: 19px;
+      }
+
+      .metric-card h2 {
+        margin-bottom: 16px;
+        color: var(--muted);
+        font-size: 0.76rem;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+
+      .metric-primary {
+        margin-bottom: 7px;
+        font-size: 1.15rem;
+        font-weight: 730;
+        overflow-wrap: anywhere;
+      }
+
+      .metric-secondary {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.87rem;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .section {
+        margin-top: 32px;
+      }
+
+      .section-heading {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+
+      .section-heading h2 {
+        margin-bottom: 0;
+        font-size: 1.25rem;
+        letter-spacing: -0.015em;
+      }
+
+      .section-heading p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 900px;
+      }
+
+      th,
+      td {
+        padding: 15px 16px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 0.71rem;
+        font-weight: 720;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .model-name {
+        display: block;
+        font-weight: 720;
+      }
+
+      .model-id {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.76rem;
+      }
+
+      .route-cell {
+        min-width: 118px;
+      }
+
+      .route-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        background: rgba(157, 176, 199, 0.08);
+        font-size: 0.72rem;
+        font-weight: 720;
+        text-transform: capitalize;
+      }
+
+      .route-badge.direct {
+        border-color: rgba(66, 214, 154, 0.35);
+        color: #a9edd3;
+        background: var(--ready-soft);
+      }
+
+      .route-badge.translated {
+        border-color: rgba(122, 168, 255, 0.4);
+        color: #bfd3ff;
+        background: var(--accent-soft);
+      }
+
+      .route-badge.unsupported {
+        border-color: rgba(255, 123, 135, 0.33);
+        color: #ffc1c7;
+        background: var(--danger-soft);
+      }
+
+      .maturity {
+        display: block;
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 0.7rem;
+        text-transform: capitalize;
+      }
+
+      .empty-state {
+        padding: 26px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .quota-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 18px;
+        padding: 17px 20px 0;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .quota-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        padding: 18px;
+      }
+
+      .quota-card {
+        padding: 17px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: rgba(6, 16, 28, 0.35);
+      }
+
+      .quota-card h3 {
+        margin-bottom: 7px;
+        font-size: 0.96rem;
+      }
+
+      .quota-value {
+        margin-bottom: 12px;
+        font-size: 1.45rem;
+        font-weight: 780;
+      }
+
+      .progress-track {
+        height: 7px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #26364a;
+      }
+
+      .progress-value {
+        height: 100%;
+        width: 0;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--ready));
+      }
+
+      .quota-detail {
+        margin-top: 9px;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1.45;
+      }
+
+      .error-banner {
+        display: none;
+        margin-bottom: 18px;
+        padding: 15px 18px;
+        border: 1px solid rgba(255, 123, 135, 0.38);
+        border-radius: 13px;
+        color: #ffd2d6;
+        background: var(--danger-soft);
+      }
+
+      .error-banner.visible {
+        display: block;
+      }
+
+      footer {
+        margin-top: 34px;
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1.5;
+        text-align: center;
+      }
+
+      @media (max-width: 980px) {
+        .topbar,
+        .hero {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar {
+          flex-direction: column;
+        }
+
+        .endpoint-form {
+          width: 100%;
+        }
+
+        .metric-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
-      @media (min-width: 1024px) {
-        .lg\:grid-cols-3 {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+
+      @media (max-width: 680px) {
+        .shell {
+          width: min(100% - 20px, 1240px);
+          padding-top: 20px;
+        }
+
+        .hero {
+          gap: 20px;
+        }
+
+        .metric-grid,
+        .quota-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .section-heading {
+          align-items: flex-start;
+          flex-direction: column;
         }
       }
     </style>
   </head>
-  <body class="antialiased">
-    <div id="app" class="min-h-screen p-4 sm:p-6">
-      <div class="max-w-7xl mx-auto">
-        <!-- Header Section -->
-        <header class="mb-6">
-          <h1
-            class="text-2xl font-bold flex items-center gap-2"
-            style="color: var(--color-fg-lightest)"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              class="h-7 w-7"
-              style="color: var(--color-aqua-accent)"
-            >
-              <path d="M15.6 3.3a10 10 0 1 0 5.1 5.1" />
-              <path
-                d="M12 12a1 1 0 0 0-1-1v4a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1h-3z"
-              />
-              <path d="M12 6.8a10 10 0 0 0 -3.2 7.2" />
-            </svg>
-            <span>Copilot API Usage Dashboard</span>
-          </h1>
-          <p class="mt-1 text-sm" style="color: var(--color-gray)">
-            Should be the same as the one in VSCode
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Local runtime visibility</p>
+          <h1>Copilot Proxy Diagnostics</h1>
+          <p class="subtitle">
+            One read-only view of readiness, authentication lifecycle, upstream recovery,
+            model routing, and Copilot quota. A usage cache miss may refresh quota data.
           </p>
-        </header>
-
-        <!-- Form Section -->
-        <div
-          class="mb-6 p-4 border"
-          style="
-            background-color: var(--color-bg-soft);
-            border-color: var(--color-bg-light-2);
-          "
-        >
-          <form
-            id="endpoint-form"
-            class="flex flex-col sm:flex-row items-center gap-3"
-          >
-            <label
-              for="endpoint-url"
-              class="font-semibold whitespace-nowrap text-sm"
-              style="color: var(--color-fg-lightest)"
-              >API Endpoint URL</label
-            >
-            <input
-              type="text"
-              id="endpoint-url"
-              class="w-full px-3 py-1.5 border transition input-focus text-sm"
-              style="
-                background-color: var(--color-bg-darkest);
-                border-color: var(--color-bg-light-3);
-                color: var(--color-fg-medium);
-              "
-              placeholder="http://localhost:4399/usage"
-            />
-            <button
-              id="fetch-button"
-              type="submit"
-              class="w-full sm:w-auto font-bold py-1.5 px-5 transition-colors flex items-center justify-center gap-2 text-sm"
-              style="
-                background-color: var(--color-blue);
-                color: var(--color-bg-darkest);
-              "
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                class="h-4 w-4"
-              >
-                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-                <path d="M21 3v5h-5" />
-                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-                <path d="M3 21v-5h5" />
-              </svg>
-              <span>Fetch</span>
-            </button>
-          </form>
         </div>
+        <form id="endpoint-form" class="endpoint-form">
+          <label for="endpoint">Diagnostics endpoint</label>
+          <input
+            id="endpoint"
+            name="endpoint"
+            inputmode="url"
+            autocomplete="url"
+            spellcheck="false"
+            placeholder="http://localhost:4399/diagnostics"
+          />
+          <button id="refresh-button" type="submit">Refresh</button>
+        </form>
+      </header>
 
-        <!-- Content Area for dynamic data -->
-        <main id="content-area"></main>
-      </div>
-    </div>
+      <div id="error-banner" class="error-banner" role="alert"></div>
+
+      <section class="panel hero" aria-labelledby="status-label">
+        <div>
+          <div class="status-line">
+            <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+            <span id="status-label" class="status-label">Loading diagnostics…</span>
+          </div>
+          <p id="status-summary" class="status-summary">
+            Contacting the configured local proxy. A usage cache miss may refresh quota data.
+          </p>
+          <p id="generated-at" class="generated">Snapshot time unavailable</p>
+        </div>
+        <aside class="reason-box">
+          <h2>Readiness reasons</h2>
+          <ul id="reason-list" class="reason-list" aria-live="polite">
+            <li>Waiting for a snapshot</li>
+          </ul>
+        </aside>
+      </section>
+
+      <section class="metric-grid" aria-label="Runtime summary">
+        <article class="panel metric-card">
+          <h2>Account & upstream</h2>
+          <p id="account-type" class="metric-primary">—</p>
+          <p id="upstream-host" class="metric-secondary">—</p>
+        </article>
+        <article class="panel metric-card">
+          <h2>Authentication</h2>
+          <p id="auth-status" class="metric-primary">—</p>
+          <p id="auth-detail" class="metric-secondary">—</p>
+        </article>
+        <article class="panel metric-card">
+          <h2>Recovery circuit</h2>
+          <p id="recovery-status" class="metric-primary">—</p>
+          <p id="recovery-detail" class="metric-secondary">—</p>
+        </article>
+        <article class="panel metric-card">
+          <h2>Concurrency</h2>
+          <p id="concurrency-status" class="metric-primary">—</p>
+          <p id="concurrency-detail" class="metric-secondary">—</p>
+        </article>
+      </section>
+
+      <section class="section" aria-labelledby="models-title">
+        <div class="section-heading">
+          <h2 id="models-title">Model capability matrix</h2>
+          <p id="model-count">No catalog loaded</p>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Model</th>
+                <th scope="col">Vendor</th>
+                <th scope="col">Context</th>
+                <th scope="col">Output</th>
+                <th scope="col">Chat</th>
+                <th scope="col">Responses HTTP</th>
+                <th scope="col">Responses WSS</th>
+                <th scope="col">Anthropic</th>
+              </tr>
+            </thead>
+            <tbody id="model-rows">
+              <tr><td class="empty-state" colspan="8">Waiting for model data</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="quota-title">
+        <div class="section-heading">
+          <h2 id="quota-title">Copilot quota</h2>
+          <p id="quota-state">Waiting for usage data</p>
+        </div>
+        <div class="panel">
+          <div id="quota-summary" class="quota-summary"></div>
+          <div id="quota-grid" class="quota-grid">
+            <p class="empty-state">Waiting for quota data</p>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        Diagnostics provide no management actions and omit proxy credentials, GitHub tokens,
+        Copilot tokens, prompts, and user keys. A usage cache miss may fetch current quota and
+        refresh the short-lived usage cache. See the repository product-support guide before
+        exposing the proxy.
+      </footer>
+    </main>
 
     <script>
-      document.addEventListener("DOMContentLoaded", () => {
-        const endpointForm = document.getElementById("endpoint-form");
-        const endpointUrlInput = document.getElementById("endpoint-url");
-        const contentArea = document.getElementById("content-area");
-        const fetchButton = document.getElementById("fetch-button");
+      const DEFAULT_ENDPOINT = "http://localhost:4399/diagnostics";
+      const DIAGNOSTICS_TIMEOUT_MS = 10_000;
+      const REASON_LABELS = {
+        copilot_token_unavailable: "Copilot token is unavailable",
+        copilot_token_refresh_unscheduled: "Token refresh is not scheduled or in flight",
+        copilot_token_expired: "Copilot token has expired",
+        model_catalog_unavailable: "The live model catalog is unavailable",
+        model_catalog_stale: "The live model catalog is stale because its latest refresh failed",
+        copilot_upstream_circuit_not_closed: "The upstream recovery circuit is open",
+      };
+      const ROUTE_COLUMNS = [
+        "chatCompletions",
+        "responsesHttp",
+        "responsesWebSocket",
+        "anthropicMessages",
+      ];
+      const QUOTA_ORDER = ["premium_interactions", "chat", "completions"];
+      const QUOTA_LABELS = {
+        premium_interactions: "Premium interactions",
+        chat: "Chat",
+        completions: "Completions",
+      };
 
-        // Apply hover effect for fetch button via JS
-        fetchButton.addEventListener("mouseenter", () => {
-          fetchButton.style.backgroundColor = "var(--color-blue-accent)";
-        });
-        fetchButton.addEventListener("mouseleave", () => {
-          fetchButton.style.backgroundColor = "var(--color-blue)";
-        });
+      const elements = {
+        endpointForm: document.getElementById("endpoint-form"),
+        endpoint: document.getElementById("endpoint"),
+        refreshButton: document.getElementById("refresh-button"),
+        errorBanner: document.getElementById("error-banner"),
+        statusDot: document.getElementById("status-dot"),
+        statusLabel: document.getElementById("status-label"),
+        statusSummary: document.getElementById("status-summary"),
+        generatedAt: document.getElementById("generated-at"),
+        reasonList: document.getElementById("reason-list"),
+        accountType: document.getElementById("account-type"),
+        upstreamHost: document.getElementById("upstream-host"),
+        authStatus: document.getElementById("auth-status"),
+        authDetail: document.getElementById("auth-detail"),
+        recoveryStatus: document.getElementById("recovery-status"),
+        recoveryDetail: document.getElementById("recovery-detail"),
+        concurrencyStatus: document.getElementById("concurrency-status"),
+        concurrencyDetail: document.getElementById("concurrency-detail"),
+        modelCount: document.getElementById("model-count"),
+        modelRows: document.getElementById("model-rows"),
+        quotaState: document.getElementById("quota-state"),
+        quotaSummary: document.getElementById("quota-summary"),
+        quotaGrid: document.getElementById("quota-grid"),
+      };
+      let activeDiagnosticsController;
+      let diagnosticsRequestGeneration = 0;
 
-        const DEFAULT_ENDPOINT = "http://localhost:4399/usage";
+      elements.endpointForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void refreshDiagnostics();
+      });
 
-        // --- State Management ---
-        const state = {
-          isLoading: false,
-          error: null,
-          data: null,
-        };
+      const endpointFromQuery = new URLSearchParams(window.location.search).get("endpoint");
+      elements.endpoint.value = endpointFromQuery || DEFAULT_ENDPOINT;
+      void refreshDiagnostics();
 
-        function isRecord(value) {
-          return value !== null && typeof value === "object" && !Array.isArray(value);
+      async function refreshDiagnostics() {
+        const requestGeneration = ++diagnosticsRequestGeneration;
+        activeDiagnosticsController?.abort();
+        const controller = new AbortController();
+        activeDiagnosticsController = controller;
+        let timedOut = false;
+        let endpoint;
+        let responseReceived = false;
+        const timeout = window.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, DIAGNOSTICS_TIMEOUT_MS);
+
+        setLoading(true);
+        hideError();
+        renderLoading();
+
+        try {
+          endpoint = parseEndpointUrl(elements.endpoint.value);
+          elements.endpoint.value = endpoint.toString();
+          persistEndpoint(endpoint);
+
+          const response = await fetch(endpoint, {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+            credentials: "omit",
+            redirect: "error",
+            signal: controller.signal,
+          });
+          responseReceived = true;
+          if (!response.ok) {
+            throw new Error(`Diagnostics request failed with HTTP ${response.status}`);
+          }
+
+          const responseData = await response.json();
+          if (requestGeneration !== diagnosticsRequestGeneration) {
+            return;
+          }
+          const data = parseEndpointData(responseData);
+          if (data.kind === "diagnostics") {
+            renderDiagnostics(data.diagnostics);
+          } else {
+            renderLegacyUsage(data.usage);
+          }
+        } catch (error) {
+          if (requestGeneration !== diagnosticsRequestGeneration) {
+            return;
+          }
+          const permissionFailure =
+            !timedOut && !responseReceived
+              ? await localNetworkPermissionFailure(endpoint)
+              : undefined;
+          if (requestGeneration !== diagnosticsRequestGeneration) {
+            return;
+          }
+          let failureMessage = "Diagnostics request failed";
+          if (timedOut) {
+            failureMessage = `Diagnostics request timed out after ${DIAGNOSTICS_TIMEOUT_MS}ms`;
+          } else if (permissionFailure) {
+            failureMessage = permissionFailure;
+          } else if (error instanceof Error) {
+            failureMessage = error.message;
+          }
+          renderFailure(failureMessage);
+        } finally {
+          window.clearTimeout(timeout);
+          if (activeDiagnosticsController === controller) {
+            activeDiagnosticsController = undefined;
+            setLoading(false);
+          }
+        }
+      }
+
+      async function localNetworkPermissionFailure(endpoint) {
+        if (!endpoint || !isLoopbackHostname(endpoint.hostname)) {
+          return undefined;
+        }
+        if (typeof navigator === "undefined") {
+          return undefined;
+        }
+        const permissions = navigator.permissions;
+        if (!permissions || typeof permissions.query !== "function") {
+          return undefined;
         }
 
-        function requireFiniteNumber(value, field, options = {}) {
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new Error(`Invalid usage response: ${field} must be a finite number.`);
+        // Permission names are still evolving. Try the current fine-grained
+        // loopback name first, then Chromium's older compatibility alias.
+        for (const name of ["loopback-network", "local-network-access"]) {
+          try {
+            const permission = await permissions.query({ name });
+            if (!permission || typeof permission.state !== "string") {
+              return undefined;
+            }
+            return permission.state === "denied"
+              ? "This browser reports that local network access is blocked for this dashboard. Allow local network access for this site in browser settings, then retry."
+              : undefined;
+          } catch {
+            // Unsupported permission descriptors throw in some browsers. Try
+            // the compatibility name, then fall back to the network error.
           }
-          if (options.min !== undefined && value < options.min) {
-            throw new Error(`Invalid usage response: ${field} is below its minimum.`);
+        }
+        return undefined;
+      }
+
+      function isLoopbackHostname(hostname) {
+        const normalized = hostname.toLowerCase();
+        return (
+          normalized === "localhost" ||
+          normalized.endsWith(".localhost") ||
+          normalized === "[::1]" ||
+          /^127(?:\.\d{1,3}){3}$/.test(normalized)
+        );
+      }
+
+      function parseEndpointUrl(value) {
+        const rawEndpoint = String(value).trim();
+        const endpoint = new URL(rawEndpoint);
+        if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+          throw new Error("Endpoint must use http or https");
+        }
+        const authority = rawEndpoint.slice(rawEndpoint.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+        if (endpoint.username || endpoint.password || authority.includes("@")) {
+          throw new Error("Endpoint URLs cannot contain credentials");
+        }
+        if (rawEndpoint.includes("?") || rawEndpoint.includes("#")) {
+          throw new Error("Endpoint URLs cannot contain a query or fragment");
+        }
+        if (!["/diagnostics", "/diagnostics/", "/usage", "/usage/"].includes(endpoint.pathname)) {
+          throw new Error("Endpoint path must be /diagnostics or /usage with at most one trailing slash");
+        }
+        return endpoint;
+      }
+
+      function persistEndpoint(endpoint) {
+        const current = new URL(window.location.href);
+        current.searchParams.set("endpoint", endpoint.toString());
+        window.history.replaceState(null, "", current);
+      }
+
+      function parseEndpointData(value) {
+        if (isRecord(value) && isRecord(value.quota_snapshots)) {
+          return {
+            kind: "legacy-usage",
+            usage: parseLegacyUsageData(value),
+          };
+        }
+        return {
+          kind: "diagnostics",
+          diagnostics: parseDiagnosticsData(value),
+        };
+      }
+
+      function parseLegacyUsageData(value) {
+        if (!isRecord(value) || !isRecord(value.quota_snapshots)) {
+          throw new Error("Usage response has invalid quota snapshots");
+        }
+        const entries = Object.entries(value.quota_snapshots);
+        if (entries.length === 0 || entries.length > 100) {
+          throw new Error("Usage response has an invalid quota snapshot count");
+        }
+
+        const quotaSnapshots = Object.create(null);
+        for (const [name, quotaValue] of entries) {
+          if (!name || name.length > 100 || !isRecord(quotaValue)) {
+            throw new Error("Usage response has a malformed quota snapshot");
           }
-          if (options.max !== undefined && value > options.max) {
-            throw new Error(`Invalid usage response: ${field} is above its maximum.`);
+          if (typeof quotaValue.unlimited !== "boolean") {
+            throw new Error(`Usage response has invalid ${name}.unlimited`);
           }
+          const entitlement = finiteNumber(quotaValue.entitlement);
+          const remaining = finiteNumber(quotaValue.remaining);
+          const percentRemaining = finiteNumber(quotaValue.percent_remaining);
+          if (
+            entitlement === undefined
+            || remaining === undefined
+            || percentRemaining === undefined
+            || entitlement < 0
+            || remaining < 0
+            || (quotaValue.unlimited === false && remaining > entitlement)
+            || percentRemaining < 0
+            || percentRemaining > 100
+          ) {
+            throw new Error(`Usage response has invalid quota ${name}`);
+          }
+          quotaSnapshots[name] = {
+            entitlement,
+            percent_remaining: percentRemaining,
+            remaining,
+            unlimited: quotaValue.unlimited,
+          };
+        }
+
+        return {
+          copilot_plan: typeof value.copilot_plan === "string" ? value.copilot_plan : undefined,
+          quota_reset_date: typeof value.quota_reset_date === "string" ? value.quota_reset_date : undefined,
+          quota_snapshots: quotaSnapshots,
+        };
+      }
+
+      function parseDiagnosticsData(value) {
+        const data = requireRecord(value, "diagnostics response");
+        if (data.status !== "ready" && data.status !== "degraded") {
+          throw new Error("Diagnostics response has an invalid status");
+        }
+        if (typeof data.generated_at !== "string" || Number.isNaN(Date.parse(data.generated_at))) {
+          throw new Error("Diagnostics response has an invalid generated_at value");
+        }
+
+        const readiness = requireRecord(data.readiness, "readiness");
+        if (readiness.status !== "ready" && readiness.status !== "degraded") {
+          throw new Error("Diagnostics response has an invalid readiness status");
+        }
+        if (!Array.isArray(readiness.reasons) || !readiness.reasons.every((item) => typeof item === "string")) {
+          throw new Error("Diagnostics response has invalid readiness reasons");
+        }
+        if (readiness.warnings !== undefined && (!Array.isArray(readiness.warnings) || !readiness.warnings.every((item) => typeof item === "string"))) {
+          throw new Error("Diagnostics response has invalid readiness warnings");
+        }
+        validateModelCatalogStatus(readiness.modelCatalog);
+        if (!Array.isArray(data.models) || !data.models.every(isRecord)) {
+          throw new Error("Diagnostics response has invalid model profiles");
+        }
+
+        return {
+          status: data.status,
+          generatedAt: data.generated_at,
+          readiness,
+          models: data.models,
+          usage: parseDiagnosticsUsage(data.usage),
+        };
+      }
+
+      function parseDiagnosticsUsage(value) {
+        const usage = requireRecord(value, "usage");
+        if (usage.status === "available") {
+          return {
+            status: "available",
+            data: parseLegacyUsageData(usage.data),
+          };
+        }
+        if (usage.status === "unavailable") {
+          if (usage.error !== undefined && typeof usage.error !== "string") {
+            throw new Error("Diagnostics response has an invalid usage error");
+          }
+          return {
+            status: "unavailable",
+            error: usage.error,
+          };
+        }
+        throw new Error("Diagnostics response has an invalid usage status");
+      }
+
+      function validateModelCatalogStatus(value) {
+        if (value === undefined) {
+          return;
+        }
+        const catalog = requireRecord(value, "model catalog status");
+        if (!["fresh", "stale", "unavailable", "unknown"].includes(catalog.status)) {
+          throw new Error("Diagnostics response has an invalid model catalog status");
+        }
+        if (!Number.isSafeInteger(catalog.consecutiveRefreshFailures) || catalog.consecutiveRefreshFailures < 0) {
+          throw new Error("Diagnostics response has invalid model catalog failures");
+        }
+        for (const field of ["lastRefreshAttemptAt", "lastRefreshSuccessAt", "lastRefreshFailureAt"]) {
+          if (catalog[field] !== undefined && (!Number.isFinite(catalog[field]) || catalog[field] < 0)) {
+            throw new Error(`Diagnostics response has invalid model catalog ${field}`);
+          }
+        }
+      }
+
+      function requireRecord(value, field) {
+        if (!isRecord(value)) {
+          throw new Error(`Diagnostics response has invalid ${field}`);
+        }
+        return value;
+      }
+
+      function isRecord(value) {
+        return value !== null && typeof value === "object" && !Array.isArray(value);
+      }
+
+      function renderDiagnostics(data) {
+        const readiness = data.readiness;
+        const ready = data.status === "ready" && readiness.status === "ready";
+        const readyWithWarnings = data.status === "degraded" && readiness.status === "ready";
+        let statusLabel;
+        let statusSummary;
+        if (ready) {
+          statusLabel = "Proxy is ready";
+          statusSummary = "Authentication, model discovery, and upstream recovery controls are ready for requests.";
+        } else if (readyWithWarnings) {
+          statusLabel = "Proxy is ready with warnings";
+          statusSummary = "Requests can continue, but the retained model catalog needs a successful refresh.";
+        } else {
+          statusLabel = "Proxy needs attention";
+          statusSummary = "The process is running, but one or more dependencies are not ready for reliable requests.";
+        }
+        elements.statusDot.className = `status-dot ${ready ? "ready" : "degraded"}`;
+        setText(elements.statusLabel, statusLabel);
+        setText(elements.statusSummary, statusSummary);
+        setText(elements.generatedAt, `Snapshot ${formatDate(data.generatedAt)}`);
+        renderReasons(readiness.reasons, readiness.warnings || []);
+        renderRuntime(readiness, data.models.length);
+        renderModels(data.models, readiness.modelCatalog);
+        renderUsage(data.usage);
+      }
+
+      function renderLegacyUsage(usage) {
+        renderRuntime({});
+        renderModels();
+        renderUsage({ status: "available", data: usage });
+        elements.statusDot.className = "status-dot degraded";
+        setText(elements.statusLabel, "Quota data only");
+        setText(
+          elements.statusSummary,
+          "This legacy usage endpoint does not report readiness, authentication, recovery, concurrency, or model routing.",
+        );
+        setText(elements.generatedAt, `Legacy usage fetched ${formatDate(Date.now())}`);
+        elements.reasonList.replaceChildren();
+        const item = document.createElement("li");
+        item.textContent = "Proxy readiness was not checked";
+        elements.reasonList.append(item);
+      }
+
+      function renderReasons(reasons, warnings = []) {
+        elements.reasonList.replaceChildren();
+        const findings = [...reasons, ...warnings];
+        if (findings.length === 0) {
+          const item = document.createElement("li");
+          item.className = "ok";
+          item.textContent = "All readiness checks passed";
+          elements.reasonList.append(item);
+          return;
+        }
+
+        for (const reason of findings) {
+          const item = document.createElement("li");
+          item.textContent = REASON_LABELS[reason] || humanize(reason);
+          elements.reasonList.append(item);
+        }
+      }
+
+      function renderRuntime(readiness, modelsAvailable) {
+        const token = isRecord(readiness.token) ? readiness.token : {};
+        const recovery = isRecord(readiness.recovery) ? readiness.recovery : {};
+        const globalCircuit = isRecord(recovery.globalCircuit) ? recovery.globalCircuit : {};
+        const scopes = isRecord(recovery.scopes) ? recovery.scopes : {};
+        const metrics = isRecord(recovery.metrics) ? recovery.metrics : {};
+        const concurrency = isRecord(readiness.concurrency) ? readiness.concurrency : {};
+
+        setText(elements.accountType, valueText(readiness.accountType, "Unknown account"));
+        const modelCount = integerText(modelsAvailable);
+        setText(
+          elements.upstreamHost,
+          `${valueText(readiness.upstreamHost, "Unknown upstream")} · ${modelCount === "unknown" ? "model count unavailable" : `${modelCount} models`}`,
+        );
+
+        const tokenStatus = token.tokenAvailable === true
+          ? "Token available"
+          : token.tokenAvailable === false
+            ? "Token unavailable"
+            : "Token state unknown";
+        setText(elements.authStatus, tokenStatus);
+        const refreshStateKnown = [
+          token.refreshInFlight,
+          token.reactiveRefreshInFlight,
+          token.refreshScheduled,
+        ].every((value) => typeof value === "boolean");
+        const refreshState = token.refreshInFlight === true || token.reactiveRefreshInFlight === true
+          ? "refresh in flight"
+          : token.refreshScheduled === true
+            ? "refresh scheduled"
+            : refreshStateKnown
+              ? "refresh unscheduled"
+              : "refresh state unknown";
+        setText(elements.authDetail, `${formatExpiry(token.expiresInMs)} · ${refreshState}`);
+
+        const phase = valueText(globalCircuit.phase, "unknown");
+        setText(elements.recoveryStatus, `${capitalize(phase)} circuit`);
+        setText(
+          elements.recoveryDetail,
+          `${integerText(scopes.open)} open scopes · ${integerText(metrics.replayAttempts)} replay attempts`,
+        );
+
+        if (concurrency.enabled === false) {
+          setText(elements.concurrencyStatus, "Limit disabled");
+          setText(elements.concurrencyDetail, "Requests are not locally bounded");
+        } else if (concurrency.enabled === true) {
+          setText(elements.concurrencyStatus, `${integerText(concurrency.active)} / ${integerText(concurrency.maxConcurrency)} active`);
+          setText(
+            elements.concurrencyDetail,
+            `${integerText(concurrency.queued)} queued · ${integerText(concurrency.available)} slots available`,
+          );
+        } else {
+          setText(elements.concurrencyStatus, "Limit state unknown");
+          setText(elements.concurrencyDetail, "Concurrency diagnostics unavailable");
+        }
+      }
+
+      function renderModels(models, modelCatalog) {
+        const modelsKnown = Array.isArray(models);
+        const profiles = modelsKnown ? models : [];
+        elements.modelRows.replaceChildren();
+        const catalog = isRecord(modelCatalog) ? modelCatalog : {};
+        const staleSuffix = catalog.status === "stale"
+          ? formatStaleCatalogSuffix(catalog)
+          : "";
+        setText(
+          elements.modelCount,
+          modelsKnown
+            ? `${profiles.length} model${profiles.length === 1 ? "" : "s"} discovered${staleSuffix}`
+            : "Model catalog unavailable",
+        );
+
+        if (profiles.length === 0) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.className = "empty-state";
+          cell.colSpan = 8;
+          cell.textContent = modelsKnown
+            ? "The live model catalog is unavailable."
+            : "Diagnostics model data is unavailable.";
+          row.append(cell);
+          elements.modelRows.append(row);
+          return;
+        }
+
+        for (const model of profiles) {
+          const row = document.createElement("tr");
+          const identity = document.createElement("td");
+          const name = document.createElement("span");
+          name.className = "model-name";
+          name.textContent = valueText(model.displayName, valueText(model.id, "Unknown model"));
+          const id = document.createElement("span");
+          id.className = "model-id";
+          id.textContent = valueText(model.id, "unknown");
+          identity.append(name, id);
+          row.append(identity);
+          row.append(createTextCell(valueText(model.vendor, "—")));
+          row.append(createTextCell(formatTokenCount(model.contextWindow)));
+          row.append(createTextCell(formatTokenCount(model.maxOutputTokens)));
+
+          const routes = isRecord(model.routes) ? model.routes : {};
+          for (const routeName of ROUTE_COLUMNS) {
+            row.append(createRouteCell(routes[routeName]));
+          }
+          elements.modelRows.append(row);
+        }
+      }
+
+      function formatStaleCatalogSuffix(catalog) {
+        const failures = Number.isSafeInteger(catalog.consecutiveRefreshFailures)
+          ? catalog.consecutiveRefreshFailures
+          : 1;
+        const lastSuccessAt = finiteNumber(catalog.lastRefreshSuccessAt);
+        const lastSuccess = lastSuccessAt === undefined
+          ? "last successful refresh unknown"
+          : `last refreshed ${formatDate(lastSuccessAt)}`;
+        return ` · stale after ${failures} failed refresh${failures === 1 ? "" : "es"}; ${lastSuccess}`;
+      }
+
+      function createTextCell(text) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        return cell;
+      }
+
+      function createRouteCell(routeValue) {
+        const cell = document.createElement("td");
+        cell.className = "route-cell";
+        if (!isRecord(routeValue)) {
+          cell.textContent = "—";
+          return cell;
+        }
+
+        const mode = valueText(routeValue.mode, "unknown");
+        const badge = document.createElement("span");
+        badge.className = `route-badge ${routeClass(mode)}`;
+        badge.textContent = mode;
+        const source = valueText(routeValue.source, "unknown source");
+        const reasonCode = valueText(routeValue.reasonCode, "unspecified");
+        badge.title = `${source} · ${humanize(reasonCode)}`;
+        cell.append(badge);
+
+        if (typeof routeValue.maturity === "string" && routeValue.maturity) {
+          const maturity = document.createElement("span");
+          maturity.className = "maturity";
+          maturity.textContent = routeValue.maturity;
+          cell.append(maturity);
+        }
+        return cell;
+      }
+
+      function routeClass(mode) {
+        return ["direct", "translated", "unsupported"].includes(mode) ? mode : "";
+      }
+
+      function renderUsage(usage) {
+        elements.quotaSummary.replaceChildren();
+        elements.quotaGrid.replaceChildren();
+        if (usage.status !== "available" || !isRecord(usage.data)) {
+          const loading = usage.status === "loading";
+          setText(elements.quotaState, loading ? "Loading usage…" : "Usage unavailable");
+          const message = document.createElement("p");
+          message.className = "empty-state";
+          message.textContent = valueText(
+            usage.error,
+            loading ? "Waiting for quota data." : "Copilot usage could not be loaded.",
+          );
+          elements.quotaGrid.append(message);
+          return;
+        }
+
+        const usageData = usage.data;
+        const snapshots = isRecord(usageData.quota_snapshots) ? usageData.quota_snapshots : {};
+        setText(elements.quotaState, "Usage available");
+        appendSummaryItem(`Plan: ${valueText(usageData.copilot_plan, "unknown")}`);
+        appendSummaryItem(`Resets: ${valueText(usageData.quota_reset_date, "unknown")}`);
+
+        let rendered = 0;
+        for (const quotaName of QUOTA_ORDER) {
+          const quota = snapshots[quotaName];
+          if (!isRecord(quota)) {
+            continue;
+          }
+          elements.quotaGrid.append(createQuotaCard(quotaName, quota));
+          rendered += 1;
+        }
+
+        if (rendered === 0) {
+          const message = document.createElement("p");
+          message.className = "empty-state";
+          message.textContent = "No quota snapshots were returned.";
+          elements.quotaGrid.append(message);
+        }
+      }
+
+      function appendSummaryItem(text) {
+        const item = document.createElement("span");
+        item.textContent = text;
+        elements.quotaSummary.append(item);
+      }
+
+      function createQuotaCard(quotaName, quota) {
+        const card = document.createElement("article");
+        card.className = "quota-card";
+        const title = document.createElement("h3");
+        title.textContent = QUOTA_LABELS[quotaName] || humanize(quotaName);
+        const value = document.createElement("p");
+        value.className = "quota-value";
+
+        const unlimited = quota.unlimited === true;
+        const percent = finiteNumber(quota.percent_remaining);
+        value.textContent = unlimited ? "Unlimited" : percent === undefined ? "Unknown" : `${Math.round(percent)}% left`;
+
+        const track = document.createElement("div");
+        track.className = "progress-track";
+        const progress = document.createElement("div");
+        progress.className = "progress-value";
+        progress.style.width = unlimited ? "100%" : `${clamp(percent ?? 0, 0, 100)}%`;
+        track.append(progress);
+
+        const detail = document.createElement("p");
+        detail.className = "quota-detail";
+        detail.textContent = unlimited
+          ? "No metered entitlement limit"
+          : `${numberText(quota.remaining)} remaining of ${numberText(quota.entitlement)}`;
+        card.append(title, value, track, detail);
+        return card;
+      }
+
+      function renderLoading() {
+        // Clear the previous endpoint's snapshot before starting network work.
+        // A slow endpoint must never inherit a ready state, model list, or quota
+        // display from the endpoint that was shown before it.
+        renderRuntime({});
+        renderModels();
+        renderUsage({
+          status: "loading",
+          error: "Waiting for quota data from the configured endpoint.",
+        });
+        elements.statusDot.className = "status-dot";
+        setText(elements.statusLabel, "Loading diagnostics…");
+        setText(
+          elements.statusSummary,
+          "Contacting the configured endpoint. Previous endpoint data has been cleared.",
+        );
+        setText(elements.generatedAt, "Snapshot time unavailable");
+        elements.reasonList.replaceChildren();
+        const item = document.createElement("li");
+        item.textContent = "Waiting for a snapshot";
+        elements.reasonList.append(item);
+      }
+
+      function renderFailure(message) {
+        // Never present data from a previously successful endpoint as though it
+        // belongs to the endpoint that just failed. Reuse the normal renderers
+        // so every runtime, model, and quota field moves to an explicit
+        // unavailable state before the failure banner is shown.
+        renderRuntime({});
+        renderModels();
+        renderUsage({
+          status: "unavailable",
+          error: "Diagnostics data is unavailable for the configured endpoint.",
+        });
+        elements.errorBanner.className = "error-banner visible";
+        setText(elements.errorBanner, message);
+        elements.statusDot.className = "status-dot error";
+        setText(elements.statusLabel, "Diagnostics unavailable");
+        setText(
+          elements.statusSummary,
+          "The dashboard could not obtain a valid snapshot. Confirm the proxy is running and that the endpoint is reachable from this browser.",
+        );
+        setText(elements.generatedAt, "Snapshot time unavailable");
+        elements.reasonList.replaceChildren();
+        const item = document.createElement("li");
+        item.textContent = message;
+        elements.reasonList.append(item);
+      }
+
+      function hideError() {
+        elements.errorBanner.className = "error-banner";
+        elements.errorBanner.textContent = "";
+      }
+
+      function setLoading(loading) {
+        elements.refreshButton.disabled = false;
+        elements.refreshButton.setAttribute("aria-busy", String(loading));
+        elements.refreshButton.textContent = loading ? "Retry" : "Refresh";
+      }
+
+      function setText(element, value) {
+        element.textContent = String(value);
+      }
+
+      function formatDate(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? "unknown" : date.toLocaleString();
+      }
+
+      function formatExpiry(value) {
+        const milliseconds = finiteNumber(value);
+        if (milliseconds === undefined) {
+          return "expiry unknown";
+        }
+        if (milliseconds <= 0) {
+          return "expired";
+        }
+        const minutes = Math.ceil(milliseconds / 60_000);
+        return minutes < 60
+          ? `expires in ${minutes}m`
+          : `expires in ${Math.ceil(minutes / 60)}h`;
+      }
+
+      function formatTokenCount(value) {
+        const number = finiteNumber(value);
+        return number === undefined ? "—" : new Intl.NumberFormat().format(number);
+      }
+
+      function finiteNumber(value) {
+        return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+      }
+
+      function numberText(value) {
+        const number = finiteNumber(value);
+        return number === undefined ? "unknown" : new Intl.NumberFormat().format(number);
+      }
+
+      function integerText(value) {
+        const number = finiteNumber(value);
+        return number === undefined ? "unknown" : String(Math.max(0, Math.trunc(number)));
+      }
+
+      function valueText(value, fallback) {
+        if (typeof value === "string" && value.trim()) {
           return value;
         }
-
-        function parseUsageData(value) {
-          if (!isRecord(value) || !isRecord(value.quota_snapshots)) {
-            throw new Error("Invalid usage response: quota_snapshots must be an object.");
-          }
-
-          const entries = Object.entries(value.quota_snapshots);
-          if (entries.length === 0 || entries.length > 100) {
-            throw new Error("Invalid usage response: quota_snapshots has an invalid size.");
-          }
-
-          const quotaSnapshots = Object.create(null);
-          for (const [name, details] of entries) {
-            if (!name || name.length > 100 || !isRecord(details)) {
-              throw new Error("Invalid usage response: malformed quota entry.");
-            }
-
-            const entitlement = requireFiniteNumber(
-              details.entitlement,
-              `${name}.entitlement`,
-              { min: 0 },
-            );
-            const remaining = requireFiniteNumber(
-              details.remaining,
-              `${name}.remaining`,
-              { min: 0 },
-            );
-            const percentRemaining = requireFiniteNumber(
-              details.percent_remaining,
-              `${name}.percent_remaining`,
-              { min: 0, max: 100 },
-            );
-            if (typeof details.unlimited !== "boolean") {
-              throw new Error(`Invalid usage response: ${name}.unlimited must be a boolean.`);
-            }
-            if (!details.unlimited && remaining > entitlement) {
-              throw new Error(`Invalid usage response: ${name}.remaining exceeds entitlement.`);
-            }
-
-            quotaSnapshots[name] = {
-              ...details,
-              entitlement,
-              percent_remaining: percentRemaining,
-              remaining,
-              unlimited: details.unlimited,
-            };
-          }
-
-          return { ...value, quota_snapshots: quotaSnapshots };
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return String(value);
         }
-
-        function parseEndpointUrl(value) {
-          let endpoint;
-          try {
-            endpoint = new URL(value);
-          } catch {
-            throw new Error("Endpoint URL must be a valid absolute URL.");
-          }
-          if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
-            throw new Error("Endpoint URL must use HTTP or HTTPS.");
-          }
-          if (endpoint.username || endpoint.password) {
-            throw new Error("Endpoint URL must not contain credentials.");
-          }
-          return endpoint.href;
+        if (typeof value === "boolean") {
+          return value ? "true" : "false";
         }
+        return fallback;
+      }
 
-        // --- Rendering Logic ---
+      function humanize(value) {
+        return String(value)
+          .replace(/[_-]+/g, " ")
+          .replace(/\b\w/g, (character) => character.toUpperCase());
+      }
 
-        function escapeHtml(value) {
-          return String(value).replace(/[&<>"']/g, (char) => {
-            switch (char) {
-              case "&":
-                return "&amp;";
-              case "<":
-                return "&lt;";
-              case ">":
-                return "&gt;";
-              case '"':
-                return "&quot;";
-              case "'":
-                return "&#39;";
-              default:
-                return char;
-            }
-          });
-        }
+      function capitalize(value) {
+        return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+      }
 
-        function iconSvg(name, className = "", style = "") {
-          const icons = {
-            "alert-triangle": `
-              <path d="M21.7 18 13.7 4a2 2 0 0 0-3.4 0L2.3 18a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3Z"></path>
-              <path d="M12 9v4"></path>
-              <path d="M12 17h.01"></path>
-            `,
-            "bar-chart-big": `
-              <path d="M3 3v18h18"></path>
-              <rect x="7" y="10" width="4" height="7" rx="1"></rect>
-              <rect x="15" y="5" width="4" height="12" rx="1"></rect>
-            `,
-            "file-text": `
-              <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
-              <path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
-              <path d="M10 9H8"></path>
-              <path d="M16 13H8"></path>
-              <path d="M16 17H8"></path>
-            `,
-            info: `
-              <circle cx="12" cy="12" r="10"></circle>
-              <path d="M12 16v-4"></path>
-              <path d="M12 8h.01"></path>
-            `,
-          };
-          const paths = icons[name] || "";
-          return `
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              class="${className}"
-              style="${style}"
-              aria-hidden="true"
-            >${paths}</svg>
-          `;
-        }
-
-        /**
-         * Renders the entire UI based on the current state.
-         */
-        function render() {
-          if (state.isLoading) {
-            contentArea.innerHTML = renderSpinner();
-            return;
-          }
-          if (state.error) {
-            contentArea.innerHTML = renderError(state.error);
-          } else if (state.data) {
-            contentArea.innerHTML = `
-                        ${renderUsageQuotas(state.data.quota_snapshots)}
-                        ${renderDetailedData(state.data)}
-                    `;
-          } else {
-            contentArea.innerHTML = renderWelcomeMessage();
-          }
-        }
-
-        /**
-         * Renders the "Usage Quotas" section with progress bars.
-         * @param {object} snapshots - The quota_snapshots object from the API response.
-         * @returns {string} HTML string for the usage quotas section.
-         */
-        function renderUsageQuotas(snapshots) {
-          if (!snapshots) return "";
-
-          const quotaCards = Object.entries(snapshots)
-            .map(([key, value]) => {
-              return renderQuotaCard(key, value);
-            })
-            .join("");
-
-          return `
-                    <section id="usage-quotas" class="mb-6">
-                        <h2 class="text-xl font-bold mb-3 flex items-center gap-2" style="color: var(--color-fg-lightest);">
-                            ${iconSvg("bar-chart-big", "h-5 w-5")} Usage Quotas
-                        </h2>
-                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            ${quotaCards}
-                        </div>
-                    </section>
-                `;
-        }
-
-        /**
-         * Renders a single quota card.
-         * @param {string} title - The name of the quota (e.g., 'chat').
-         * @param {object} details - The details object for the quota.
-         * @returns {string} HTML string for a single card.
-         */
-        function renderQuotaCard(title, details) {
-          const { entitlement, remaining, percent_remaining, unlimited } =
-            details;
-          const displayTitle = escapeHtml(title.replace(/_/g, " "));
-
-          const percentUsed = unlimited ? 0 : 100 - percent_remaining;
-          const used = unlimited
-            ? "N/A"
-            : (entitlement - remaining).toLocaleString();
-
-          let progressBarColor = "var(--color-green)";
-          if (percentUsed > 75) progressBarColor = "var(--color-yellow)";
-          if (percentUsed > 90) progressBarColor = "var(--color-red)";
-          if (unlimited) progressBarColor = "var(--color-blue)";
-
-          return `
-                    <div class="p-4 border" style="background-color: var(--color-bg); border-color: var(--color-bg-light-2);">
-                        <div class="flex justify-between items-center mb-2">
-                            <h3 class="text-md font-semibold capitalize" style="color: var(--color-fg-lightest);">${displayTitle}</h3>
-                            ${
-                              unlimited
-                                ? `<span class="px-2 py-0.5 text-xs font-medium" style="color: var(--color-blue-accent); background-color: var(--color-bg-light-1);">Unlimited</span>`
-                                : `<span class="text-sm font-mono" style="color: var(--color-fg-medium);">${percentUsed.toFixed(1)}% Used</span>`
-                            }
-                        </div>
-                        <div class="mb-3">
-                             <div class="w-full progress-bar-bg h-2">
-                                 <div class="progress-bar-fg h-2" style="width: ${unlimited ? 100 : percentUsed}%; background-color: ${progressBarColor};"></div>
-                             </div>
-                        </div>
-                        <div class="flex justify-between text-xs font-mono" style="color: var(--color-fg-dark);">
-                            <span>${used} / ${unlimited ? "∞" : entitlement.toLocaleString()}</span>
-                            <span>${unlimited ? "∞" : remaining.toLocaleString()} remaining</span>
-                        </div>
-                    </div>
-                `;
-        }
-
-        /**
-         * Recursively builds a formatted HTML list from a JSON object.
-         * @param {object} obj - The object to format.
-         * @returns {string} HTML string for the formatted list.
-         */
-        function formatObject(obj) {
-          if (obj === null || typeof obj !== "object") {
-            return `<span style="color: var(--color-green-accent);">${escapeHtml(JSON.stringify(obj))}</span>`;
-          }
-
-          return (
-            '<div class="pl-4">' +
-            Object.entries(obj)
-              .map(([key, value]) => {
-                const formattedKey = escapeHtml(key.replace(/_/g, " "));
-                let displayValue;
-
-                if (Array.isArray(value)) {
-                  displayValue =
-                    value.length > 0
-                      ? `<span style='color: var(--color-gray-accent)'>[...${value.length} items]</span>`
-                      : `<span style='color: var(--color-gray-accent)'>[]</span>`;
-                } else if (typeof value === "object" && value !== null) {
-                  displayValue = formatObject(value);
-                } else if (typeof value === "boolean") {
-                  displayValue = `<span class="font-semibold" style="color: ${value ? "var(--color-green-accent)" : "var(--color-red-accent)"}">${value}</span>`;
-                } else {
-                  displayValue = `<span style="color: var(--color-blue-accent);">${escapeHtml(JSON.stringify(value))}</span>`;
-                }
-
-                return `<div class="mt-1">
-                                <span class="capitalize font-semibold" style="color: var(--color-fg-medium);">${formattedKey}:</span>
-                                ${typeof value === "object" && value !== null && !Array.isArray(value) ? displayValue : ` ${displayValue}`}
-                           </div>`;
-              })
-              .join("") +
-            "</div>"
-          );
-        }
-
-        /**
-         * Renders the section with the full, formatted API response.
-         * @param {object} data - The full API response data.
-         * @returns {string} HTML string for the full data section.
-         */
-        function renderDetailedData(data) {
-          const formattedDetails = formatObject(data);
-          return `
-                    <section id="detailed-data">
-                        <h2 class="text-xl font-bold mb-3 flex items-center gap-2" style="color: var(--color-fg-lightest);">
-                           ${iconSvg("file-text", "h-5 w-5")} Detailed Information
-                        </h2>
-                        <div class="border p-4 relative font-mono text-xs" style="background-color: var(--color-bg-darkest); border-color: var(--color-bg-light-2);">
-                            ${formattedDetails}
-                        </div>
-                    </section>
-                `;
-        }
-
-        /**
-         * Renders a loading spinner.
-         * @returns {string} HTML string for the spinner.
-         */
-        function renderSpinner() {
-          return `
-            <div class="flex justify-center items-center py-20">
-                <div class="animate-spin h-12 w-12 rounded-full border-4 border-transparent border-t-4" style="border-top-color: var(--color-blue);"></div>
-            </div>`;
-        }
-
-        /**
-         * Renders an error message box.
-         * @param {string} message - The error message to display.
-         * @returns {string} HTML string for the error message.
-         */
-        function renderError(message) {
-          const container = document.createElement("div");
-          container.className = "p-3 border";
-          container.style.backgroundColor = "rgba(204, 36, 29, 0.2)";
-          container.style.borderColor = "var(--color-red)";
-          container.style.color = "var(--color-red-accent)";
-          container.setAttribute("role", "alert");
-
-          container.innerHTML = `
-                <div class="flex items-center">
-                    ${iconSvg("alert-triangle", "h-5 w-5 mr-3")}
-                    <div>
-                        <p class="font-bold text-sm">An Error Occurred</p>
-                        <p class="text-xs">${escapeHtml(message)}</p>
-                    </div>
-                </div>
-            `;
-          return container.outerHTML;
-        }
-
-        /**
-         * Renders a welcome message when the page first loads.
-         * @returns {string} HTML string for the welcome message.
-         */
-        function renderWelcomeMessage() {
-          return `
-            <div class="text-center py-16 px-4 border" style="background-color: var(--color-bg-soft); border-color: var(--color-bg-light-2);">
-                ${iconSvg("info", "mx-auto h-10 w-10", "color: var(--color-gray-accent);")}
-                <h3 class="mt-2 text-lg font-semibold" style="color: var(--color-fg-lightest);">Welcome!</h3>
-                <p class="mt-1 text-sm" style="color: var(--color-gray);">Enter an API endpoint URL and click "Fetch" to see usage data.</p>
-            </div>
-          `;
-        }
-
-        // --- Data Fetching ---
-
-        /**
-         * Fetches data from the specified API endpoint.
-         */
-        async function fetchData() {
-          const inputUrl = endpointUrlInput.value.trim();
-          if (!inputUrl) {
-            state.error = "Endpoint URL cannot be empty.";
-            state.isLoading = false;
-            render();
-            return;
-          }
-
-          state.isLoading = true;
-          state.error = null;
-          render();
-
-          try {
-            const url = parseEndpointUrl(inputUrl);
-            const response = await fetch(url);
-            if (!response.ok) {
-              throw new Error(
-                `Request failed with status ${response.status}: ${response.statusText}`
-              );
-            }
-            const jsonData = await response.json();
-            state.data = parseUsageData(jsonData);
-          } catch (error) {
-            console.error("Usage fetch failed.");
-            state.data = null;
-            state.error =
-              error instanceof Error ? error.message : "Unknown fetch error.";
-          } finally {
-            state.isLoading = false;
-            render();
-          }
-        }
-
-        // --- Event Handlers & Initialization ---
-
-        /**
-         * Handles the form submission to trigger a data fetch.
-         * @param {Event} event - The form submission event.
-         */
-        function handleFormSubmit(event) {
-          event.preventDefault();
-          const url = endpointUrlInput.value.trim();
-
-          // Update URL query parameter, catching potential security errors in sandboxed environments
-          try {
-            const currentUrl = new URL(window.location);
-            currentUrl.searchParams.set("endpoint", url);
-            window.history.pushState({}, "", currentUrl);
-          } catch (e) {
-            console.warn("Could not update URL: ", e.message);
-          }
-
-          fetchData();
-        }
-
-        /**
-         * Initializes the application.
-         */
-        function init() {
-          endpointForm.addEventListener("submit", handleFormSubmit);
-
-          // Get endpoint from URL param on load
-          const urlParams = new URLSearchParams(window.location.search);
-          const endpointFromUrl = urlParams.get("endpoint");
-
-          if (endpointFromUrl) {
-            endpointUrlInput.value = endpointFromUrl;
-            fetchData();
-          } else {
-            endpointUrlInput.value = DEFAULT_ENDPOINT;
-            render(); // Render initial welcome message
-          }
-        }
-
-        // Start the app
-        init();
-      });
+      function clamp(value, minimum, maximum) {
+        return Math.min(maximum, Math.max(minimum, value));
+      }
     </script>
-
-    <footer
-      class="text-center py-4 text-xs"
-      style="color: var(--color-gray-accent)"
-    >
-      <p>
-        Vibe coded by
-        <a
-          href="https://gemini.google.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="underline transition-colors"
-          style="color: var(--color-fg-dark)"
-        >
-          Gemini
-        </a>
-        - Based on
-        <a
-          href="https://github.com/uheej0625/copilot-usage-viewer"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="underline transition-colors"
-          style="color: var(--color-fg-dark)"
-        >
-          copilot-usage-viewer</a
-        >
-      </p>
-    </footer>
   </body>
 </html>

@@ -21,7 +21,9 @@
     "copilot-proxy": "./dist/main.js"
   },
   "files": [
-    "dist"
+    "SECURITY.md",
+    "dist",
+    "docs"
   ],
   "engines": {
     "node": ">=22.19.0",
@@ -59,7 +61,6 @@
     "https-proxy-agent": "^7.0.6",
     "proxy-from-env": "^2.1.0",
     "srvx": "^0.11.15",
-    "tiny-invariant": "^1.3.3",
     "undici": "^8.7.0",
     "unpdf": "^1.6.2",
     "ws": "^8.18.3",

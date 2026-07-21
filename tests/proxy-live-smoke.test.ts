@@ -615,13 +615,19 @@ describeLive('Proxy live smoke', () => {
       expect(body.token).toBe(state.copilotToken)
     }, TIMEOUT)
 
-    test('/usage → returns Copilot usage payload', async () => {
+    test('/usage → returns only public Copilot quota fields', async () => {
       const res = await sendJsonRequest('/usage', undefined, { method: 'GET' })
 
       expect(res.status).toBe(200)
       const body = await parseJson<Record<string, unknown>>(res)
+      expect(Object.keys(body).sort()).toEqual([
+        'copilot_plan',
+        'quota_reset_date',
+        'quota_snapshots',
+      ])
       expect(typeof body.copilot_plan).toBe('string')
-      expect(typeof body.access_type_sku).toBe('string')
+      expect(typeof body.quota_reset_date).toBe('string')
+      expect(body.quota_snapshots).toBeObject()
     }, TIMEOUT)
   })
 })

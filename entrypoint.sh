@@ -5,8 +5,9 @@ health_port_file=${COPILOT_PROXY_HEALTH_PORT_FILE:-/tmp/copilot-proxy-health-por
 
 if [ "${1:-}" = "--healthcheck" ]; then
   # Docker healthcheck processes inherit the container's configured
-  # environment, so scrub credential aliases before invoking wget too.
-  unset GH_TOKEN GITHUB_TOKEN
+  # environment, so scrub credential and proxy aliases before invoking wget.
+  unset GH_TOKEN GITHUB_TOKEN HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY \
+    http_proxy https_proxy no_proxy all_proxy
   IFS= read -r health_port < "$health_port_file"
   case "$health_port" in
     ''|*[!0-9]*)
@@ -16,7 +17,7 @@ if [ "${1:-}" = "--healthcheck" ]; then
   if [ "$health_port" -lt 1 ] || [ "$health_port" -gt 65535 ]; then
     exit 1
   fi
-  exec wget --spider -q "http://127.0.0.1:${health_port}/"
+  exec wget -Y off --spider -q "http://127.0.0.1:${health_port}/"
 fi
 
 # Record the same public --port syntax accepted by the CLI. The healthcheck is
@@ -48,7 +49,7 @@ case "${1:-}" in
     shift
     exec bun run dist/main.js start "$@"
     ;;
-  auth|check-usage|debug|stop|restart|status|logs|enable|disable)
+  setup|models|doctor|auth|check-usage|debug|stop|restart|status|logs|enable|disable)
     exec bun run dist/main.js "$@"
     ;;
   *)

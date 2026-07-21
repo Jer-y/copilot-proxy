@@ -26,6 +26,32 @@ describe('container entrypoint security', () => {
     expect(entrypoint).toContain('unset GH_TOKEN GITHUB_TOKEN')
   })
 
+  test('dispatches advertised diagnostic commands instead of starting the server', async () => {
+    const entrypoint = await readFile(ENTRYPOINT_PATH, 'utf8')
+    const entrypointLines = entrypoint.split('\n')
+    const directCommandBranchIndex = entrypointLines.findIndex(line =>
+      line.includes('doctor') && line.trimEnd().endsWith(')'),
+    )
+
+    expect(directCommandBranchIndex).toBeGreaterThanOrEqual(0)
+    const directCommands = entrypointLines[directCommandBranchIndex]
+      ?.trim()
+      .replace(/\)$/, '')
+      .split('|') ?? []
+    expect(directCommands).toContain('setup')
+    expect(directCommands).toContain('models')
+    expect(directCommands).toContain('doctor')
+    expect(entrypointLines[directCommandBranchIndex + 1]?.trim()).toBe(
+      'exec bun run dist/main.js "$@"',
+    )
+
+    const syntaxCheck = spawnSync('sh', ['-n', fileURLToPath(ENTRYPOINT_PATH)], {
+      encoding: 'utf8',
+    })
+    expect(syntaxCheck.status).toBe(0)
+    expect(syntaxCheck.stderr).toBe('')
+  })
+
   test('resolves every supported long, short, equals, compact, and clustered port form', () => {
     const cases: Array<{ args: string[], expected: string }> = [
       { args: [], expected: '4399' },
@@ -67,6 +93,66 @@ describe('container entrypoint security', () => {
       })
       expect(result.status).toBe(1)
       expect(fs.existsSync(path.join(dataDirectory, 'github_token'))).toBe(false)
+    }
+    finally {
+      fs.rmSync(tempDirectory, { force: true, recursive: true })
+    }
+  })
+
+  test('healthcheck bypasses and removes every ambient proxy alias', () => {
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-health-proxy-'))
+    const portFile = path.join(tempDirectory, 'port')
+    const wgetArgsFile = path.join(tempDirectory, 'wget-args')
+    const wgetPath = path.join(tempDirectory, 'wget')
+    const proxyKeys = [
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'NO_PROXY',
+      'ALL_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'no_proxy',
+      'all_proxy',
+    ]
+    const unsetAssertions = proxyKeys
+      .map(key => `[ -z "\${${key}+x}" ] || exit 91`)
+      .join('\n')
+
+    fs.writeFileSync(portFile, '4399\n', { mode: 0o600 })
+    fs.writeFileSync(wgetPath, `#!/bin/sh
+set -eu
+${unsetAssertions}
+[ -z "\${GH_TOKEN+x}" ] || exit 92
+[ -z "\${GITHUB_TOKEN+x}" ] || exit 93
+printf '%s\n' "$@" > "$COPILOT_PROXY_TEST_WGET_ARGS"
+`, { mode: 0o700 })
+
+    try {
+      const proxyEnvironment = Object.fromEntries(
+        proxyKeys.map(key => [key, 'http://ambient-proxy.invalid:8080']),
+      )
+      const result = spawnSync('sh', [fileURLToPath(ENTRYPOINT_PATH), '--healthcheck'], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ...proxyEnvironment,
+          COPILOT_PROXY_HEALTH_PORT_FILE: portFile,
+          COPILOT_PROXY_TEST_WGET_ARGS: wgetArgsFile,
+          GH_TOKEN: 'must-be-removed',
+          GITHUB_TOKEN: 'must-also-be-removed',
+          PATH: `${tempDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+        },
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stderr).toBe('')
+      expect(fs.readFileSync(wgetArgsFile, 'utf8').trim().split('\n')).toEqual([
+        '-Y',
+        'off',
+        '--spider',
+        '-q',
+        'http://127.0.0.1:4399/',
+      ])
     }
     finally {
       fs.rmSync(tempDirectory, { force: true, recursive: true })

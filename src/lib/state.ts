@@ -8,6 +8,7 @@ export interface State {
 
   accountType: string
   models?: ModelsResponse
+  modelCatalogLifecycle?: ModelCatalogLifecycle
   vsCodeVersion?: string
 
   manualApprove: boolean
@@ -20,6 +21,13 @@ export interface State {
 
   // Optional global limiter for Copilot upstream request work.
   concurrencyLimiter?: AsyncConcurrencyLimiter
+}
+
+export interface ModelCatalogLifecycle {
+  consecutiveRefreshFailures: number
+  lastRefreshAttemptAt: number
+  lastRefreshFailureAt?: number
+  lastRefreshSuccessAt?: number
 }
 
 export const state: State = {

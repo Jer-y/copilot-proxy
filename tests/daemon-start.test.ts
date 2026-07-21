@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 
 import { saveDaemonConfig } from '~/daemon/config'
+import { NATIVE_SERVICE_ENV_SCHEMA_VERSION } from '~/daemon/service-env'
 import {
   persistLegacyDaemonState,
   prepareDaemonEnvironment,
@@ -27,13 +28,68 @@ afterEach(() => {
 })
 
 describe('legacy daemon preflight state', () => {
-  test('prepares a fresh environment without persisting it before preflight', () => {
+  test('prepares a sanitized fresh environment with the live runtime path before preflight', () => {
     fs.rmSync(PATHS.DAEMON_ENV, { force: true })
 
-    const environment = prepareDaemonEnvironment(baseConfig)
+    const secretKeys = [
+      'GH_TOKEN',
+      'GITHUB_TOKEN',
+      'COPILOT_TOKEN',
+      'OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'AZURE_OPENAI_API_KEY',
+      'AWS_SECRET_ACCESS_KEY',
+    ] as const
+    const originalSecrets = new Map(secretKeys.map(key => [key, process.env[key]]))
 
-    expect(environment.PATH).toBe(process.env.PATH)
-    expect(fs.existsSync(PATHS.DAEMON_ENV)).toBe(false)
+    try {
+      for (const key of secretKeys)
+        process.env[key] = `ambient-${key.toLowerCase()}`
+
+      // Bun 1.3.12 exposes the real Windows `Path` through process.env.PATH,
+      // but spreading process.env produces a plain object with only `Path`.
+      // Exercise the real process environment so this cannot pass through a
+      // Linux-only fixture that already uses the canonical `PATH` spelling.
+      const expectedPath = process.env.PATH
+      expect(expectedPath).toBeTruthy()
+
+      const environment = prepareDaemonEnvironment(baseConfig)
+
+      expect(environment.PATH).toBe(expectedPath)
+      expect(Object.keys(environment).filter(key => key.toUpperCase() === 'PATH')).toEqual(['PATH'])
+      for (const key of secretKeys)
+        expect(environment[key]).toBeUndefined()
+
+      if (process.platform === 'win32') {
+        const windowsBootstrapKeys = [
+          'APPDATA',
+          'LOCALAPPDATA',
+          'PROGRAMDATA',
+          'USERPROFILE',
+          'HOMEDRIVE',
+          'HOMEPATH',
+          'SystemRoot',
+          'WINDIR',
+          'COMSPEC',
+          'PATHEXT',
+        ] as const
+        for (const key of windowsBootstrapKeys) {
+          const value = process.env[key]
+          if (value !== undefined)
+            expect(environment[key]).toBe(value)
+        }
+      }
+
+      expect(fs.existsSync(PATHS.DAEMON_ENV)).toBe(false)
+    }
+    finally {
+      for (const [key, value] of originalSecrets) {
+        if (value === undefined)
+          delete process.env[key]
+        else
+          process.env[key] = value
+      }
+    }
   })
 
   test('rejects an invalid persisted environment before restart can stop the daemon', () => {
@@ -75,7 +131,10 @@ describe('legacy daemon preflight state', () => {
     )
 
     expect(JSON.parse(fs.readFileSync(PATHS.DAEMON_ENV, 'utf8'))).toEqual({
-      COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal',
+      version: NATIVE_SERVICE_ENV_SCHEMA_VERSION,
+      environment: {
+        COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal',
+      },
     })
     expect(JSON.parse(fs.readFileSync(PATHS.DAEMON_JSON, 'utf8'))).toMatchObject({
       port: 4500,

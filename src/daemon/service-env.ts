@@ -3,7 +3,7 @@ import process from 'node:process'
 
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { PATHS } from '~/lib/paths'
-import { PROXY_ENV_KEYS, resolveProxyForUrlFromEnvironment, withoutProxyEnvironment } from '~/lib/proxy-environment'
+import { PROXY_ENV_KEYS, resolveProxyForUrlFromEnvironment } from '~/lib/proxy-environment'
 
 export const SERVICE_SECURITY_ENV_KEYS = [
   'COPILOT_PROXY_ALLOWED_HOSTS',
@@ -19,11 +19,61 @@ export const SERVICE_TLS_ENV_KEYS = [
   'SSL_CERT_DIR',
 ] as const
 
-const MANAGED_SERVICE_ENV_KEYS = [
+export const MANAGED_SERVICE_ENV_KEYS = [
   ...SERVICE_SECURITY_ENV_KEYS,
   ...SERVICE_TLS_ENV_KEYS,
   ...PROXY_ENV_KEYS,
 ] as const
+
+export const NATIVE_SERVICE_ENV_SCHEMA_VERSION = 1 as const
+
+const MANAGED_SERVICE_ENV_KEY_SET = new Set<string>(MANAGED_SERVICE_ENV_KEYS)
+
+const SERVICE_BOOTSTRAP_PASSTHROUGH_ENV_KEYS = [
+  // Runtime lookup and user-home state. The service definition itself pins the
+  // application data directory, but GitHub CLI and OS credential helpers still
+  // need the real user home and executable search path.
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LC_MESSAGES',
+  'TERM',
+  'TZ',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'NODE_ENV',
+  'BUN_INSTALL',
+  'BUN_INSTALL_BIN',
+  'XDG_DATA_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_STATE_HOME',
+  'XDG_CACHE_HOME',
+  'COPILOT_PROXY_DATA_DIR',
+  // Windows user/profile and process-launch essentials.
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'SystemRoot',
+  'SYSTEMROOT',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+] as const
+
+export interface NativeServiceEnvironmentSnapshot {
+  version: typeof NATIVE_SERVICE_ENV_SCHEMA_VERSION
+  environment: Record<string, string>
+}
 
 export interface NativeServiceEnvironmentOptions {
   proxyEnv: boolean
@@ -62,11 +112,16 @@ export function assertProxyEndpointAvailable(
 
 export function saveNativeServiceEnvironment(
   options: NativeServiceEnvironmentOptions,
-): void {
+): Record<string, string> {
   const saved = buildNativeServiceEnvironment(options)
   const filePath = options.filePath ?? PATHS.NATIVE_SERVICE_ENV
+  const snapshot: NativeServiceEnvironmentSnapshot = {
+    version: NATIVE_SERVICE_ENV_SCHEMA_VERSION,
+    environment: saved,
+  }
 
-  writeOwnerOnlyFileAtomically(filePath, `${JSON.stringify(saved, null, 2)}\n`)
+  writeOwnerOnlyFileAtomically(filePath, `${JSON.stringify(snapshot, null, 2)}\n`)
+  return saved
 }
 
 export function buildNativeServiceEnvironment(
@@ -97,26 +152,55 @@ export function loadNativeServiceEnvironment(
     targetEnv?: NodeJS.ProcessEnv
     filePath?: string
   },
-): void {
+): Record<string, string> {
   const targetEnv = options.targetEnv ?? process.env
   const filePath = options.filePath ?? PATHS.NATIVE_SERVICE_ENV
-  const raw = fs.readFileSync(filePath, 'utf8')
-  const parsed = JSON.parse(raw) as unknown
-
-  if (!isStringRecord(parsed))
-    throw new Error(`Native service environment file is invalid: ${filePath}`)
+  const saved = readNativeServiceEnvironment(filePath)
 
   for (const key of MANAGED_SERVICE_ENV_KEYS)
     delete targetEnv[key]
 
-  for (const key of MANAGED_SERVICE_ENV_KEYS) {
-    const value = parsed[key]
+  const restoredKeys = options.proxyEnv
+    ? MANAGED_SERVICE_ENV_KEYS
+    : [...SERVICE_SECURITY_ENV_KEYS, ...SERVICE_TLS_ENV_KEYS]
+  for (const key of restoredKeys) {
+    const value = saved[key]
     if (value !== undefined)
       targetEnv[key] = value
   }
 
   if (options.proxyEnv)
     assertProxyEndpointAvailable(targetEnv)
+
+  return saved
+}
+
+export function readNativeServiceEnvironment(
+  filePath: string = PATHS.NATIVE_SERVICE_ENV,
+): Record<string, string> {
+  const raw = fs.readFileSync(filePath, 'utf8')
+  const parsed = JSON.parse(raw) as unknown
+
+  if (isNativeServiceEnvironmentSnapshot(parsed)) {
+    const unknownKeys = Object.keys(parsed.environment)
+      .filter(key => !MANAGED_SERVICE_ENV_KEY_SET.has(key))
+    if (unknownKeys.length > 0) {
+      throw new Error(
+        `Native service environment file contains unsupported entries: ${unknownKeys.join(', ')}`,
+      )
+    }
+
+    return { ...parsed.environment }
+  }
+
+  // Compatibility with v0.8-v0.9 snapshots, which were a flat string record.
+  // Unknown legacy entries are ignored rather than replayed so a manually
+  // added credential can never become part of the service environment. A
+  // malformed object that claims either versioned field still fails closed.
+  if (isStringRecord(parsed) && !('version' in parsed) && !('environment' in parsed))
+    return pickManagedEnvironment(parsed)
+
+  throw new Error(`Native service environment file is invalid: ${filePath}`)
 }
 
 export function buildNativeServiceBootstrapEnvironment(
@@ -124,16 +208,23 @@ export function buildNativeServiceBootstrapEnvironment(
   saved: Record<string, string>,
   options: { proxyEnv?: boolean } = {},
 ): NodeJS.ProcessEnv {
-  const env = withoutProxyEnvironment(sourceEnv)
-  for (const key of SERVICE_TLS_ENV_KEYS)
-    delete env[key]
+  // Native service managers can retain an old user/session environment across
+  // reinstalls. Build the child from an explicit OS/runtime allowlist instead
+  // of inheriting arbitrary variables such as GH_TOKEN, GITHUB_TOKEN, provider
+  // API keys, or stale COPILOT_PROXY_* security settings.
+  const env: NodeJS.ProcessEnv = {}
+  for (const key of SERVICE_BOOTSTRAP_PASSTHROUGH_ENV_KEYS) {
+    const value = sourceEnv[key]
+    if (value !== undefined)
+      env[key] = value
+  }
 
   if (options.proxyEnv)
     assertProxyEndpointAvailable(saved)
 
   const restoredKeys = options.proxyEnv
-    ? [...PROXY_ENV_KEYS, ...SERVICE_TLS_ENV_KEYS] as const
-    : SERVICE_TLS_ENV_KEYS
+    ? [...SERVICE_SECURITY_ENV_KEYS, ...SERVICE_TLS_ENV_KEYS, ...PROXY_ENV_KEYS] as const
+    : [...SERVICE_SECURITY_ENV_KEYS, ...SERVICE_TLS_ENV_KEYS] as const
   for (const key of restoredKeys) {
     if (saved[key] !== undefined)
       env[key] = saved[key]
@@ -150,4 +241,26 @@ function isStringRecord(value: unknown): value is Record<string, string> {
     return false
 
   return Object.values(value).every(entry => typeof entry === 'string')
+}
+
+function pickManagedEnvironment(environment: Record<string, string>): Record<string, string> {
+  const managed: Record<string, string> = {}
+  for (const key of MANAGED_SERVICE_ENV_KEYS) {
+    const value = environment[key]
+    if (value !== undefined)
+      managed[key] = value
+  }
+  return managed
+}
+
+function isNativeServiceEnvironmentSnapshot(
+  value: unknown,
+): value is NativeServiceEnvironmentSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return false
+
+  const candidate = value as Record<string, unknown>
+  return Object.keys(candidate).every(key => key === 'version' || key === 'environment')
+    && candidate.version === NATIVE_SERVICE_ENV_SCHEMA_VERSION
+    && isStringRecord(candidate.environment)
 }

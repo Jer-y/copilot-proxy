@@ -18,7 +18,7 @@ loopbackV6.addSubnet('::ffff:127.0.0.0', 104, 'ipv6')
 let cachedCorsOriginsRaw: string | undefined
 let cachedCorsOrigins = new Set<string>()
 let cachedAllowedHostsRaw: string | undefined
-let cachedAllowedHosts = new Set<string>()
+let cachedAllowedHosts: ReadonlySet<string> = new Set<string>()
 
 function normalizeHostname(hostname: string): string {
   let normalized = hostname.trim().toLowerCase()
@@ -37,6 +37,73 @@ function normalizeHostname(hostname: string): string {
   }
 
   return normalized
+}
+
+function normalizeAllowedHostname(hostname: string): string | null {
+  const candidate = hostname.trim()
+  if (!candidate)
+    return null
+  if (candidate.includes('%'))
+    return null
+
+  if (candidate.startsWith('[') || candidate.endsWith(']')) {
+    if (!candidate.startsWith('[') || !candidate.endsWith(']'))
+      return null
+
+    const address = candidate.slice(1, -1)
+    if (isIP(address) !== 6)
+      return null
+
+    return normalizeHostname(new URL(`http://[${address}]`).hostname)
+  }
+
+  const ipVersion = isIP(candidate)
+  if (ipVersion === 4)
+    return candidate
+  if (ipVersion === 6)
+    return normalizeHostname(new URL(`http://[${candidate}]`).hostname)
+
+  let normalized = candidate.toLowerCase()
+  if (normalized.endsWith('.'))
+    normalized = normalized.slice(0, -1)
+  if (!normalized || normalized.length > 253)
+    return null
+
+  const labels = normalized.split('.')
+  if (!labels.every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))
+    return null
+
+  try {
+    if (normalizeHostname(new URL(`http://${candidate}`).hostname) !== normalized)
+      return null
+  }
+  catch {
+    return null
+  }
+
+  return normalized
+}
+
+export function parseAllowedHosts(raw: string | undefined): ReadonlySet<string> | null {
+  if (raw === undefined)
+    return null
+
+  const entries = raw.split(',')
+  const hosts = new Set<string>()
+  for (const entry of entries) {
+    const hostname = normalizeAllowedHostname(entry)
+    if (hostname === null)
+      return null
+    hosts.add(hostname)
+  }
+
+  return hosts.size > 0 ? hosts : null
+}
+
+export function hasValidNonLoopbackAllowedHost(raw: string | undefined): boolean {
+  const allowedHosts = parseAllowedHosts(raw)
+  return allowedHosts !== null
+    && [...allowedHosts].some(hostname => !isLoopbackHostname(hostname))
 }
 
 export function isLoopbackHostname(hostname: string): boolean {
@@ -112,23 +179,21 @@ function configuredCorsOrigins(): Set<string> {
   return cachedCorsOrigins
 }
 
-function configuredAllowedHosts(): Set<string> {
+function configuredAllowedHosts(): ReadonlySet<string> {
   const raw = process.env[ALLOWED_HOSTS_ENV] ?? ''
   if (raw === cachedAllowedHostsRaw)
     return cachedAllowedHosts
 
   cachedAllowedHostsRaw = raw
-  cachedAllowedHosts = new Set(
-    raw
-      .split(',')
-      .map(host => normalizeHostname(host))
-      .filter(Boolean),
-  )
+  cachedAllowedHosts = parseAllowedHosts(raw) ?? new Set<string>()
   return cachedAllowedHosts
 }
 
-function isUsagePath(path?: string): boolean {
-  return path === '/usage' || path?.startsWith('/usage/') === true
+function isHostedDashboardPath(path?: string): boolean {
+  return path === '/diagnostics'
+    || path === '/diagnostics/'
+    || path === '/usage'
+    || path === '/usage/'
 }
 
 export function resolveCorsOrigin(origin: string, path?: string): string | null {
@@ -145,7 +210,7 @@ export function resolveCorsOrigin(origin: string, path?: string): string | null 
   if (configuredCorsOrigins().has(normalizedOrigin))
     return origin
 
-  if (isUsagePath(path) && normalizedOrigin === HOSTED_USAGE_VIEWER_ORIGIN)
+  if (isHostedDashboardPath(path) && normalizedOrigin === HOSTED_USAGE_VIEWER_ORIGIN)
     return origin
 
   return null
@@ -171,8 +236,19 @@ export function isTokenExposureEnabled(): boolean {
 function requestHostname(request: Request): string | null {
   const hostHeader = request.headers.get('host')?.trim()
   if (hostHeader) {
+    // Host is an HTTP authority, never a full URL. URL parsers otherwise accept
+    // userinfo such as `evil@127.0.0.1` and expose only the loopback hostname.
+    const hasControlCharacter = [...hostHeader].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint < 0x20 || codePoint === 0x7F
+    })
+    if (/[%@/\\?#\s]/u.test(hostHeader) || hasControlCharacter)
+      return null
     try {
-      return new URL(`http://${hostHeader}`).hostname
+      const url = new URL(`http://${hostHeader}`)
+      if (url.username || url.password || url.pathname !== '/' || url.search || url.hash)
+        return null
+      return url.hostname
     }
     catch {
       return null
@@ -180,7 +256,8 @@ function requestHostname(request: Request): string | null {
   }
 
   try {
-    return new URL(request.url).hostname
+    const url = new URL(request.url)
+    return url.username || url.password ? null : url.hostname
   }
   catch {
     return null

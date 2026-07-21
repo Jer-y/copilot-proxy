@@ -9,15 +9,32 @@ import { defineCommand } from 'citty'
 
 import consola from 'consola'
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
-import { DEFAULT_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
-import { loadInstalledNativeServiceCommands, loadNativeServiceCommands, waitForNativeServiceReadiness } from '~/daemon/native-service'
+import { DEFAULT_SERVICE_CONFIG, LEGACY_UNBOUNDED_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
+import { loadInstalledNativeServiceCommands, loadNativeServiceCommands, resolveNativeServiceReadinessHost, waitForNativeServiceReadiness } from '~/daemon/native-service'
 import { isDaemonRunning } from '~/daemon/pid'
 import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
 import { loadNativeServiceInstallState, NATIVE_SERVICE_DEFINITION_PATH_ENV, removeNativeServiceInstallState, saveNativeServiceInstallState, toNativeServiceConfig } from '~/daemon/service-install-state'
 import { stopDaemon } from '~/daemon/stop'
-import { validateMaxConcurrency, validateMaxQueue, validateQueueTimeoutMs } from '~/lib/cli-validators'
+import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from '~/lib/cli-validators'
 import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { getUserHomeDir, PATHS } from '~/lib/paths'
+import { resolveCittyBooleanOption } from '~/lib/proxy-environment'
+import { isRunPresetName, resolveRunPreset, RUN_PRESET_NAMES } from '~/lib/run-presets'
+import { ALLOWED_HOSTS_ENV, hasValidNonLoopbackAllowedHost, isLoopbackHostname } from '~/lib/security'
+
+const ENABLE_STRING_OPTIONS = [
+  { name: 'account-type', shortName: 'a' },
+  { name: 'port', shortName: 'p' },
+  { name: 'host', shortName: 'H' },
+  { name: 'rate-limit', shortName: 'r' },
+  { name: 'preset' },
+  { name: 'max-concurrency' },
+  { name: 'max-queue' },
+  { name: 'queue-timeout-ms' },
+  { name: 'headers-timeout-ms' },
+  { name: 'body-timeout-ms' },
+  { name: 'connect-timeout-ms' },
+] as const
 
 export function buildServiceStartArgs(
   scriptPath: string,
@@ -27,6 +44,8 @@ export function buildServiceStartArgs(
   const args = [
     scriptPath,
     'start',
+    '--preset',
+    'custom',
     '--port',
     String(config.port),
     '--host',
@@ -67,12 +86,26 @@ export function buildServiceStartArgs(
 }
 
 interface NativeServiceEnableConfigOptions {
+  accountType?: string
+  bodyTimeoutMs?: string
+  clearRateLimit?: boolean
+  clearTimeoutOverrides?: boolean
+  connectTimeoutMs?: string
+  existingNativeService?: boolean
+  headersTimeoutMs?: string
+  host?: string
   savedConfig?: DaemonConfig
   installedConfig?: NativeServiceConfig
   maxConcurrency?: string
   maxQueue?: string
+  port?: string
+  proxyEnv?: boolean
   queueTimeoutMs?: string
+  rateLimit?: string
+  rateLimitWait?: boolean
   clearConcurrencyLimit?: boolean
+  preset?: string
+  verbose?: boolean
 }
 
 export function resolveNativeServiceEnableConfig(
@@ -81,14 +114,99 @@ export function resolveNativeServiceEnableConfig(
   const config: DaemonConfig = {
     ...(options.installedConfig
       ?? options.savedConfig
-      ?? DEFAULT_SERVICE_CONFIG),
+      ?? (options.existingNativeService ? LEGACY_UNBOUNDED_SERVICE_CONFIG : DEFAULT_SERVICE_CONFIG)),
+  }
+
+  if (options.preset !== undefined) {
+    if (!isRunPresetName(options.preset))
+      throw new TypeError(`--preset must be one of: ${RUN_PRESET_NAMES.join(', ')}`)
+    const preset = resolveRunPreset(options.preset)
+    config.host = preset.host
+    if (preset.maxConcurrency === undefined)
+      delete config.maxConcurrency
+    else
+      config.maxConcurrency = preset.maxConcurrency
+    if (preset.maxQueue === undefined)
+      delete config.maxQueue
+    else
+      config.maxQueue = preset.maxQueue
+    if (preset.queueTimeoutMs === undefined)
+      delete config.queueTimeoutMs
+    else
+      config.queueTimeoutMs = preset.queueTimeoutMs
+  }
+
+  if (options.port !== undefined) {
+    const port = validatePort(options.port)
+    if (port === null)
+      throw new TypeError('--port must be an integer between 1 and 65535')
+    config.port = port
+  }
+  if (options.host !== undefined) {
+    const host = validateHost(options.host)
+    if (host === null)
+      throw new TypeError('--host must be a non-empty hostname or IP address without whitespace or paths')
+    config.host = host
+  }
+  if (options.accountType !== undefined) {
+    if (!validateAccountType(options.accountType))
+      throw new TypeError('--account-type must be one of: individual, business, enterprise')
+    config.accountType = options.accountType
+  }
+  if (options.proxyEnv !== undefined)
+    config.proxyEnv = options.proxyEnv
+  if (options.verbose !== undefined)
+    config.verbose = options.verbose
+
+  if (options.clearRateLimit && (options.rateLimit !== undefined || options.rateLimitWait !== undefined))
+    throw new TypeError('--clear-rate-limit cannot be combined with --rate-limit, --wait, or --no-wait')
+  if (options.clearRateLimit) {
+    delete config.rateLimit
+    config.rateLimitWait = false
+  }
+  else {
+    const rateLimit = validateRateLimit(options.rateLimit)
+    if (!rateLimit.valid)
+      throw new TypeError('--rate-limit must be an integer between 1 and 86400')
+    if (options.rateLimit !== undefined)
+      config.rateLimit = rateLimit.value
+    if (options.rateLimitWait !== undefined)
+      config.rateLimitWait = options.rateLimitWait
+  }
+
+  const hasTimeoutOverride = options.headersTimeoutMs !== undefined
+    || options.bodyTimeoutMs !== undefined
+    || options.connectTimeoutMs !== undefined
+  if (options.clearTimeoutOverrides && hasTimeoutOverride)
+    throw new TypeError('--clear-timeout-overrides cannot be combined with timeout override options')
+  if (options.clearTimeoutOverrides) {
+    delete config.headersTimeoutMs
+    delete config.bodyTimeoutMs
+    delete config.connectTimeoutMs
+  }
+  else {
+    const headersTimeoutMs = validateTimeoutMs(options.headersTimeoutMs)
+    const bodyTimeoutMs = validateTimeoutMs(options.bodyTimeoutMs)
+    const connectTimeoutMs = validateTimeoutMs(options.connectTimeoutMs)
+    if (!headersTimeoutMs.valid)
+      throw new TypeError('--headers-timeout-ms must be an integer between 0 and the platform timer limit')
+    if (!bodyTimeoutMs.valid)
+      throw new TypeError('--body-timeout-ms must be an integer between 0 and the platform timer limit')
+    if (!connectTimeoutMs.valid)
+      throw new TypeError('--connect-timeout-ms must be an integer between 0 and the platform timer limit')
+    if (options.headersTimeoutMs !== undefined)
+      config.headersTimeoutMs = headersTimeoutMs.value
+    if (options.bodyTimeoutMs !== undefined)
+      config.bodyTimeoutMs = bodyTimeoutMs.value
+    if (options.connectTimeoutMs !== undefined)
+      config.connectTimeoutMs = connectTimeoutMs.value
   }
 
   const hasConcurrencyOverride = options.maxConcurrency !== undefined
     || options.maxQueue !== undefined
     || options.queueTimeoutMs !== undefined
-  if (options.clearConcurrencyLimit && hasConcurrencyOverride) {
-    throw new TypeError('--clear-concurrency-limit cannot be combined with concurrency limit options')
+  if (options.clearConcurrencyLimit && (hasConcurrencyOverride || options.preset !== undefined)) {
+    throw new TypeError('--clear-concurrency-limit cannot be combined with a preset or concurrency limit options')
   }
 
   if (options.clearConcurrencyLimit) {
@@ -117,6 +235,27 @@ export function resolveNativeServiceEnableConfig(
 
   resolveConcurrencyLimitConfig(config)
   return config
+}
+
+export function resolveLegacyDaemonRestoreConfig(
+  legacyRunning: boolean,
+  savedConfig: DaemonConfig | null,
+): DaemonConfig | undefined {
+  if (!legacyRunning)
+    return undefined
+  if (!savedConfig) {
+    throw new Error('Cannot replace the running app-managed daemon because its persisted daemon config is missing or invalid. Restore it, or stop the daemon and rerun `start -d` with the intended options, before retrying `enable`.')
+  }
+  return { ...savedConfig }
+}
+
+export function nativeServiceHostEnvironmentError(
+  host: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (isLoopbackHostname(host) || hasValidNonLoopbackAllowedHost(env[ALLOWED_HOSTS_ENV]))
+    return undefined
+  return 'A non-loopback native service requires COPILOT_PROXY_ALLOWED_HOSTS to be a valid exact Host allowlist containing at least one non-loopback hostname or IP address. Schemes, ports, paths, wildcards, empty entries, and a loopback-only allowlist are not accepted.'
 }
 
 export function resolveNativeServiceInstallLocations(
@@ -162,6 +301,53 @@ export const enable = defineCommand({
     description: 'Register as auto-start service',
   },
   args: {
+    'account-type': {
+      alias: 'a',
+      type: 'string',
+      description: 'Persist the Copilot account type (individual, business, or enterprise)',
+    },
+    'port': {
+      alias: 'p',
+      type: 'string',
+      description: 'Persist the service listen port',
+    },
+    'host': {
+      alias: 'H',
+      type: 'string',
+      description: 'Persist the service bind host/IP',
+    },
+    'proxy-env': {
+      type: 'boolean',
+      default: false,
+      description: 'Persist and use configured HTTP(S)_PROXY/NO_PROXY variables; --no-proxy-env clears it',
+    },
+    'verbose': {
+      alias: 'v',
+      type: 'boolean',
+      default: false,
+      description: 'Persist verbose service logging; --no-verbose disables it',
+    },
+    'rate-limit': {
+      alias: 'r',
+      type: 'string',
+      description: 'Persist the minimum seconds between requests',
+    },
+    'wait': {
+      alias: 'w',
+      type: 'boolean',
+      default: false,
+      description: 'Wait instead of rejecting when the persisted rate limit is reached; --no-wait disables it',
+    },
+    'clear-rate-limit': {
+      type: 'boolean',
+      default: false,
+      description: 'Remove the persisted rate limit and wait policy',
+    },
+    'preset': {
+      type: 'enum',
+      options: [...RUN_PRESET_NAMES],
+      description: 'Apply a safe persisted runtime preset before installing the service',
+    },
     'max-concurrency': {
       type: 'string',
       description: 'Maximum concurrent Copilot upstream requests',
@@ -174,24 +360,78 @@ export const enable = defineCommand({
       type: 'string',
       description: 'Maximum time to wait for a concurrency slot',
     },
+    'headers-timeout-ms': {
+      type: 'string',
+      description: 'Persist the upstream response-headers timeout in milliseconds',
+    },
+    'body-timeout-ms': {
+      type: 'string',
+      description: 'Persist the upstream response-body inactivity timeout in milliseconds',
+    },
+    'connect-timeout-ms': {
+      type: 'string',
+      description: 'Persist the upstream connection timeout in milliseconds',
+    },
+    'clear-timeout-overrides': {
+      type: 'boolean',
+      default: false,
+      description: 'Remove all persisted upstream timeout overrides',
+    },
     'clear-concurrency-limit': {
       type: 'boolean',
       default: false,
       description: 'Remove persisted concurrency and queue limits',
     },
   },
-  async run({ args }) {
+  async run({ args, rawArgs }) {
     const previousInstallState = loadNativeServiceInstallState()
     const savedConfig = loadDaemonConfig()
+    let existingNativeService = previousInstallState !== undefined
+    try {
+      if (!existingNativeService)
+        existingNativeService = await loadInstalledNativeServiceCommands() !== null
+    }
+    catch (error) {
+      consola.error('Cannot inspect the existing native service before resolving its configuration:', error instanceof Error ? error.message : error)
+      process.exit(1)
+    }
     let config: DaemonConfig
     try {
+      const proxyEnv = resolveExplicitBooleanOption(
+        rawArgs,
+        'proxy-env',
+      )
+      const verbose = resolveExplicitBooleanOption(
+        rawArgs,
+        'verbose',
+        'v',
+      )
+      const rateLimitWait = resolveExplicitBooleanOption(
+        rawArgs,
+        'wait',
+        'w',
+      )
       config = resolveNativeServiceEnableConfig({
+        accountType: args['account-type'],
+        bodyTimeoutMs: args['body-timeout-ms'],
+        clearRateLimit: args['clear-rate-limit'],
+        clearTimeoutOverrides: args['clear-timeout-overrides'],
+        connectTimeoutMs: args['connect-timeout-ms'],
+        existingNativeService,
+        headersTimeoutMs: args['headers-timeout-ms'],
+        host: args.host,
         savedConfig: savedConfig ?? undefined,
         installedConfig: previousInstallState?.config,
         maxConcurrency: args['max-concurrency'],
         maxQueue: args['max-queue'],
+        port: args.port,
+        proxyEnv,
         queueTimeoutMs: args['queue-timeout-ms'],
+        rateLimit: args['rate-limit'],
+        rateLimitWait,
         clearConcurrencyLimit: args['clear-concurrency-limit'],
+        preset: args.preset,
+        verbose,
       })
     }
     catch (error) {
@@ -200,6 +440,8 @@ export const enable = defineCommand({
     }
     if (previousInstallState?.config)
       consola.info('Reusing the previously installed native service config.')
+    else if (existingNativeService && !savedConfig)
+      consola.info('The existing native service predates persisted config; preserving its legacy unbounded concurrency behavior.')
     else if (!savedConfig)
       consola.info('No legacy daemon config found. Using default native service config.')
     else
@@ -210,6 +452,11 @@ export const enable = defineCommand({
     }
     if (config.manual) {
       consola.error('Cannot enable auto-start with manual approval enabled because native services have no interactive TTY. Disable manual mode in the saved daemon config first.')
+      process.exit(1)
+    }
+    const hostEnvironmentError = nativeServiceHostEnvironmentError(config.host)
+    if (hostEnvironmentError) {
+      consola.error(hostEnvironmentError)
       process.exit(1)
     }
 
@@ -245,11 +492,16 @@ export const enable = defineCommand({
     const previousServiceEnvironment = readExistingServiceEnvironment()
     let replacementServiceEnvironment: ExistingServiceEnvironment | undefined
     let replacementInstallState: ReturnType<typeof loadNativeServiceInstallState>
+    let readinessRequestHost: string
     try {
-      // Re-running enable snapshots the current shell exactly. Missing values
-      // intentionally clear stale service settings, including lower/uppercase
-      // proxy aliases that proxy-from-env resolves with different precedence.
-      saveNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: process.env })
+      // Re-running enable snapshots the supported service-runtime settings
+      // from the current shell exactly. Missing values intentionally clear
+      // stale settings, including proxy aliases with different precedence.
+      const savedEnvironment = saveNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: process.env })
+      const resolvedReadinessHost = resolveNativeServiceReadinessHost(config.host, savedEnvironment)
+      if (!resolvedReadinessHost)
+        throw new Error('The persisted native-service environment has no non-loopback Host available for readiness verification.')
+      readinessRequestHost = resolvedReadinessHost
       const { serviceDefinitionPath, xdgConfigHome } = resolveNativeServiceInstallLocations(platform, process.env)
       saveNativeServiceInstallState({
         dataDir: PATHS.APP_DIR,
@@ -328,7 +580,18 @@ export const enable = defineCommand({
     }
 
     const daemon = isDaemonRunning()
-    const legacyWasRunning = daemon.running
+    let legacyRestoreConfig: DaemonConfig | undefined
+    try {
+      // The replacement preset may change host or concurrency. The legacy
+      // supervisor reloads daemon.json, so rollback readiness must use this
+      // pre-migration snapshot rather than the replacement service config.
+      legacyRestoreConfig = resolveLegacyDaemonRestoreConfig(daemon.running, savedConfig)
+    }
+    catch (error) {
+      consola.error(error instanceof Error ? error.message : error)
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)
+      process.exit(1)
+    }
     if (daemon.running) {
       consola.info('Stopping existing app-managed daemon before starting the native service...')
       if (!stopDaemon()) {
@@ -346,19 +609,16 @@ export const enable = defineCommand({
       consola.error('Failed to activate native service:', error instanceof Error ? error.message : error)
     }
     if (!serviceStarted) {
-      if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)) {
-        if (legacyWasRunning)
-          await restoreLegacyDaemon(config)
-      }
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands, legacyRestoreConfig)
       process.exit(1)
     }
 
-    if (!await waitForNativeServiceReadiness(config, { expectedInstanceToken: instanceToken })) {
+    if (!await waitForNativeServiceReadiness(config, {
+      expectedInstanceToken: instanceToken,
+      requestHost: readinessRequestHost,
+    })) {
       consola.error(`Native service did not become ready on ${config.host}:${config.port} within the startup deadline.`)
-      if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)) {
-        if (legacyWasRunning)
-          await restoreLegacyDaemon(config)
-      }
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands, legacyRestoreConfig)
       process.exit(1)
     }
 
@@ -367,10 +627,7 @@ export const enable = defineCommand({
     }
     catch (error) {
       consola.error('Failed to commit native service installation:', error instanceof Error ? error.message : error)
-      if (await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)) {
-        if (legacyWasRunning)
-          await restoreLegacyDaemon(config)
-      }
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands, legacyRestoreConfig)
       process.exit(1)
     }
 
@@ -385,16 +642,32 @@ export const enable = defineCommand({
   },
 })
 
+export function resolveExplicitBooleanOption(
+  rawArgs: string[],
+  name: string,
+  shortName?: 'v' | 'w',
+): boolean | undefined {
+  const resolution = resolveCittyBooleanOption(rawArgs, name, {
+    shortName,
+    stringOptions: ENABLE_STRING_OPTIONS,
+  })
+  if (resolution.positiveValue === true && resolution.negated)
+    throw new TypeError(`--${name} and --no-${name} cannot be combined`)
+  return resolution.value
+}
+
 interface RollbackEnableTransactionOperations {
   restorePreviousPersistedState: () => boolean
   restoreReplacementPersistedState: () => boolean
   rollbackPlatformDefinition: () => boolean | Promise<boolean>
   restorePreviousAutoStartState: (state: NativeServiceActivationState) => boolean | Promise<boolean>
+  restoreLegacyDaemon?: (config: DaemonConfig) => boolean | Promise<boolean>
 }
 
 export async function rollbackEnableTransaction(
   previousAutoStartState: NativeServiceActivationState,
   operations: RollbackEnableTransactionOperations,
+  legacyRestoreConfig?: DaemonConfig,
 ): Promise<boolean> {
   // Platform definition rollback does not activate the previous service. Keep
   // replacement metadata in place until the definition is known to be restored.
@@ -409,7 +682,14 @@ export async function rollbackEnableTransaction(
     return false
 
   try {
-    return await operations.restorePreviousAutoStartState(previousAutoStartState)
+    if (!await operations.restorePreviousAutoStartState(previousAutoStartState))
+      return false
+    if (legacyRestoreConfig) {
+      if (!operations.restoreLegacyDaemon)
+        return false
+      return await operations.restoreLegacyDaemon(legacyRestoreConfig)
+    }
+    return true
   }
   catch {
     return false
@@ -424,6 +704,7 @@ async function rollbackEnableInstallation(
   replacementInstallState: ReturnType<typeof loadNativeServiceInstallState>,
   previousAutoStartState: NativeServiceActivationState,
   platformCommands: NativeServiceCommands,
+  legacyRestoreConfig?: DaemonConfig,
 ): Promise<boolean> {
   const restored = await rollbackEnableTransaction(previousAutoStartState, {
     restorePreviousPersistedState: () => tryRestorePersistedState(
@@ -438,9 +719,10 @@ async function rollbackEnableInstallation(
     ),
     rollbackPlatformDefinition: () => rollbackAutoStartInstall(platform),
     restorePreviousAutoStartState: state => platformCommands.restoreAutoStartState(state),
-  })
+    restoreLegacyDaemon,
+  }, legacyRestoreConfig)
   if (!restored) {
-    consola.error('Native service definition rollback did not fully restore its previous enabled/running state.')
+    consola.error('Native service rollback did not fully restore its previous service state.')
   }
   return restored
 }
@@ -492,7 +774,7 @@ function tryRestorePersistedState(
   }
 }
 
-async function restoreLegacyDaemon(config: DaemonConfig): Promise<void> {
+async function restoreLegacyDaemon(config: DaemonConfig): Promise<boolean> {
   try {
     const env: NodeJS.ProcessEnv = { ...process.env }
     loadNativeServiceEnvironment({
@@ -503,9 +785,11 @@ async function restoreLegacyDaemon(config: DaemonConfig): Promise<void> {
     const { spawnLegacySupervisor } = await import('~/daemon/start')
     const pid = await spawnLegacySupervisor(config, env)
     consola.warn(`Native service activation failed; restored the previous legacy daemon (PID: ${pid}).`)
+    return true
   }
   catch (error) {
     consola.error('Native service activation failed and the previous legacy daemon could not be restored:', error instanceof Error ? error.message : error)
+    return false
   }
 }
 

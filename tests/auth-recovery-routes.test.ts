@@ -4,7 +4,7 @@ import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { state } from '~/lib/state'
 import { stopCopilotTokenRefresh } from '~/lib/token'
 import { server } from '~/server'
-import { resetCopilotRecoveryStateForTests } from '~/services/copilot/authenticated-fetch'
+import { getCopilotRecoveryStatus, resetCopilotRecoveryStateForTests } from '~/services/copilot/authenticated-fetch'
 
 const originalFetch = globalThis.fetch
 const originalLimiter = state.concurrencyLimiter
@@ -174,6 +174,96 @@ describe('real route authentication recovery', () => {
       expect(upstreamRequestIds[1]).not.toBe(upstreamRequestIds[0])
     })
   }
+
+  test('closes an opaque scope after a cancelled 401 leader and three successful route followers', async () => {
+    const leaderController = new AbortController()
+    let finishTokenExchange!: () => void
+    let markTokenExchangeStarted!: () => void
+    let markOldTokenRequestsReady!: () => void
+    const tokenExchangeGate = new Promise<void>((resolve) => {
+      finishTokenExchange = resolve
+    })
+    const tokenExchangeStarted = new Promise<void>((resolve) => {
+      markTokenExchangeStarted = resolve
+    })
+    const oldTokenRequestsReady = new Promise<void>((resolve) => {
+      markOldTokenRequestsReady = resolve
+    })
+    let oldTokenRequests = 0
+    let freshTokenRequests = 0
+    let tokenExchanges = 0
+
+    const fetchMock = mock(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/copilot_internal/v2/token')) {
+        tokenExchanges++
+        markTokenExchangeStarted()
+        await tokenExchangeGate
+        return Response.json({
+          token: 'new-copilot-token',
+          refresh_in: 1_500,
+          expires_at: Math.floor(Date.now() / 1_000) + 1_800,
+        })
+      }
+
+      expect(url.endsWith('/responses')).toBe(true)
+      const authorization = new Headers(init?.headers).get('authorization')
+      if (authorization === 'Bearer old-copilot-token') {
+        oldTokenRequests++
+        if (oldTokenRequests === 4)
+          markOldTokenRequestsReady()
+        if (oldTokenRequests === 1)
+          return new Response('Unauthorized', { status: 401 })
+        return new Response('Forbidden\n', {
+          status: 403,
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-GitHub-Request-Id': crypto.randomUUID(),
+          },
+        })
+      }
+
+      freshTokenRequests++
+      return responsesSuccess('gpt-5.4')
+    })
+    // @ts-expect-error test mock only needs the fetch call signature
+    globalThis.fetch = fetchMock
+
+    const payload = JSON.stringify({ model: 'gpt-5.4', input: 'recover', store: false })
+    const leader = server.fetch(new Request('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    }), { setupProbeSignal: leaderController.signal })
+    await tokenExchangeStarted
+    leaderController.abort(new Error('setup deadline expired'))
+    expect((await leader).status).toBe(500)
+
+    const followers = Array.from({ length: 3 }, () => server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    }))
+    await oldTokenRequestsReady
+    finishTokenExchange()
+
+    const followerResponses = await Promise.all(followers)
+    expect(followerResponses.map(response => response.status)).toEqual([200, 200, 200])
+    expect(await Promise.all(followerResponses.map(response => response.text())))
+      .toEqual([expect.stringContaining('RECOVERED'), expect.stringContaining('RECOVERED'), expect.stringContaining('RECOVERED')])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(getCopilotRecoveryStatus().scopes.open).toBe(0)
+
+    const nextResponse = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+    expect(nextResponse.status).toBe(200)
+    expect(await nextResponse.text()).toContain('RECOVERED')
+    expect(tokenExchanges).toBe(1)
+    expect(oldTokenRequests).toBe(4)
+    expect(freshTokenRequests).toBe(4)
+  })
 
   test('maps a full concurrency queue to client-compatible errors without touching upstream', async () => {
     const limiter = new AsyncConcurrencyLimiter({

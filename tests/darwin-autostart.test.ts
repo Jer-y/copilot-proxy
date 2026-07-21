@@ -1,6 +1,25 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildLaunchctlDisableArgs, buildLaunchctlEnableArgs, buildLaunchctlKickstartArgs, captureAutoStartState, commitAutoStartInstall, isLaunchdJobEnabledOutput, isLaunchdJobRunningOutput, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/darwin'
+import { buildLaunchctlDisableArgs, buildLaunchctlEnableArgs, buildLaunchctlKickstartArgs, buildLaunchdPlist, captureAutoStartState, commitAutoStartInstall, isLaunchdJobEnabledOutput, isLaunchdJobRunningOutput, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/darwin'
+
+describe('launchd service definition', () => {
+  test('uses the shared persisted-environment bootstrap without embedding security settings or tokens', () => {
+    const plist = buildLaunchdPlist('/usr/local/bin/node', [
+      '/usr/local/lib/copilot-proxy/main.js',
+      'start',
+      '--_service',
+      '--_data-dir',
+      '/Users/alice/Library/Application Support/copilot-proxy',
+      '--_log-file',
+    ])
+
+    expect(plist).toContain('<string>--_service</string>')
+    expect(plist).toContain('<string>--_data-dir</string>')
+    expect(plist).not.toContain('<key>EnvironmentVariables</key>')
+    expect(plist).not.toContain('COPILOT_PROXY_ALLOWED_HOSTS')
+    expect(plist).not.toContain('GITHUB_TOKEN')
+  })
+})
 
 describe('launchd restart', () => {
   test('targets the GUI domain for reliable loaded-agent restarts', () => {

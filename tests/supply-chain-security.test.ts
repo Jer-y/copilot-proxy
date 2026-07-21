@@ -45,7 +45,10 @@ describe('build and release supply-chain controls', () => {
 
     expect(ci).toContain('deploy-pages:')
     expect(ci).toContain('needs: [test, native-service-adapters]')
-    expect(ci).toContain('if: (github.event_name == \'push\' && github.ref == \'refs/heads/main\') || github.event_name == \'workflow_dispatch\'')
+    expect(ci).toContain('if: github.ref == \'refs/heads/main\' && (github.event_name == \'push\' || github.event_name == \'workflow_dispatch\')')
+    expect(ci).toContain('Verify deployment still targets main HEAD')
+    expect(ci).toContain('current_main_sha="$(gh api "repos/')
+    expect(ci).toContain('/git/ref/heads/main" --jq \'.object.sha\')"')
     expect(ci).toContain('run: bun run test:node:http')
     expect(ci).toContain('native-service-adapters:')
     expect(ci).toContain('os: macos-latest')

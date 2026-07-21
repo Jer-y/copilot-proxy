@@ -1,5 +1,8 @@
+import { spawnSync } from 'node:child_process'
 import { describe, expect, test } from 'bun:test'
 import { buildLegacySupervisorArgs, filterEnvForDaemon } from '~/daemon/start'
+
+const testWindows = process.platform === 'win32' ? test : test.skip
 
 describe('filterEnvForDaemon', () => {
   test('keeps essential env vars', () => {
@@ -90,6 +93,100 @@ describe('filterEnvForDaemon', () => {
     expect(filtered.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(filtered.DATABASE_URL).toBeUndefined()
     expect(filtered.RANDOM_VAR).toBeUndefined()
+  })
+
+  test('drops GitHub and provider credentials before the supervisor spawn boundary', () => {
+    const filtered = filterEnvForDaemon({
+      PATH: '/usr/bin',
+      GH_TOKEN: 'gho_supervisor_secret',
+      GITHUB_TOKEN: 'ghp_supervisor_secret',
+      COPILOT_TOKEN: 'copilot_supervisor_secret',
+      OPENAI_API_KEY: 'sk-supervisor-secret',
+      ANTHROPIC_API_KEY: 'anthropic-supervisor-secret',
+      AZURE_OPENAI_API_KEY: 'azure-supervisor-secret',
+      AWS_SECRET_ACCESS_KEY: 'aws-supervisor-secret',
+    })
+
+    expect(filtered.PATH).toBe('/usr/bin')
+    expect(filtered.GH_TOKEN).toBeUndefined()
+    expect(filtered.GITHUB_TOKEN).toBeUndefined()
+    expect(filtered.COPILOT_TOKEN).toBeUndefined()
+    expect(filtered.OPENAI_API_KEY).toBeUndefined()
+    expect(filtered.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(filtered.AZURE_OPENAI_API_KEY).toBeUndefined()
+    expect(filtered.AWS_SECRET_ACCESS_KEY).toBeUndefined()
+  })
+
+  testWindows('normalizes Windows-style bootstrap key casing and preserves empty values', () => {
+    const filtered = filterEnvForDaemon({
+      Path: '',
+      appData: 'C:\\Users\\alice\\AppData\\Roaming',
+      LocalAppData: 'C:\\Users\\alice\\AppData\\Local',
+      ProgramData: 'C:\\ProgramData',
+      userProfile: 'C:\\Users\\alice',
+      homeDrive: 'C:',
+      homePath: '\\Users\\alice',
+      systemroot: 'C:\\Windows',
+      WinDir: 'C:\\Windows',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PathExt: '.COM;.EXE;.BAT;.CMD',
+    })
+
+    expect(filtered.PATH).toBe('')
+    expect(filtered.APPDATA).toBe('C:\\Users\\alice\\AppData\\Roaming')
+    expect(filtered.LOCALAPPDATA).toBe('C:\\Users\\alice\\AppData\\Local')
+    expect(filtered.PROGRAMDATA).toBe('C:\\ProgramData')
+    expect(filtered.USERPROFILE).toBe('C:\\Users\\alice')
+    expect(filtered.HOMEDRIVE).toBe('C:')
+    expect(filtered.HOMEPATH).toBe('\\Users\\alice')
+    expect(filtered.SystemRoot).toBe('C:\\Windows')
+    expect(filtered.WINDIR).toBe('C:\\Windows')
+    expect(filtered.COMSPEC).toBe('C:\\Windows\\System32\\cmd.exe')
+    expect(filtered.PATHEXT).toBe('.COM;.EXE;.BAT;.CMD')
+    expect(Object.keys(filtered).filter(key => key.toUpperCase() === 'PATH')).toEqual(['PATH'])
+  })
+
+  testWindows('passes a Windows-style Path to a real supervisor-shaped child without ambient credentials', () => {
+    const expectedPath = process.env.PATH
+    expect(expectedPath).toBeTruthy()
+
+    const sourceEnvironment: Record<string, string | undefined> = {
+      ...process.env,
+      Path: expectedPath,
+      GH_TOKEN: 'gho_child_secret',
+      GITHUB_TOKEN: 'ghp_child_secret',
+      COPILOT_TOKEN: 'copilot_child_secret',
+      OPENAI_API_KEY: 'sk-child-secret',
+      ANTHROPIC_API_KEY: 'anthropic-child-secret',
+    }
+    delete sourceEnvironment.PATH
+    const childEnvironment = filterEnvForDaemon(sourceEnvironment)
+    const result = spawnSync(
+      process.execPath,
+      ['-e', `process.stdout.write(JSON.stringify({
+        path: process.env.PATH ?? null,
+        ghToken: process.env.GH_TOKEN ?? null,
+        githubToken: process.env.GITHUB_TOKEN ?? null,
+        copilotToken: process.env.COPILOT_TOKEN ?? null,
+        openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+        anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null,
+      }))`],
+      {
+        encoding: 'utf8',
+        env: childEnvironment,
+      },
+    )
+
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      path: expectedPath,
+      ghToken: null,
+      githubToken: null,
+      copilotToken: null,
+      openaiApiKey: null,
+      anthropicApiKey: null,
+    })
   })
 
   test('handles missing vars gracefully', () => {

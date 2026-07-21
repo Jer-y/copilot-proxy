@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { consumeGithubToken } from '~/lib/server-setup'
+import { consumeGithubToken, formatModelInventorySummary } from '~/lib/server-setup'
 
 describe('consumeGithubToken', () => {
   test('prefers explicit CLI input, then GH_TOKEN, then GITHUB_TOKEN', () => {
@@ -33,5 +33,12 @@ describe('consumeGithubToken', () => {
   test('ignores blank values and falls back to the token file path', () => {
     const env = { GH_TOKEN: '  ', GITHUB_TOKEN: '' }
     expect(consumeGithubToken(undefined, env)).toBeUndefined()
+  })
+})
+
+describe('formatModelInventorySummary', () => {
+  test('keeps startup output bounded as the catalog grows', () => {
+    expect(formatModelInventorySummary(39)).toBe('Loaded 39 Copilot models. Run `copilot-proxy models` for details.')
+    expect(formatModelInventorySummary(1)).toContain('1 Copilot model.')
   })
 })

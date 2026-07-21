@@ -157,6 +157,36 @@ describe('ResponsesWebSocketSession', () => {
     })
   })
 
+  test('uses shared payload analysis for rich custom tool output vision', async () => {
+    const harness = createHarness()
+    const input = [{
+      type: 'custom_tool_call_output',
+      call_id: 'call_custom_image',
+      output: [
+        { type: 'input_text', text: 'Screenshot attached' },
+        { type: 'input_image', file_id: 'file_custom_image' },
+      ],
+    }]
+
+    harness.session.receive(textMessage({
+      type: 'response.create',
+      model: 'gpt-ws',
+      input,
+    }))
+
+    await waitFor(() => harness.upstream.sent.length === 1)
+    expect(harness.connect).toHaveBeenCalledTimes(1)
+    expect(harness.connect.mock.calls[0]?.[0]).toMatchObject({
+      hasVision: true,
+      initiator: 'user',
+      model: 'gpt-ws',
+    })
+    expect(JSON.parse(harness.upstream.sent[0]!)).toMatchObject({ input })
+
+    harness.upstream.emitEvent({ type: 'response.completed', sequence_number: 0 })
+    await waitFor(() => harness.initialTurnRelease.mock.calls.length === 1)
+  })
+
   test('emits the official top-level error shape at the connection duration limit', async () => {
     const harness = createHarness({ maxDurationMs: 5 })
 

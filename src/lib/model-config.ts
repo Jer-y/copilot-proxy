@@ -22,15 +22,12 @@ export interface ModelConfig {
   supportsParallelToolCalls?: boolean
   /** Token-limit field accepted by the model on /chat/completions */
   chatCompletionTokenParameter?: 'max_tokens' | 'max_completion_tokens'
-  /** Dated official + Copilot request-boundary output limit used for proxy defaults */
+  /** Conservative output limit used for proxy-generated defaults */
   verifiedMaxOutputTokens?: number
 }
 
-// Verified 2026-07-13 through the individual Copilot endpoint on POST /v1/messages;
-// the retained evidence did not identify the account's subscription entitlement.
-// Claude Opus 4.6/4.7/4.8 accept max_tokens=128000 and reject 128001, matching
-// the current official Anthropic model limits. Keep the raw /models snapshot
-// untouched; this value is a floor only for proxy-generated defaults.
+// Fallback for proxy-generated Opus defaults when live metadata is incomplete.
+// Keep the raw /models snapshot untouched; a newer live limit may raise it.
 const VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS = 128000
 
 const MODEL_CONFIGS: Record<string, ModelConfig> = {
@@ -246,9 +243,17 @@ const DEFAULT_CONFIG: ModelConfig = {
  * Falls back to a default config if no match is found.
  */
 export function getModelConfig(modelId: string): ModelConfig {
+  return withLiveModelCapabilities(modelId, getBundledModelConfig(modelId))
+}
+
+/**
+ * Resolve only the bundled routing policy for a model. Unlike getModelConfig,
+ * this is deterministic and does not merge the process-wide live catalog.
+ */
+export function getBundledModelConfig(modelId: string): ModelConfig {
   // Exact match
   if (MODEL_CONFIGS[modelId]) {
-    return withLiveModelCapabilities(modelId, MODEL_CONFIGS[modelId])
+    return MODEL_CONFIGS[modelId]
   }
 
   // Try prefix match for families (e.g., 'gpt-5.2-codex-max' matches 'gpt-5.2-codex')
@@ -257,7 +262,7 @@ export function getModelConfig(modelId: string): ModelConfig {
   )
   for (const [key, config] of entries) {
     if (hasModelConfigPrefix(modelId, key)) {
-      return withLiveModelCapabilities(modelId, config)
+      return config
     }
   }
 
@@ -265,15 +270,15 @@ export function getModelConfig(modelId: string): ModelConfig {
   // entries above: native /v1/messages for Anthropic clients, plus
   // chat-completions so that /chat/completions clients can still reach them.
   if (modelId.startsWith('claude')) {
-    return withLiveModelCapabilities(modelId, {
+    return {
       supportedApis: ['anthropic-messages', 'chat-completions'],
       preferredApi: 'anthropic-messages',
       enableCacheControl: true,
       supportsToolChoice: false,
-    })
+    }
   }
 
-  return withLiveModelCapabilities(modelId, DEFAULT_CONFIG)
+  return DEFAULT_CONFIG
 }
 
 function withLiveModelCapabilities(modelId: string, config: ModelConfig): ModelConfig {

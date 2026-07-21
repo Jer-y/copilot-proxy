@@ -111,15 +111,12 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
-  rotateDaemonLogIfNeeded()
-  ensureDaemonLogFile()
-
+export function buildLaunchdPlist(execPath: string, args: string[]): string {
   const programArgs = [execPath, ...args]
     .map(arg => `        <string>${xmlEscape(arg)}</string>`)
     .join('\n')
 
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -143,6 +140,13 @@ ${programArgs}
 </dict>
 </plist>
 `
+}
+
+export async function installAutoStart(execPath: string, args: string[]): Promise<boolean> {
+  rotateDaemonLogIfNeeded()
+  ensureDaemonLogFile()
+
+  const plist = buildLaunchdPlist(execPath, args)
 
   const previousPlist = readExistingPlist()
   const previousWasLoaded = previousPlist !== undefined && isLaunchdJobLoaded()

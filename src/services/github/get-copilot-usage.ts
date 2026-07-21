@@ -12,16 +12,28 @@ export async function getCopilotUsage(): Promise<CopilotUsageResponse> {
     throw new HTTPError('Failed to get Copilot usage', response)
   }
 
-  return (await response.json()) as CopilotUsageResponse
+  const usage = await response.json() as unknown
+  if (!isRecord(usage)
+    || typeof usage.copilot_plan !== 'string'
+    || typeof usage.quota_reset_date !== 'string'
+    || !isRecord(usage.quota_snapshots)) {
+    throw new TypeError('Invalid Copilot usage response')
+  }
+
+  return {
+    copilot_plan: usage.copilot_plan,
+    quota_reset_date: usage.quota_reset_date,
+    quota_snapshots: {
+      chat: sanitizeQuotaDetail(usage.quota_snapshots, 'chat'),
+      completions: sanitizeQuotaDetail(usage.quota_snapshots, 'completions'),
+      premium_interactions: sanitizeQuotaDetail(usage.quota_snapshots, 'premium_interactions'),
+    },
+  }
 }
 
 export interface QuotaDetail {
   entitlement: number
-  overage_count: number
-  overage_permitted: boolean
   percent_remaining: number
-  quota_id: string
-  quota_remaining: number
   remaining: number
   unlimited: boolean
 }
@@ -33,14 +45,36 @@ interface QuotaSnapshots {
 }
 
 interface CopilotUsageResponse {
-  access_type_sku: string
-  analytics_tracking_id: string
-  assigned_date: string
-  can_signup_for_limited: boolean
-  chat_enabled: boolean
   copilot_plan: string
-  organization_login_list: Array<unknown>
-  organization_list: Array<unknown>
   quota_reset_date: string
   quota_snapshots: QuotaSnapshots
+}
+
+function sanitizeQuotaDetail(
+  snapshots: Record<string, unknown>,
+  name: keyof QuotaSnapshots,
+): QuotaDetail {
+  const quota = snapshots[name]
+  if (!isRecord(quota)
+    || !isFiniteNumber(quota.entitlement)
+    || !isFiniteNumber(quota.percent_remaining)
+    || !isFiniteNumber(quota.remaining)
+    || typeof quota.unlimited !== 'boolean') {
+    throw new TypeError(`Invalid Copilot usage quota: ${name}`)
+  }
+
+  return {
+    entitlement: quota.entitlement,
+    percent_remaining: quota.percent_remaining,
+    remaining: quota.remaining,
+    unlimited: quota.unlimited,
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }

@@ -8,7 +8,7 @@ import consola from 'consola'
 import { readFileSnapshot, restoreFileSnapshot, writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { saveDaemonConfig } from '~/daemon/config'
 import { ensureDaemonLogFile, rotateDaemonLogIfNeeded } from '~/daemon/log-file'
-import { probeCopilotProxyServer } from '~/daemon/native-service'
+import { probeCopilotProxyServer, resolveNativeServiceReadinessHost } from '~/daemon/native-service'
 import { isDaemonRunning, readPid, removePidFile } from '~/daemon/pid'
 import { buildNativeServiceEnvironment, loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
 import { PATHS } from '~/lib/paths'
@@ -40,9 +40,6 @@ const DAEMON_ENV_ALLOWLIST = [
   'XDG_CONFIG_HOME',
   'XDG_STATE_HOME',
   'COPILOT_PROXY_DATA_DIR',
-  // GitHub token (if user passes via env)
-  'GH_TOKEN',
-  'GITHUB_TOKEN',
   // Proxy local security configuration
   'COPILOT_PROXY_CORS_ORIGINS',
   'COPILOT_PROXY_ALLOWED_HOSTS',
@@ -52,9 +49,14 @@ const DAEMON_ENV_ALLOWLIST = [
   // Platform-specific (Windows)
   'APPDATA',
   'LOCALAPPDATA',
+  'PROGRAMDATA',
   'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
   'SystemRoot',
+  'WINDIR',
   'COMSPEC',
+  'PATHEXT',
 ]
 
 const DAEMON_PROXY_ENV_ALLOWLIST = [
@@ -76,12 +78,26 @@ export function filterEnvForDaemon(
   const allowlist = options.proxyEnv
     ? [...DAEMON_ENV_ALLOWLIST, ...DAEMON_PROXY_ENV_ALLOWLIST]
     : DAEMON_ENV_ALLOWLIST
+  const caseInsensitiveEnvironment = process.platform === 'win32'
+    ? indexEnvironmentCaseInsensitively(env)
+    : undefined
   for (const key of allowlist) {
-    if (key in env && env[key] !== undefined) {
-      filtered[key] = env[key]!
-    }
+    const value = env[key] ?? caseInsensitiveEnvironment?.get(key.toUpperCase())
+    if (value !== undefined)
+      filtered[key] = value
   }
   return filtered
+}
+
+function indexEnvironmentCaseInsensitively(
+  env: Record<string, string | undefined>,
+): ReadonlyMap<string, string> {
+  const indexed = new Map<string, string>()
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && !indexed.has(key.toUpperCase()))
+      indexed.set(key.toUpperCase(), value)
+  }
+  return indexed
 }
 
 export function buildLegacySupervisorArgs(
@@ -169,6 +185,17 @@ export async function daemonStart(
     preparedEnvironment?: NodeJS.ProcessEnv
   } = {},
 ): Promise<void> {
+  // Environment credentials are a one-shot launcher input. Consume them in
+  // the short-lived parent before prepareDaemonEnvironment builds the
+  // deliberately credential-free supervisor snapshot. This preserves the
+  // foreground precedence (explicit, GH_TOKEN, then GITHUB_TOKEN) without
+  // putting either provider-secret alias back into the child environment.
+  const githubToken = consumeLegacyDaemonGithubToken(config.githubToken)
+  const daemonConfig: DaemonConfig = {
+    ...config,
+    githubToken,
+  }
+
   // Acquire lock to prevent concurrent starts.
   // ensureLock() calls process.exit() before lock is held,
   // so no cleanup needed in that path.
@@ -181,7 +208,7 @@ export async function daemonStart(
     throw new Error('unreachable')
   }
 
-  if (config.showToken) {
+  if (daemonConfig.showToken) {
     consola.error('Cannot use --show-token with daemon mode because tokens would be written to daemon logs.')
     exitWithLock(1)
   }
@@ -190,12 +217,12 @@ export async function daemonStart(
   try {
     daemonEnv = options.preparedEnvironment
       ? { ...options.preparedEnvironment }
-      : prepareDaemonEnvironment(config, {
+      : prepareDaemonEnvironment(daemonConfig, {
           usePersistedEnvironment: options.usePersistedEnvironment,
         })
     // Validate a caller-provided snapshot too. This is intentionally
     // side-effect free; persistence happens only after all preflight checks.
-    buildNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: daemonEnv })
+    buildNativeServiceEnvironment({ proxyEnv: daemonConfig.proxyEnv, sourceEnv: daemonEnv })
   }
   catch (error) {
     consola.error('Cannot prepare daemon environment:', error instanceof Error ? error.message : error)
@@ -211,19 +238,23 @@ export async function daemonStart(
 
   // Pre-check port availability so the user gets immediate feedback
   try {
-    await checkPortAvailable(config.port, config.host)
+    await checkPortAvailable(daemonConfig.port, daemonConfig.host)
   }
   catch (error) {
     if (isPortInUseError(error)) {
-      consola.error(`Port ${config.port} is already in use`)
+      consola.error(`Port ${daemonConfig.port} is already in use`)
       exitWithLock(1)
     }
     consola.error('Cannot verify daemon port availability:', error instanceof Error ? error.message : error)
     exitWithLock(1)
   }
 
+  let tokenSnapshot: ReturnType<typeof readFileSnapshot>
   try {
-    persistLegacyDaemonState(config, daemonEnv)
+    tokenSnapshot = githubToken === undefined
+      ? undefined
+      : readFileSnapshot(PATHS.GITHUB_TOKEN_PATH)
+    persistLegacyDaemonState(daemonConfig, daemonEnv)
   }
   catch (error) {
     consola.error('Cannot persist daemon configuration:', error instanceof Error ? error.message : error)
@@ -233,16 +264,43 @@ export async function daemonStart(
   // Resolve the executable path
   let pid: number
   try {
-    pid = await spawnLegacySupervisor(config, daemonEnv)
+    pid = await spawnLegacySupervisor(daemonConfig, daemonEnv)
   }
   catch (error) {
-    consola.error('Failed to start daemon process:', error)
+    let reportedError = error
+    if (githubToken !== undefined) {
+      try {
+        restoreFileSnapshot(PATHS.GITHUB_TOKEN_PATH, tokenSnapshot)
+      }
+      catch (restoreError) {
+        reportedError = new AggregateError(
+          [error, restoreError],
+          'Failed to start daemon process and could not restore the previous GitHub token',
+        )
+      }
+    }
+    consola.error('Failed to start daemon process:', reportedError)
     return exitWithLock(1)
   }
 
   consola.success(`Daemon started (PID: ${pid})`)
   consola.info(`Logs: ${PATHS.DAEMON_LOG}`)
   exitWithLock(0)
+}
+
+function consumeLegacyDaemonGithubToken(explicitToken: string | undefined): string | undefined {
+  try {
+    for (const candidate of [explicitToken, process.env.GH_TOKEN, process.env.GITHUB_TOKEN]) {
+      const token = candidate?.trim()
+      if (token)
+        return token
+    }
+    return undefined
+  }
+  finally {
+    delete process.env.GH_TOKEN
+    delete process.env.GITHUB_TOKEN
+  }
 }
 
 export async function spawnLegacySupervisor(
@@ -273,7 +331,7 @@ export async function spawnLegacySupervisor(
     await waitForSupervisorReadiness(
       child,
       child.pid,
-      () => isSupervisorReady(config, child.pid!),
+      () => isSupervisorReady(config, child.pid!, daemonEnv),
       { getSpawnError: () => spawnError },
     )
     child.unref()
@@ -346,7 +404,15 @@ export function prepareDaemonEnvironment(
   config: Pick<DaemonConfig, 'proxyEnv'>,
   options: { usePersistedEnvironment?: boolean } = {},
 ): NodeJS.ProcessEnv {
-  const daemonEnv: NodeJS.ProcessEnv = { ...process.env }
+  // Build the exact child snapshot up front instead of spreading process.env.
+  // On Windows, Bun can enumerate the executable search path as `Path` while
+  // exposing it through process.env.PATH case-insensitively. Once spread into
+  // a plain object that alias is lost. filterEnvForDaemon both canonicalizes
+  // those Windows keys and prevents credentials/provider secrets from entering
+  // the long-lived supervisor environment.
+  const daemonEnv: NodeJS.ProcessEnv = filterEnvForDaemon(process.env, {
+    proxyEnv: config.proxyEnv,
+  })
   if (!options.usePersistedEnvironment) {
     buildNativeServiceEnvironment({ proxyEnv: config.proxyEnv, sourceEnv: daemonEnv })
     return daemonEnv
@@ -426,12 +492,19 @@ export function persistLegacyDaemonState(
   }
 }
 
-async function isSupervisorReady(config: DaemonConfig, pid: number): Promise<boolean> {
+async function isSupervisorReady(
+  config: DaemonConfig,
+  pid: number,
+  daemonEnv: NodeJS.ProcessEnv,
+): Promise<boolean> {
   const daemon = isDaemonRunning()
   if (!daemon.running || daemon.pid !== pid)
     return false
 
-  return await probeCopilotProxyServer(config.host, config.port)
+  const requestHost = resolveNativeServiceReadinessHost(config.host, daemonEnv)
+  if (!requestHost)
+    return false
+  return await probeCopilotProxyServer(config.host, config.port, undefined, requestHost)
 }
 
 function removePidFileIfOwned(pid: number): void {

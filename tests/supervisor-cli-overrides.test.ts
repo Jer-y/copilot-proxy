@@ -29,7 +29,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
     const merged = mergeDaemonConfigWithExplicitFlags(
       savedConfig,
       cliConfig,
-      ['start', '--_supervisor', '--proxy-env'],
+      ['--_supervisor', '--proxy-env'],
     )
 
     expect(merged.proxyEnv).toBe(true)
@@ -60,7 +60,7 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
     const merged = mergeDaemonConfigWithExplicitFlags(
       savedConfig,
       cliConfig,
-      ['start', '--_supervisor', '--port', '4411', '--proxy-env'],
+      ['--_supervisor', '--port', '4411', '--proxy-env'],
     )
 
     expect(merged).toEqual({
@@ -94,7 +94,6 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
       savedConfig,
       cliConfig,
       [
-        'start',
         '--_supervisor',
         '-p',
         '4411',
@@ -141,5 +140,39 @@ describe('mergeDaemonConfigWithExplicitFlags', () => {
       showToken: true,
       proxyEnv: true,
     })
+  })
+
+  test('uses Citty aliases and ignores option-looking string values', () => {
+    const persisted: DaemonConfig = {
+      ...savedConfig,
+      proxyEnv: true,
+    }
+    const cliConfig: DaemonConfig = {
+      ...savedConfig,
+      host: '--proxy-env',
+      proxyEnv: false,
+    }
+
+    const consumed = mergeDaemonConfigWithExplicitFlags(
+      persisted,
+      cliConfig,
+      ['--_supervisor', '--host', '--proxy-env'],
+    )
+    expect(consumed.host).toBe('--proxy-env')
+    expect(consumed.proxyEnv).toBe(true)
+
+    const camelAlias = mergeDaemonConfigWithExplicitFlags(
+      savedConfig,
+      { ...savedConfig, proxyEnv: true },
+      ['--_supervisor', '--proxyEnv'],
+    )
+    expect(camelAlias.proxyEnv).toBe(true)
+
+    const negativeAlias = mergeDaemonConfigWithExplicitFlags(
+      persisted,
+      cliConfig,
+      ['--_supervisor', '--no-proxyEnv'],
+    )
+    expect(negativeAlias.proxyEnv).toBe(false)
   })
 })

@@ -1,8 +1,9 @@
 import type { DaemonConfig } from '../src/daemon/config'
 
 import { describe, expect, test } from 'bun:test'
-import { buildServiceStartArgs, isEphemeralPackageRunnerPath, resolveNativeServiceEnableConfig, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
-import { readinessProbeHostname, waitForNativeServiceReadiness } from '../src/daemon/native-service'
+import { parseArgs as parseCittyArgs } from 'citty'
+import { buildServiceStartArgs, isEphemeralPackageRunnerPath, nativeServiceHostEnvironmentError, resolveExplicitBooleanOption, resolveLegacyDaemonRestoreConfig, resolveNativeServiceEnableConfig, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
+import { readinessProbeHostHeader, readinessProbeHostname, resolveNativeServiceReadinessHost, waitForNativeServiceReadiness } from '../src/daemon/native-service'
 import { PATHS } from '../src/lib/paths'
 
 const baseConfig: DaemonConfig = {
@@ -21,6 +22,8 @@ describe('buildServiceStartArgs', () => {
     expect(buildServiceStartArgs('/tmp/main.js', baseConfig)).toEqual([
       '/tmp/main.js',
       'start',
+      '--preset',
+      'custom',
       '--port',
       '4399',
       '--host',
@@ -58,6 +61,8 @@ describe('buildServiceStartArgs', () => {
     expect(args).toEqual([
       '/tmp/main.js',
       'start',
+      '--preset',
+      'custom',
       '--port',
       '4411',
       '--host',
@@ -101,6 +106,40 @@ describe('buildServiceStartArgs', () => {
 })
 
 describe('resolveNativeServiceEnableConfig', () => {
+  test('uses the bounded service preset for a first native install', () => {
+    expect(resolveNativeServiceEnableConfig({})).toMatchObject({
+      host: '127.0.0.1',
+      maxConcurrency: 4,
+      maxQueue: 32,
+      queueTimeoutMs: 30_000,
+    })
+  })
+
+  test('preserves an older native service that has no persisted config', () => {
+    expect(resolveNativeServiceEnableConfig({ existingNativeService: true })).toEqual(baseConfig)
+    expect(resolveNativeServiceEnableConfig({
+      existingNativeService: true,
+      preset: 'service',
+    })).toMatchObject({
+      maxConcurrency: 4,
+      maxQueue: 32,
+      queueTimeoutMs: 30_000,
+    })
+  })
+
+  test('prefers a recoverable v0.8 daemon config over the legacy service baseline', () => {
+    const savedConfig = {
+      ...baseConfig,
+      maxConcurrency: 7,
+      maxQueue: 9,
+      queueTimeoutMs: 1234,
+    }
+    expect(resolveNativeServiceEnableConfig({
+      existingNativeService: true,
+      savedConfig,
+    })).toEqual(savedConfig)
+  })
+
   test('reuses the installed native config when no legacy config exists', () => {
     expect(resolveNativeServiceEnableConfig({
       installedConfig: {
@@ -193,13 +232,262 @@ describe('resolveNativeServiceEnableConfig', () => {
     })
   })
 
+  test('applies named safe presets before explicit overrides', () => {
+    expect(resolveNativeServiceEnableConfig({ preset: 'gateway-upstream' })).toMatchObject({
+      host: '0.0.0.0',
+      maxConcurrency: 4,
+      maxQueue: 50,
+      queueTimeoutMs: 30_000,
+    })
+    expect(resolveNativeServiceEnableConfig({
+      preset: 'personal',
+      maxConcurrency: '3',
+    })).toMatchObject({
+      host: '127.0.0.1',
+      maxConcurrency: 3,
+      maxQueue: 8,
+    })
+    expect(resolveNativeServiceEnableConfig({ preset: 'custom' })).toEqual(baseConfig)
+  })
+
+  test('persists explicit fresh-install identity, listener, and proxy settings', () => {
+    expect(resolveNativeServiceEnableConfig({
+      accountType: 'enterprise',
+      host: '10.0.0.8',
+      port: '4411',
+      proxyEnv: true,
+      preset: 'service',
+    })).toMatchObject({
+      accountType: 'enterprise',
+      host: '10.0.0.8',
+      port: 4411,
+      proxyEnv: true,
+      maxConcurrency: 4,
+      maxQueue: 32,
+    })
+
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig: {
+        ...baseConfig,
+        accountType: 'business',
+        port: 4400,
+        proxyEnv: true,
+      },
+      proxyEnv: false,
+    })).toMatchObject({
+      accountType: 'business',
+      port: 4400,
+      proxyEnv: false,
+    })
+  })
+
+  test('persists every non-interactive service runtime option without a legacy daemon', () => {
+    expect(resolveNativeServiceEnableConfig({
+      bodyTimeoutMs: '910000',
+      connectTimeoutMs: '45000',
+      headersTimeoutMs: '920000',
+      rateLimit: '7',
+      rateLimitWait: true,
+      verbose: true,
+    })).toMatchObject({
+      bodyTimeoutMs: 910000,
+      connectTimeoutMs: 45000,
+      headersTimeoutMs: 920000,
+      rateLimit: 7,
+      rateLimitWait: true,
+      verbose: true,
+    })
+
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig: {
+        ...baseConfig,
+        bodyTimeoutMs: 910000,
+        connectTimeoutMs: 45000,
+        headersTimeoutMs: 920000,
+        rateLimit: 7,
+        rateLimitWait: true,
+        verbose: true,
+      },
+      clearRateLimit: true,
+      clearTimeoutOverrides: true,
+      rateLimitWait: undefined,
+      verbose: false,
+    })).toEqual({
+      ...baseConfig,
+      verbose: false,
+    })
+  })
+
   test('rejects invalid and conflicting concurrency overrides', () => {
     expect(() => resolveNativeServiceEnableConfig({ maxConcurrency: '0' })).toThrow('--max-concurrency')
-    expect(() => resolveNativeServiceEnableConfig({ maxQueue: '1' })).toThrow('require maxConcurrency')
+    expect(resolveNativeServiceEnableConfig({ maxQueue: '1' })).toMatchObject({
+      maxConcurrency: 4,
+      maxQueue: 1,
+    })
+    expect(() => resolveNativeServiceEnableConfig({ preset: 'custom', maxQueue: '1' })).toThrow('require maxConcurrency')
     expect(() => resolveNativeServiceEnableConfig({
       maxConcurrency: '4',
       clearConcurrencyLimit: true,
     })).toThrow('cannot be combined')
+    expect(() => resolveNativeServiceEnableConfig({
+      preset: 'service',
+      clearConcurrencyLimit: true,
+    })).toThrow('cannot be combined')
+  })
+
+  test('rejects invalid fresh-install identity and listener overrides', () => {
+    expect(() => resolveNativeServiceEnableConfig({ accountType: 'organization' })).toThrow('--account-type')
+    expect(() => resolveNativeServiceEnableConfig({ host: 'https://proxy.internal/path' })).toThrow('--host')
+    expect(() => resolveNativeServiceEnableConfig({ port: '0' })).toThrow('--port')
+    expect(() => resolveNativeServiceEnableConfig({ port: '04400' })).toThrow('--port')
+    expect(() => resolveNativeServiceEnableConfig({ rateLimit: '0' })).toThrow('--rate-limit')
+    expect(() => resolveNativeServiceEnableConfig({ headersTimeoutMs: '-1' })).toThrow('--headers-timeout-ms')
+    expect(() => resolveNativeServiceEnableConfig({ bodyTimeoutMs: '1.5' })).toThrow('--body-timeout-ms')
+    expect(() => resolveNativeServiceEnableConfig({ connectTimeoutMs: '999999999999' })).toThrow('--connect-timeout-ms')
+    expect(() => resolveNativeServiceEnableConfig({
+      clearRateLimit: true,
+      rateLimitWait: false,
+    })).toThrow('cannot be combined')
+    expect(() => resolveNativeServiceEnableConfig({
+      clearTimeoutOverrides: true,
+      connectTimeoutMs: '1000',
+    })).toThrow('cannot be combined')
+  })
+})
+
+describe('enable boolean CLI overrides', () => {
+  test('uses Citty values while preserving omission for installed config reuse', () => {
+    expect(resolveExplicitBooleanOption([], 'proxy-env')).toBeUndefined()
+
+    const cases: Array<{
+      label: string
+      name: 'proxy-env' | 'verbose' | 'wait'
+      rawArgs: string[]
+      shortName?: 'v' | 'w'
+    }> = [
+      { label: 'bare long', name: 'proxy-env', rawArgs: ['--proxy-env'] },
+      { label: 'long true', name: 'proxy-env', rawArgs: ['--proxy-env=true'] },
+      { label: 'long false', name: 'proxy-env', rawArgs: ['--proxy-env=false'] },
+      { label: 'long numeric one', name: 'proxy-env', rawArgs: ['--proxy-env=1'] },
+      { label: 'long numeric zero', name: 'proxy-env', rawArgs: ['--proxy-env=0'] },
+      { label: 'camel-case long alias', name: 'proxy-env', rawArgs: ['--proxyEnv=1'] },
+      { label: 'camel-case true overrides primary default value', name: 'proxy-env', rawArgs: ['--proxyEnv', '--proxy-env=false'] },
+      { label: 'later long true wins', name: 'proxy-env', rawArgs: ['--proxy-env=false', '--proxy-env=true'] },
+      { label: 'later long false wins', name: 'proxy-env', rawArgs: ['--proxy-env=true', '--proxy-env=false'] },
+      { label: 'negative long', name: 'proxy-env', rawArgs: ['--no-proxy-env'] },
+      { label: 'long wait false', name: 'wait', rawArgs: ['--wait=false'], shortName: 'w' },
+      { label: 'long wait numeric one', name: 'wait', rawArgs: ['--wait=1'], shortName: 'w' },
+      { label: 'long wait numeric zero', name: 'wait', rawArgs: ['--wait=0'], shortName: 'w' },
+      { label: 'bare short', name: 'wait', rawArgs: ['-w'], shortName: 'w' },
+      { label: 'short equals false remains true', name: 'wait', rawArgs: ['-w=false'], shortName: 'w' },
+      { label: 'short boolean cluster', name: 'wait', rawArgs: ['-vw'], shortName: 'w' },
+      { label: 'short target before string option', name: 'wait', rawArgs: ['-wp'], shortName: 'w' },
+      { label: 'string option shields short target text', name: 'wait', rawArgs: ['-pw'], shortName: 'w' },
+      { label: 'string option consumes long target', name: 'wait', rawArgs: ['--port', '--wait'], shortName: 'w' },
+      { label: 'consumed delimiter leaves target active', name: 'wait', rawArgs: ['--port', '--', '--wait'], shortName: 'w' },
+      { label: 'standalone delimiter stops target parsing', name: 'wait', rawArgs: ['--', '--wait'], shortName: 'w' },
+    ]
+
+    for (const { label, name, rawArgs, shortName } of cases) {
+      const cittyArgs = parseCittyArgs(rawArgs, {
+        'port': { type: 'string', alias: 'p' },
+        'proxy-env': { type: 'boolean', default: false },
+        'verbose': { type: 'boolean', alias: 'v', default: false },
+        'wait': { type: 'boolean', alias: 'w', default: false },
+      })
+      expect({
+        label,
+        value: resolveExplicitBooleanOption(rawArgs, name, shortName) ?? false,
+      }).toEqual({
+        label,
+        value: Boolean(cittyArgs[name]),
+      })
+    }
+  })
+
+  test('applies Citty equals values instead of silently preserving installed booleans', () => {
+    const installedConfig = {
+      ...baseConfig,
+      proxyEnv: false,
+      rateLimitWait: false,
+    }
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig,
+      proxyEnv: resolveExplicitBooleanOption(['--proxy-env=1'], 'proxy-env'),
+      rateLimitWait: resolveExplicitBooleanOption(['--wait=1'], 'wait', 'w'),
+    })).toMatchObject({
+      proxyEnv: true,
+      rateLimitWait: true,
+    })
+  })
+
+  test('rejects contradictory positive and negative forms', () => {
+    expect(() => resolveExplicitBooleanOption([
+      '--proxy-env',
+      '--no-proxy-env',
+    ], 'proxy-env')).toThrow('cannot be combined')
+    expect(() => resolveExplicitBooleanOption([
+      '-v',
+      '--no-verbose',
+    ], 'verbose', 'v')).toThrow('cannot be combined')
+  })
+
+  test('lets the later repeated positive value win without treating it as a negated flag conflict', () => {
+    expect(resolveExplicitBooleanOption([
+      '--proxy-env',
+      '--proxy-env=false',
+    ], 'proxy-env')).toBe(false)
+    expect(resolveExplicitBooleanOption([
+      '--proxy-env=false',
+      '--proxy-env=1',
+    ], 'proxy-env')).toBe(true)
+    expect(resolveExplicitBooleanOption([
+      '--proxy-env=false',
+      '--no-proxy-env',
+    ], 'proxy-env')).toBe(false)
+  })
+})
+
+describe('nativeServiceHostEnvironmentError', () => {
+  test('requires a valid exact non-loopback Host allowlist only for non-loopback listeners', () => {
+    expect(nativeServiceHostEnvironmentError('127.0.0.1', {})).toBeUndefined()
+    expect(nativeServiceHostEnvironmentError('::1', {
+      COPILOT_PROXY_ALLOWED_HOSTS: 'localhost',
+    })).toBeUndefined()
+    expect(nativeServiceHostEnvironmentError('0.0.0.0', {
+      COPILOT_PROXY_ALLOWED_HOSTS: 'localhost,proxy.internal,192.0.2.10,[2001:db8::1]',
+    })).toBeUndefined()
+
+    for (const loopbackOnlyOrMalformed of [
+      'localhost',
+      'foo.localhost',
+      '127.0.0.1',
+      '[::1]',
+      ',',
+      'https://proxy.internal',
+      'proxy.internal:443',
+      '*.internal',
+    ]) {
+      expect(nativeServiceHostEnvironmentError('0.0.0.0', {
+        COPILOT_PROXY_ALLOWED_HOSTS: loopbackOnlyOrMalformed,
+      })).toContain('at least one non-loopback hostname or IP address')
+    }
+  })
+})
+
+describe('resolveLegacyDaemonRestoreConfig', () => {
+  test('snapshots the pre-migration config and refuses to stop an unconfigured daemon', () => {
+    const savedConfig = {
+      ...baseConfig,
+      host: '192.168.1.10',
+      maxConcurrency: 7,
+    }
+    const restoreConfig = resolveLegacyDaemonRestoreConfig(true, savedConfig)
+
+    expect(restoreConfig).toEqual(savedConfig)
+    expect(restoreConfig).not.toBe(savedConfig)
+    expect(resolveLegacyDaemonRestoreConfig(false, savedConfig)).toBeUndefined()
+    expect(() => resolveLegacyDaemonRestoreConfig(true, null)).toThrow('persisted daemon config is missing or invalid')
   })
 })
 
@@ -276,6 +564,36 @@ describe('enable transaction rollback', () => {
     ])
   })
 
+  test('restores a stopped legacy daemon with its pre-migration host', async () => {
+    const previousConfig = {
+      ...baseConfig,
+      host: '192.168.1.10',
+      maxConcurrency: 7,
+      maxQueue: 9,
+      queueTimeoutMs: 1234,
+    }
+    const replacementConfig = resolveNativeServiceEnableConfig({
+      savedConfig: previousConfig,
+      preset: 'service',
+    })
+    const legacyRestoreConfig = resolveLegacyDaemonRestoreConfig(true, previousConfig)
+    const restoredConfigs: DaemonConfig[] = []
+
+    expect(replacementConfig.host).toBe('127.0.0.1')
+    expect(await rollbackEnableTransaction({ installed: false, enabled: false, running: false }, {
+      restorePreviousPersistedState: () => true,
+      restoreReplacementPersistedState: () => true,
+      rollbackPlatformDefinition: () => true,
+      restorePreviousAutoStartState: () => true,
+      restoreLegacyDaemon: (config) => {
+        restoredConfigs.push(config)
+        return true
+      },
+    }, legacyRestoreConfig)).toBe(true)
+    expect(restoredConfigs).toEqual([previousConfig])
+    expect(restoredConfigs[0]?.host).toBe('192.168.1.10')
+  })
+
   test('restores replacement metadata when the platform definition rollback fails', async () => {
     const calls: string[] = []
 
@@ -346,6 +664,23 @@ describe('enable transaction rollback', () => {
 })
 
 describe('native service readiness', () => {
+  test('selects a persisted non-loopback Host for non-loopback listeners', () => {
+    expect(resolveNativeServiceReadinessHost('127.0.0.1', {})).toBe('localhost')
+    expect(resolveNativeServiceReadinessHost('0.0.0.0', {
+      COPILOT_PROXY_ALLOWED_HOSTS: 'localhost,proxy.internal,192.0.2.10',
+    })).toBe('proxy.internal')
+    expect(resolveNativeServiceReadinessHost('172.17.0.1', {
+      COPILOT_PROXY_ALLOWED_HOSTS: 'localhost',
+    })).toBeUndefined()
+  })
+
+  test('formats IPv4, DNS, and IPv6 readiness Host authorities', () => {
+    expect(readinessProbeHostHeader('proxy.internal', 4399)).toBe('proxy.internal:4399')
+    expect(readinessProbeHostHeader('192.0.2.10', 4399)).toBe('192.0.2.10:4399')
+    expect(readinessProbeHostHeader('2001:db8::1', 4399)).toBe('[2001:db8::1]:4399')
+    expect(readinessProbeHostHeader('[2001:db8::1]', 4399)).toBe('[2001:db8::1]:4399')
+  })
+
   test('requires consecutive identity probes before reporting ready', async () => {
     let now = 0
     const outcomes = [true, false, true, true]

@@ -1,7 +1,10 @@
 import type { DaemonConfig } from '~/daemon/config'
 
 import http from 'node:http'
+import { isIP } from 'node:net'
 import process from 'node:process'
+
+import { ALLOWED_HOSTS_ENV, isLoopbackHostname, parseAllowedHosts } from '~/lib/security'
 
 export interface NativeServiceLogOptions {
   follow: boolean
@@ -33,6 +36,7 @@ export interface NativeServiceReadinessOptions {
   delay?: (milliseconds: number) => Promise<void>
   now?: () => number
   expectedInstanceToken?: string
+  requestHost?: string
 }
 
 export const NATIVE_SERVICE_INSTANCE_HEADER = 'x-copilot-proxy-instance-token'
@@ -50,6 +54,7 @@ export async function waitForNativeServiceReadiness(
     config.host,
     config.port,
     options.expectedInstanceToken,
+    options.requestHost,
   ))
   const deadline = now() + timeoutMs
   let consecutiveReadyChecks = 0
@@ -73,6 +78,7 @@ export async function probeCopilotProxyServer(
   host: string,
   port: number,
   expectedInstanceToken?: string,
+  requestHost: string = 'localhost',
 ): Promise<boolean> {
   const hostname = readinessProbeHostname(host)
   return await new Promise<boolean>((resolve) => {
@@ -88,7 +94,7 @@ export async function probeCopilotProxyServer(
       hostname,
       port,
       path: '/',
-      headers: { Host: `localhost:${port}` },
+      headers: { Host: readinessProbeHostHeader(requestHost, port) },
       timeout: 1_500,
     }, (response) => {
       let body = ''
@@ -110,6 +116,26 @@ export async function probeCopilotProxyServer(
     request.once('timeout', () => request.destroy(new Error('readiness probe timed out')))
     request.once('error', () => finish(false))
   })
+}
+
+export function resolveNativeServiceReadinessHost(
+  bindHost: string,
+  environment: NodeJS.ProcessEnv | Record<string, string>,
+): string | undefined {
+  if (isLoopbackHostname(bindHost))
+    return 'localhost'
+
+  const allowedHosts = parseAllowedHosts(environment[ALLOWED_HOSTS_ENV])
+  return allowedHosts
+    ? [...allowedHosts].find(hostname => !isLoopbackHostname(hostname))
+    : undefined
+}
+
+export function readinessProbeHostHeader(host: string, port: number): string {
+  const normalized = host.trim().replace(/^\[|\]$/g, '')
+  return isIP(normalized) === 6
+    ? `[${normalized}]:${port}`
+    : `${normalized}:${port}`
 }
 
 export function readinessProbeHostname(host: string): string {

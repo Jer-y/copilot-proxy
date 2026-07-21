@@ -30,11 +30,23 @@ test('systemd install transaction helpers are safe when no install is pending', 
 
 describe('buildSystemdUnit', () => {
   test('runs foreground start under systemd rather than the app supervisor', () => {
-    const unit = buildSystemdUnit('/usr/bin/node', ['/tmp/main.js', 'start', '--port', '4399'])
+    const unit = buildSystemdUnit('/usr/bin/node', [
+      '/tmp/main.js',
+      'start',
+      '--port',
+      '4399',
+      '--_service',
+      '--_data-dir',
+      '/home/alice/.local/share/copilot-proxy',
+    ])
 
     expect(unit).toContain('ExecStart=/usr/bin/node /tmp/main.js start --port 4399')
+    expect(unit).toContain('--_service --_data-dir /home/alice/.local/share/copilot-proxy')
     expect(unit).toContain('Restart=on-failure')
     expect(unit).not.toContain('--_supervisor')
+    expect(unit).not.toContain('Environment=')
+    expect(unit).not.toContain('COPILOT_PROXY_ALLOWED_HOSTS')
+    expect(unit).not.toContain('GITHUB_TOKEN')
     expect(unit).not.toContain('StandardOutput=append:')
     expect(unit).not.toContain('StandardError=append:')
   })

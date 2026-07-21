@@ -22,8 +22,15 @@ const FAILED_REACTIVE_REFRESH_COOLDOWN_MS = 60_000
 
 type AuthFailureKind = 'unauthorized' | 'opaque_forbidden' | 'token_error'
 type CircuitPhase = 'closed' | 'open' | 'half_open'
+type RecoveryFollowerOutcome = 'cancelled' | 'failed' | 'succeeded'
+
+interface AuthenticatedRequestContext {
+  lateRecovery?: RecoveryDeferred
+}
 
 interface ScopeCircuit {
+  // Requests that sent attempt zero but have not selected a recovery yet.
+  pendingInitialAuthRequests: Set<AuthenticatedRequestContext>
   activeRequests: number
   phase: CircuitPhase
   cooldownMs: number
@@ -33,12 +40,16 @@ interface ScopeCircuit {
   opaqueFailureTimestamps: number[]
   lastFailureAt?: number
   lastSuccessAt?: number
+  circuitEpoch: number
+  recoveryEpoch: number
 }
 
 interface CircuitReservation {
+  globalCircuitEpoch: number
   globalProbe: boolean
   settled: boolean
   scope: ScopeCircuit
+  scopeCircuitEpoch: number
   scopeProbe: boolean
 }
 
@@ -47,8 +58,24 @@ interface RecoveryResult {
 }
 
 interface RecoveryDeferred extends RecoveryResult {
+  acceptingFollowers: boolean
+  followerReplayFailed: boolean
+  followerReplaysPending: number
+  followerReplaysRegistered: number
+  followerReplaySuccesses: number
+  followersSettled: Promise<void>
+  followersSettledResolved: boolean
+  lateFollowerCandidates: number
   promise: Promise<RecoveryResult>
   resolve: (value: RecoveryResult) => void
+  resolveFollowersSettled: () => void
+  scopeRecoveryEpoch: number
+}
+
+interface RecoveryFollowerCohort {
+  globalCircuitEpoch: number | undefined
+  scope: ScopeCircuit
+  scopeCircuitEpoch: number
 }
 
 export interface AuthenticatedCopilotFetchOptions {
@@ -108,7 +135,10 @@ export interface CopilotRecoveryStatus {
 
 const scopeCircuits = new Map<string, ScopeCircuit>()
 const scopeRecoveries = new Map<ScopeCircuit, RecoveryDeferred>()
+const successfulRecoveriesAwaitingFollowers = new Map<RecoveryDeferred, RecoveryFollowerCohort>()
 const globalCircuit = createCircuit()
+const globalCircuitAffectedScopeEpochs = new Map<ScopeCircuit, number>()
+let globalCircuitAffectedScopesEpoch = globalCircuit.circuitEpoch
 let reactiveRefreshSuppressedUntil: number | undefined
 let reactiveRefreshSuppressedGeneration: number | undefined
 
@@ -138,12 +168,16 @@ export async function fetchAuthenticatedCopilot(
   const now = deps.now ?? Date.now
   const scopeKey = createScopeKey(options.endpoint, options.model)
   const scope = getScopeCircuit(scopeKey)
+  const requestContext: AuthenticatedRequestContext = {}
   scope.activeRequests++
   try {
-    return await fetchAuthenticatedCopilotWithinScope(options, deps, now, scope)
+    return await fetchAuthenticatedCopilotWithinScope(options, deps, now, scope, requestContext)
   }
   finally {
+    scope.pendingInitialAuthRequests.delete(requestContext)
+    releaseLateRecoveryCandidate(requestContext)
     scope.activeRequests--
+    pruneScopeCircuits()
   }
 }
 
@@ -179,14 +213,15 @@ export async function acquireCopilotRequestPermit(
     }
     lease?.release()
     scope.activeRequests--
+    pruneScopeCircuits()
   }
 
   try {
     if (!state.concurrencyLimiter)
-      throwIfPermitAborted(options.signal)
+      throwIfRequestAborted(options.signal)
     assertCircuitAllowsRequest(scope, now())
     lease = await acquireConcurrencyLease(options.signal)
-    throwIfPermitAborted(options.signal)
+    throwIfRequestAborted(options.signal)
     reservation = reserveCircuitProbe(scope, now())
   }
   catch (error) {
@@ -201,10 +236,12 @@ export async function acquireCopilotRequestPermit(
   }
 }
 
-function throwIfPermitAborted(signal?: AbortSignal): void {
+function throwIfRequestAborted(signal?: AbortSignal): void {
   if (!signal?.aborted)
     return
-  const error = new Error('Copilot persistent-transport request was cancelled before admission')
+  if (signal.reason instanceof Error)
+    throw signal.reason
+  const error = new Error('Copilot request was cancelled before upstream admission')
   error.name = 'AbortError'
   throw error
 }
@@ -214,25 +251,41 @@ async function fetchAuthenticatedCopilotWithinScope(
   deps: AuthenticatedCopilotFetchDeps,
   now: () => number,
   scope: ScopeCircuit,
+  requestContext: AuthenticatedRequestContext,
 ): Promise<Response> {
   assertCircuitAllowsRequest(scope, now())
+  throwIfRequestAborted(options.signal)
 
   const lease = await acquireConcurrencyLease(options.signal)
   let releaseWithResponse = false
+  let ownedRecovery: RecoveryDeferred | undefined
+  let ownedRefresh: Promise<ReactiveTokenRefreshResult> | undefined
+  let recoveryResolved = false
   let reservation: CircuitReservation | undefined
+  let responseToDiscard: Response | undefined
+  let settleJoinedRecovery: ((outcome: RecoveryFollowerOutcome) => void) | undefined
 
   try {
+    throwIfRequestAborted(options.signal)
     reservation = reserveCircuitProbe(scope, now())
     const failedTokenSnapshot = getCopilotTokenSnapshot()
+    scope.pendingInitialAuthRequests.add(requestContext)
     const firstResponse = await sendAttempt(options, 0)
+    responseToDiscard = firstResponse
     const firstFailure = await classifyRecoverableAuthFailure(firstResponse)
+    scope.pendingInitialAuthRequests.delete(requestContext)
 
     if (!firstFailure) {
+      releaseLateRecoveryCandidate(requestContext)
       recordCircuitSuccess(reservation, now())
       const leasedResponse = attachLeaseToResponse(firstResponse, lease, options.signal)
+      responseToDiscard = undefined
       releaseWithResponse = true
       return leasedResponse
     }
+
+    const existingRecovery = scopeRecoveries.get(scope) ?? requestContext.lateRecovery
+    const requestRecoveryEpoch = existingRecovery?.scopeRecoveryEpoch ?? ++scope.recoveryEpoch
 
     metrics.recoverableAuthFailures++
     if (firstFailure === 'opaque_forbidden') {
@@ -241,23 +294,29 @@ async function fetchAuthenticatedCopilotWithinScope(
         maybeOpenGlobalCircuit(failureAt)
     }
 
-    const existingRecovery = scopeRecoveries.get(scope)
     if (existingRecovery) {
+      settleJoinedRecovery = registerRecoveryFollower(existingRecovery)
+      releaseLateRecoveryCandidate(requestContext)
       consola.debug('Joining in-flight Copilot authentication recovery:', {
         endpoint: options.endpoint,
         model: options.model,
       })
-      const recovery = await existingRecovery.promise
+      const recovery = await waitForSharedRecovery(existingRecovery.promise, options.signal)
       if (!recovery.recovered) {
+        settleJoinedRecovery('failed')
+        settleJoinedRecovery = undefined
         recordCircuitFailure(reservation, now())
         const leasedResponse = attachLeaseToResponse(firstResponse, lease, options.signal)
+        responseToDiscard = undefined
         releaseWithResponse = true
         return leasedResponse
       }
 
       await discardResponse(firstResponse)
+      responseToDiscard = undefined
       metrics.replayAttempts++
       const replayResponse = await sendAttempt(options, 1)
+      responseToDiscard = replayResponse
       const replayFailure = await classifyRecoverableAuthFailure(replayResponse)
       if (replayFailure) {
         metrics.replayFailures++
@@ -268,18 +327,21 @@ async function fetchAuthenticatedCopilotWithinScope(
           githubRequestId: replayResponse.headers.get('x-github-request-id') ?? undefined,
           copilotServiceRequestId: replayResponse.headers.get('x-copilot-service-request-id') ?? undefined,
         })
-        openScopeCircuit(scope, now())
-        maybeOpenGlobalCircuit(now())
-        recordCircuitFailure(reservation, now())
+        recordReplayAuthFailure(scope, reservation, now())
       }
       else {
         metrics.replaySuccesses++
         recordCircuitSuccess(reservation, now())
       }
+      settleJoinedRecovery(replayFailure ? 'failed' : 'succeeded')
+      settleJoinedRecovery = undefined
       const leasedResponse = attachLeaseToResponse(replayResponse, lease, options.signal)
+      responseToDiscard = undefined
       releaseWithResponse = true
       return leasedResponse
     }
+
+    releaseLateRecoveryCandidate(requestContext)
 
     const recoveryCheckAt = now()
     if (
@@ -292,113 +354,462 @@ async function fetchAuthenticatedCopilotWithinScope(
       })
       recordCircuitFailure(reservation, recoveryCheckAt)
       const leasedResponse = attachLeaseToResponse(firstResponse, lease, options.signal)
+      responseToDiscard = undefined
       releaseWithResponse = true
       return leasedResponse
     }
 
-    const recoveryDeferred = createRecoveryDeferred()
+    const recoveryDeferred = createRecoveryDeferred(requestRecoveryEpoch)
+    ownedRecovery = recoveryDeferred
     scopeRecoveries.set(scope, recoveryDeferred)
     logRecoverableFailure(options, firstResponse, firstFailure)
-    let recoveryResolved = false
-    try {
-      const refreshToken = deps.refreshToken ?? refreshCopilotTokenAfterFailure
-      const lifecycle = getCopilotTokenLifecycleStatus()
-      const refreshSuppressed = reactiveRefreshSuppressedUntil !== undefined
-        && reactiveRefreshSuppressedGeneration === lifecycle.generation
-        && failedTokenSnapshot.generation === lifecycle.generation
-        && now() < reactiveRefreshSuppressedUntil
-      const refreshResult = refreshSuppressed
-        ? { outcome: 'failed' as const, generation: lifecycle.generation }
-        : await (async () => {
-            metrics.reactiveRefreshAttempts++
-            return refreshToken(failedTokenSnapshot)
-          })()
-      if (refreshSuppressed)
-        metrics.reactiveRefreshSuppressions++
-      if (refreshResult.outcome === 'failed') {
-        if (refreshSuppressed) {
-          consola.debug('Copilot reactive token refresh is in cooldown; returning the current upstream rejection:', {
-            endpoint: options.endpoint,
-            model: options.model,
-            suppressedUntil: reactiveRefreshSuppressedUntil,
-          })
-        }
-        else {
-          metrics.reactiveRefreshFailures++
-          reactiveRefreshSuppressedGeneration = getCopilotTokenLifecycleStatus().generation
-          reactiveRefreshSuppressedUntil = now() + FAILED_REACTIVE_REFRESH_COOLDOWN_MS
-          consola.warn('Copilot authentication recovery could not refresh the short-lived token:', {
-            endpoint: options.endpoint,
-            model: options.model,
-          })
-        }
-        recoveryDeferred.resolve({ recovered: false })
-        recoveryResolved = true
-        if (scope.opaqueFailureTimestamps.length >= OPAQUE_FORBIDDEN_FAILURE_THRESHOLD) {
-          openScopeCircuit(scope, now())
-          maybeOpenGlobalCircuit(now())
-        }
-        recordCircuitFailure(reservation, now())
-        const leasedResponse = attachLeaseToResponse(firstResponse, lease, options.signal)
-        releaseWithResponse = true
-        return leasedResponse
-      }
-
-      metrics.reactiveRefreshSuccesses++
-      reactiveRefreshSuppressedGeneration = undefined
-      reactiveRefreshSuppressedUntil = undefined
-      await discardResponse(firstResponse)
-      metrics.replayAttempts++
-      const replayResponse = await sendAttempt(options, 1)
-      const replayFailure = await classifyRecoverableAuthFailure(replayResponse)
-      if (replayFailure) {
-        metrics.replayFailures++
-        consola.warn('Copilot authentication recovery replay remained rejected; opening scoped cooldown:', {
-          endpoint: options.endpoint,
-          model: options.model,
-          status: replayResponse.status,
-          githubRequestId: replayResponse.headers.get('x-github-request-id') ?? undefined,
-          copilotServiceRequestId: replayResponse.headers.get('x-copilot-service-request-id') ?? undefined,
-        })
+    const refreshToken = deps.refreshToken ?? refreshCopilotTokenAfterFailure
+    ownedRefresh = performReactiveRefresh({
+      failedTokenSnapshot,
+      now,
+      requestOptions: options,
+      refreshToken,
+    })
+    const refreshResult = await waitForSharedRecovery(ownedRefresh, options.signal)
+    if (!isSuccessfulReactiveRefresh(refreshResult)) {
+      recoveryDeferred.resolve({ recovered: false })
+      recoveryResolved = true
+      if (
+        refreshResult.outcome === 'failed'
+        && scope.opaqueFailureTimestamps.length >= OPAQUE_FORBIDDEN_FAILURE_THRESHOLD
+      ) {
         openScopeCircuit(scope, now())
         maybeOpenGlobalCircuit(now())
-        recoveryDeferred.resolve({ recovered: false })
-        recoveryResolved = true
+      }
+      if (refreshResult.outcome === 'cancelled')
+        releaseCircuitReservation(reservation)
+      else
         recordCircuitFailure(reservation, now())
-      }
-      else {
-        metrics.replaySuccesses++
-        consola.info('Copilot authentication recovery succeeded:', {
-          endpoint: options.endpoint,
-          model: options.model,
-          refreshOutcome: refreshResult.outcome,
-          status: replayResponse.status,
-          tokenGeneration: getCopilotTokenLifecycleStatus().generation,
-        })
-        closeCircuit(scope, now())
-        recoveryDeferred.resolve({ recovered: true })
-        recoveryResolved = true
-        recordCircuitSuccess(reservation, now())
-      }
-
-      const leasedResponse = attachLeaseToResponse(replayResponse, lease, options.signal)
+      const leasedResponse = attachLeaseToResponse(firstResponse, lease, options.signal)
+      responseToDiscard = undefined
       releaseWithResponse = true
       return leasedResponse
     }
-    finally {
-      if (!recoveryResolved)
-        recoveryDeferred.resolve({ recovered: false })
-      scopeRecoveries.delete(scope)
+
+    await discardResponse(firstResponse)
+    responseToDiscard = undefined
+    metrics.replayAttempts++
+    const replayResponse = await sendAttempt(options, 1)
+    responseToDiscard = replayResponse
+    const replayFailure = await classifyRecoverableAuthFailure(replayResponse)
+    if (replayFailure) {
+      metrics.replayFailures++
+      consola.warn('Copilot authentication recovery replay remained rejected; opening scoped cooldown:', {
+        endpoint: options.endpoint,
+        model: options.model,
+        status: replayResponse.status,
+        githubRequestId: replayResponse.headers.get('x-github-request-id') ?? undefined,
+        copilotServiceRequestId: replayResponse.headers.get('x-copilot-service-request-id') ?? undefined,
+      })
+      recordReplayAuthFailure(scope, reservation, now())
+      recoveryDeferred.resolve({ recovered: false })
+      recoveryResolved = true
     }
+    else {
+      metrics.replaySuccesses++
+      consola.info('Copilot authentication recovery succeeded:', {
+        endpoint: options.endpoint,
+        model: options.model,
+        refreshOutcome: refreshResult.outcome,
+        status: replayResponse.status,
+        tokenGeneration: getCopilotTokenLifecycleStatus().generation,
+      })
+      closeCircuit(scope, now())
+      retainSuccessfulRecoveryForPendingInitialRequests(scope, recoveryDeferred)
+      // Delayed attempt-zero responses can still open this scope after the
+      // owner succeeds, even when the global circuit never opened.
+      trackSuccessfulRecoveryFollowers(scope, recoveryDeferred, now)
+      recoveryDeferred.resolve({ recovered: true })
+      recoveryResolved = true
+      recordCircuitSuccess(reservation, now())
+    }
+
+    const leasedResponse = attachLeaseToResponse(replayResponse, lease, options.signal)
+    responseToDiscard = undefined
+    releaseWithResponse = true
+    return leasedResponse
   }
   catch (error) {
-    if (reservation)
-      recordCircuitFailure(reservation, now())
+    if (settleJoinedRecovery) {
+      settleJoinedRecovery(options.signal?.aborted ? 'cancelled' : 'failed')
+      settleJoinedRecovery = undefined
+    }
+    if (responseToDiscard) {
+      if (options.signal?.aborted)
+        void discardResponse(responseToDiscard)
+      else
+        await discardResponse(responseToDiscard)
+    }
+    if (reservation) {
+      if (options.signal?.aborted)
+        releaseCircuitReservation(reservation)
+      else
+        recordCircuitFailure(reservation, now())
+    }
     throw error
   }
   finally {
+    settleJoinedRecovery?.('failed')
+    if (ownedRecovery) {
+      if (!recoveryResolved && options.signal?.aborted && ownedRefresh) {
+        continueRecoveryAfterCallerAbort({
+          deferred: ownedRecovery,
+          now,
+          requestOptions: options,
+          refresh: ownedRefresh,
+          scope,
+        })
+      }
+      else {
+        if (!recoveryResolved)
+          ownedRecovery.resolve({ recovered: false })
+        deleteScopeRecovery(scope, ownedRecovery)
+        if (ownedRecovery.lateFollowerCandidates === 0)
+          closeRecoveryFollowerRegistration(ownedRecovery)
+      }
+    }
     if (!releaseWithResponse)
       lease?.release()
+  }
+}
+
+async function performReactiveRefresh(context: {
+  failedTokenSnapshot: CopilotTokenSnapshot
+  now: () => number
+  requestOptions: AuthenticatedCopilotFetchOptions
+  refreshToken: NonNullable<AuthenticatedCopilotFetchDeps['refreshToken']>
+}): Promise<ReactiveTokenRefreshResult> {
+  const lifecycle = getCopilotTokenLifecycleStatus()
+  const refreshSuppressed = reactiveRefreshSuppressedUntil !== undefined
+    && reactiveRefreshSuppressedGeneration === lifecycle.generation
+    && context.failedTokenSnapshot.generation === lifecycle.generation
+    && context.now() < reactiveRefreshSuppressedUntil
+  const refreshResult = refreshSuppressed
+    ? { outcome: 'failed' as const, generation: lifecycle.generation }
+    : await (async () => {
+        metrics.reactiveRefreshAttempts++
+        return context.refreshToken(context.failedTokenSnapshot)
+      })()
+
+  if (refreshSuppressed)
+    metrics.reactiveRefreshSuppressions++
+  if (refreshResult.outcome === 'cancelled')
+    return refreshResult
+  if (refreshResult.outcome === 'failed') {
+    if (refreshSuppressed) {
+      consola.debug('Copilot reactive token refresh is in cooldown; returning the current upstream rejection:', {
+        endpoint: context.requestOptions.endpoint,
+        model: context.requestOptions.model,
+        suppressedUntil: reactiveRefreshSuppressedUntil,
+      })
+    }
+    else {
+      metrics.reactiveRefreshFailures++
+      reactiveRefreshSuppressedGeneration = getCopilotTokenLifecycleStatus().generation
+      reactiveRefreshSuppressedUntil = context.now() + FAILED_REACTIVE_REFRESH_COOLDOWN_MS
+      consola.warn('Copilot authentication recovery could not refresh the short-lived token:', {
+        endpoint: context.requestOptions.endpoint,
+        model: context.requestOptions.model,
+      })
+    }
+    return refreshResult
+  }
+
+  metrics.reactiveRefreshSuccesses++
+  reactiveRefreshSuppressedGeneration = undefined
+  reactiveRefreshSuppressedUntil = undefined
+  return refreshResult
+}
+
+function isSuccessfulReactiveRefresh(result: ReactiveTokenRefreshResult): boolean {
+  return result.outcome === 'refreshed' || result.outcome === 'already_refreshed'
+}
+
+function waitForSharedRecovery<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal)
+    return promise
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    let onAbort = () => {}
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const settle = (callback: () => void) => {
+      if (settled)
+        return
+      settled = true
+      cleanup()
+      callback()
+    }
+    onAbort = () => settle(() => reject(callerAbortReason(signal)))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      value => settle(() => resolve(value)),
+      error => settle(() => reject(error)),
+    )
+    if (signal.aborted) {
+      onAbort()
+    }
+  })
+}
+
+function callerAbortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error)
+    return signal.reason
+  const error = new Error('Copilot request was cancelled while waiting for authentication recovery')
+  error.name = 'AbortError'
+  return error
+}
+
+function continueRecoveryAfterCallerAbort(context: {
+  deferred: RecoveryDeferred
+  now: () => number
+  requestOptions: AuthenticatedCopilotFetchOptions
+  refresh: Promise<ReactiveTokenRefreshResult>
+  scope: ScopeCircuit
+}): void {
+  void context.refresh.then((refreshResult) => {
+    const recovered = isSuccessfulReactiveRefresh(refreshResult)
+    context.deferred.recovered = recovered
+    if (recovered) {
+      consola.debug('Copilot authentication refresh completed after its initiating caller cancelled; joined callers may replay:', {
+        endpoint: context.requestOptions.endpoint,
+        model: context.requestOptions.model,
+        refreshOutcome: refreshResult.outcome,
+      })
+    }
+    else if (
+      refreshResult.outcome === 'failed'
+      && context.scope.opaqueFailureTimestamps.length >= OPAQUE_FORBIDDEN_FAILURE_THRESHOLD
+    ) {
+      openScopeCircuit(context.scope, context.now())
+      maybeOpenGlobalCircuit(context.now())
+    }
+    if (recovered) {
+      retainSuccessfulRecoveryForPendingInitialRequests(
+        context.scope,
+        context.deferred,
+      )
+    }
+    else {
+      deleteScopeRecovery(context.scope, context.deferred)
+      closeRecoveryFollowerRegistration(context.deferred)
+    }
+    context.deferred.resolve({ recovered })
+    if (recovered)
+      clearOpaqueFailuresAfterSuccessfulFollowers(context)
+  }).catch((error) => {
+    consola.warn('Copilot authentication refresh failed after its initiating caller cancelled:', {
+      endpoint: context.requestOptions.endpoint,
+      model: context.requestOptions.model,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    context.deferred.recovered = false
+    deleteScopeRecovery(context.scope, context.deferred)
+    closeRecoveryFollowerRegistration(context.deferred)
+    context.deferred.resolve({ recovered: false })
+  })
+}
+
+function retainSuccessfulRecoveryForPendingInitialRequests(
+  scope: ScopeCircuit,
+  recovery: RecoveryDeferred,
+): void {
+  deleteScopeRecovery(scope, recovery)
+  for (const requestContext of scope.pendingInitialAuthRequests) {
+    releaseLateRecoveryCandidate(requestContext)
+    requestContext.lateRecovery = recovery
+    recovery.lateFollowerCandidates++
+  }
+  if (recovery.lateFollowerCandidates === 0)
+    closeRecoveryFollowerRegistration(recovery)
+}
+
+function releaseLateRecoveryCandidate(requestContext: AuthenticatedRequestContext): void {
+  const recovery = requestContext.lateRecovery
+  if (!recovery)
+    return
+  requestContext.lateRecovery = undefined
+  recovery.lateFollowerCandidates--
+  if (recovery.lateFollowerCandidates === 0)
+    closeRecoveryFollowerRegistration(recovery)
+}
+
+function clearOpaqueFailuresAfterSuccessfulFollowers(context: {
+  deferred: RecoveryDeferred
+  now: () => number
+  requestOptions: AuthenticatedCopilotFetchOptions
+  scope: ScopeCircuit
+}): void {
+  successfulRecoveriesAwaitingFollowers.set(context.deferred, {
+    globalCircuitEpoch: getAffectedGlobalCircuitEpoch(context.scope),
+    scope: context.scope,
+    scopeCircuitEpoch: context.scope.circuitEpoch,
+  })
+  void context.deferred.followersSettled.then(() => {
+    const cohort = successfulRecoveriesAwaitingFollowers.get(context.deferred)
+    successfulRecoveriesAwaitingFollowers.delete(context.deferred)
+    if (
+      !cohort
+      || cohort.scope !== context.scope
+      || cohort.scopeCircuitEpoch !== context.scope.circuitEpoch
+      || context.deferred.scopeRecoveryEpoch !== context.scope.recoveryEpoch
+      || context.deferred.followerReplaysRegistered === 0
+      || context.deferred.followerReplayFailed
+      || context.deferred.followerReplaySuccesses !== context.deferred.followerReplaysRegistered
+    ) {
+      return
+    }
+
+    const recoveredAt = context.now()
+    const hadOpaqueFailures = context.scope.opaqueFailureTimestamps.length > 0
+    let closedScopedCircuit = false
+    if (hadOpaqueFailures) {
+      closedScopedCircuit = context.scope.phase !== 'closed'
+      if (closedScopedCircuit) {
+        closeCircuit(context.scope, recoveredAt)
+      }
+      else {
+        context.scope.opaqueFailureTimestamps = []
+        context.scope.lastSuccessAt = recoveredAt
+      }
+    }
+    const closedGlobalCircuit = cohort.globalCircuitEpoch !== undefined
+      && closeGlobalCircuitAfterAllScopesRecover(recoveredAt, cohort.globalCircuitEpoch)
+    if (hadOpaqueFailures) {
+      consola.info('Copilot authentication recovery followers cleared stale opaque failure evidence after the initiating caller cancelled:', {
+        endpoint: context.requestOptions.endpoint,
+        model: context.requestOptions.model,
+        followerReplays: context.deferred.followerReplaySuccesses,
+        closedGlobalCircuit,
+        closedScopedCircuit,
+      })
+    }
+  })
+}
+
+function trackSuccessfulRecoveryFollowers(
+  scope: ScopeCircuit,
+  recovery: RecoveryDeferred,
+  now: () => number,
+): void {
+  successfulRecoveriesAwaitingFollowers.set(recovery, {
+    globalCircuitEpoch: getAffectedGlobalCircuitEpoch(scope),
+    scope,
+    scopeCircuitEpoch: scope.circuitEpoch,
+  })
+  void recovery.followersSettled.then(() => {
+    const followersSucceeded = !recovery.followerReplayFailed
+      && recovery.followerReplaySuccesses === recovery.followerReplaysRegistered
+    const cohort = successfulRecoveriesAwaitingFollowers.get(recovery)
+    if (!cohort)
+      return
+    successfulRecoveriesAwaitingFollowers.delete(recovery)
+    if (
+      followersSucceeded
+      && cohort.scope === scope
+      && cohort.scopeCircuitEpoch === scope.circuitEpoch
+      && recovery.scopeRecoveryEpoch === scope.recoveryEpoch
+    ) {
+      const recoveredAt = now()
+      if (scope.phase !== 'closed') {
+        closeCircuit(scope, recoveredAt)
+      }
+      else {
+        scope.opaqueFailureTimestamps = []
+        scope.lastSuccessAt = recoveredAt
+      }
+      if (cohort.globalCircuitEpoch !== undefined)
+        closeGlobalCircuitAfterAllScopesRecover(recoveredAt, cohort.globalCircuitEpoch)
+    }
+  })
+}
+
+function getAffectedGlobalCircuitEpoch(scope: ScopeCircuit): number | undefined {
+  if (
+    globalCircuit.phase === 'closed'
+    || globalCircuitAffectedScopesEpoch !== globalCircuit.circuitEpoch
+    || globalCircuitAffectedScopeEpochs.get(scope) !== scope.circuitEpoch
+  ) {
+    return undefined
+  }
+  return globalCircuit.circuitEpoch
+}
+
+function closeGlobalCircuitAfterAllScopesRecover(now: number, expectedCircuitEpoch?: number): boolean {
+  if (
+    (expectedCircuitEpoch !== undefined && expectedCircuitEpoch !== globalCircuit.circuitEpoch)
+    || globalCircuit.phase === 'closed'
+    || globalCircuitAffectedScopesEpoch !== globalCircuit.circuitEpoch
+    || [...successfulRecoveriesAwaitingFollowers.entries()].some(([recovery, cohort]) =>
+      cohort.globalCircuitEpoch === globalCircuit.circuitEpoch
+      && globalCircuitAffectedScopeEpochs.get(cohort.scope) === cohort.scopeCircuitEpoch
+      && cohort.scopeCircuitEpoch === cohort.scope.circuitEpoch
+      && recovery.scopeRecoveryEpoch === cohort.scope.recoveryEpoch,
+    )
+    || [...globalCircuitAffectedScopeEpochs.entries()].some(([scope, scopeCircuitEpoch]) =>
+      scopeCircuitEpoch !== scope.circuitEpoch || scope.phase !== 'closed',
+    )
+  ) {
+    return false
+  }
+  closeGlobalCircuit(now)
+  return true
+}
+
+function closeGlobalCircuit(now: number): void {
+  closeCircuit(globalCircuit, now)
+  globalCircuitAffectedScopeEpochs.clear()
+  globalCircuitAffectedScopesEpoch = globalCircuit.circuitEpoch
+}
+
+function registerRecoveryFollower(recovery: RecoveryDeferred): (outcome: RecoveryFollowerOutcome) => void {
+  if (!recovery.acceptingFollowers)
+    throw new Error('Copilot authentication recovery stopped accepting followers before registration')
+
+  recovery.followerReplaysPending++
+  recovery.followerReplaysRegistered++
+  let settled = false
+  return (outcome) => {
+    if (settled)
+      return
+    settled = true
+    recovery.followerReplaysPending--
+    if (outcome === 'cancelled')
+      recovery.followerReplaysRegistered--
+    else if (outcome === 'succeeded')
+      recovery.followerReplaySuccesses++
+    else
+      recovery.followerReplayFailed = true
+    resolveRecoveryFollowersIfSettled(recovery)
+  }
+}
+
+function closeRecoveryFollowerRegistration(recovery: RecoveryDeferred): void {
+  recovery.acceptingFollowers = false
+  resolveRecoveryFollowersIfSettled(recovery)
+}
+
+function resolveRecoveryFollowersIfSettled(recovery: RecoveryDeferred): void {
+  if (
+    recovery.followersSettledResolved
+    || recovery.acceptingFollowers
+    || recovery.followerReplaysPending > 0
+  ) {
+    return
+  }
+  recovery.followersSettledResolved = true
+  recovery.resolveFollowersSettled()
+}
+
+function deleteScopeRecovery(scope: ScopeCircuit, recovery: RecoveryDeferred): void {
+  if (scopeRecoveries.get(scope) === recovery) {
+    scopeRecoveries.delete(scope)
+    pruneScopeCircuits()
   }
 }
 
@@ -433,9 +844,12 @@ export function getCopilotRecoveryStatus(now = Date.now()): CopilotRecoveryStatu
 export function resetCopilotRecoveryStateForTests(): void {
   scopeCircuits.clear()
   scopeRecoveries.clear()
+  successfulRecoveriesAwaitingFollowers.clear()
   reactiveRefreshSuppressedGeneration = undefined
   reactiveRefreshSuppressedUntil = undefined
   Object.assign(globalCircuit, createCircuit())
+  globalCircuitAffectedScopeEpochs.clear()
+  globalCircuitAffectedScopesEpoch = globalCircuit.circuitEpoch
   Object.assign(metrics, {
     upstreamAttempts: 0,
     upstreamTransportErrors: 0,
@@ -476,7 +890,7 @@ async function sendAttempt(
 async function classifyRecoverableAuthFailure(response: Response): Promise<AuthFailureKind | undefined> {
   if (response.status === 401)
     return 'unauthorized'
-  if (response.status !== 403 || response.headers.has('retry-after'))
+  if (response.status !== 403)
     return undefined
 
   const text = await response.clone().text().catch(() => '')
@@ -485,16 +899,6 @@ async function classifyRecoverableAuthFailure(response: Response): Promise<AuthF
     ?.toLowerCase()
     .split(';', 1)[0]
     ?.trim()
-  if (
-    normalized === 'forbidden'
-    && mediaType === 'text/plain'
-    && (
-      response.headers.has('x-copilot-service-request-id')
-      || response.headers.has('x-github-request-id')
-    )
-  ) {
-    return 'opaque_forbidden'
-  }
 
   try {
     const payload = JSON.parse(text) as Record<string, unknown>
@@ -507,6 +911,18 @@ async function classifyRecoverableAuthFailure(response: Response): Promise<AuthF
   }
   catch {
     // Non-JSON 403 responses other than the known opaque GitHub response are not replayed.
+  }
+
+  if (
+    !response.headers.has('retry-after')
+    && normalized === 'forbidden'
+    && mediaType === 'text/plain'
+    && (
+      response.headers.has('x-copilot-service-request-id')
+      || response.headers.has('x-github-request-id')
+    )
+  ) {
+    return 'opaque_forbidden'
   }
   return undefined
 }
@@ -630,37 +1046,57 @@ function reserveCircuitProbe(scope: ScopeCircuit, now: number): CircuitReservati
     globalCircuit.probeInFlight = true
   if (scopeProbe)
     scope.probeInFlight = true
-  return { globalProbe, settled: false, scope, scopeProbe }
+  return {
+    globalCircuitEpoch: globalCircuit.circuitEpoch,
+    globalProbe,
+    settled: false,
+    scope,
+    scopeCircuitEpoch: scope.circuitEpoch,
+    scopeProbe,
+  }
 }
 
 function recordCircuitSuccess(reservation: CircuitReservation, now: number): void {
   if (reservation.settled)
     return
-  if (reservation.scopeProbe)
+  if (reservation.scopeProbe && reservation.scopeCircuitEpoch === reservation.scope.circuitEpoch)
     closeCircuit(reservation.scope, now)
   else
     reservation.scope.lastSuccessAt = now
-  if (reservation.globalProbe)
-    closeCircuit(globalCircuit, now)
+  if (reservation.globalProbe && reservation.globalCircuitEpoch === globalCircuit.circuitEpoch)
+    closeGlobalCircuitAfterAllScopesRecover(now, reservation.globalCircuitEpoch)
   releaseCircuitReservation(reservation)
 }
 
 function recordCircuitFailure(reservation: CircuitReservation, now: number): void {
   if (reservation.settled)
     return
-  if (reservation.scopeProbe)
-    reopenCircuit(reservation.scope, now)
-  if (reservation.globalProbe)
-    reopenCircuit(globalCircuit, now)
+  if (reservation.scopeProbe && reservation.scopeCircuitEpoch === reservation.scope.circuitEpoch)
+    reopenScopeCircuit(reservation.scope, now)
+  if (reservation.globalProbe && reservation.globalCircuitEpoch === globalCircuit.circuitEpoch)
+    reopenGlobalCircuit(now)
   releaseCircuitReservation(reservation)
+}
+
+function recordReplayAuthFailure(
+  scope: ScopeCircuit,
+  reservation: CircuitReservation,
+  now: number,
+): void {
+  if (reservation.scopeProbe && reservation.scopeCircuitEpoch === scope.circuitEpoch)
+    reopenScopeCircuit(scope, now)
+  else
+    openScopeCircuit(scope, now)
+  recordCircuitFailure(reservation, now)
+  maybeOpenGlobalCircuit(now)
 }
 
 function releaseCircuitReservation(reservation: CircuitReservation): void {
   if (reservation.settled)
     return
-  if (reservation.scopeProbe)
+  if (reservation.scopeProbe && reservation.scopeCircuitEpoch === reservation.scope.circuitEpoch)
     reservation.scope.probeInFlight = false
-  if (reservation.globalProbe)
+  if (reservation.globalProbe && reservation.globalCircuitEpoch === globalCircuit.circuitEpoch)
     globalCircuit.probeInFlight = false
   reservation.settled = true
 }
@@ -680,9 +1116,28 @@ function recordOpaqueForbidden(scope: ScopeCircuit, now: number): boolean {
 
 function openScopeCircuit(scope: ScopeCircuit, now: number): void {
   const wasOpen = scope.phase !== 'closed'
-  openCircuit(scope, now)
+  openCircuitAfterFailure(scope, now)
+  updateGlobalCircuitAffectedScopeEpoch(scope)
+  for (const cohort of successfulRecoveriesAwaitingFollowers.values()) {
+    if (cohort.scope === scope)
+      cohort.scopeCircuitEpoch = scope.circuitEpoch
+  }
   if (!wasOpen)
     metrics.scopeCircuitOpens++
+}
+
+function reopenScopeCircuit(scope: ScopeCircuit, now: number): void {
+  reopenCircuit(scope, now)
+  updateGlobalCircuitAffectedScopeEpoch(scope)
+}
+
+function updateGlobalCircuitAffectedScopeEpoch(scope: ScopeCircuit): void {
+  if (
+    globalCircuitAffectedScopesEpoch === globalCircuit.circuitEpoch
+    && globalCircuitAffectedScopeEpochs.has(scope)
+  ) {
+    globalCircuitAffectedScopeEpochs.set(scope, scope.circuitEpoch)
+  }
 }
 
 function maybeOpenGlobalCircuit(now: number): void {
@@ -693,7 +1148,13 @@ function maybeOpenGlobalCircuit(now: number): void {
   if (recentlyOpenedScopes.length < 2)
     return
   const wasOpen = globalCircuit.phase !== 'closed'
-  openCircuit(globalCircuit, now)
+  openCircuitAfterFailure(globalCircuit, now)
+  replaceGlobalCircuitAffectedScopes(recentlyOpenedScopes)
+  const recentlyOpenedScopeSet = new Set(recentlyOpenedScopes)
+  for (const cohort of successfulRecoveriesAwaitingFollowers.values()) {
+    if (recentlyOpenedScopeSet.has(cohort.scope))
+      cohort.globalCircuitEpoch = globalCircuit.circuitEpoch
+  }
   if (!wasOpen) {
     metrics.globalCircuitOpens++
     consola.warn('Copilot global recovery circuit opened after persistent rejection across multiple scopes:', {
@@ -703,7 +1164,32 @@ function maybeOpenGlobalCircuit(now: number): void {
   }
 }
 
+function replaceGlobalCircuitAffectedScopes(scopes: ScopeCircuit[]): void {
+  globalCircuitAffectedScopeEpochs.clear()
+  for (const scope of scopes)
+    globalCircuitAffectedScopeEpochs.set(scope, scope.circuitEpoch)
+  globalCircuitAffectedScopesEpoch = globalCircuit.circuitEpoch
+}
+
+function reopenGlobalCircuit(now: number): void {
+  reopenCircuit(globalCircuit, now)
+  for (const scope of globalCircuitAffectedScopeEpochs.keys())
+    globalCircuitAffectedScopeEpochs.set(scope, scope.circuitEpoch)
+  globalCircuitAffectedScopesEpoch = globalCircuit.circuitEpoch
+}
+
+function openCircuitAfterFailure(circuit: ScopeCircuit, now: number): void {
+  // Delayed failure evidence can reach an open path while a half-open probe is
+  // still settling. Consume that probe's backoff before advancing its epoch;
+  // the reservation then becomes stale and cannot apply the backoff twice.
+  if (circuit.phase === 'half_open' && circuit.probeInFlight)
+    reopenCircuit(circuit, now)
+  else
+    openCircuit(circuit, now)
+}
+
 function openCircuit(circuit: ScopeCircuit, now: number): void {
+  circuit.circuitEpoch++
   circuit.phase = 'open'
   circuit.openedAt = now
   circuit.openUntil = now + circuit.cooldownMs
@@ -743,20 +1229,13 @@ function getScopeCircuit(key: string): ScopeCircuit {
   if (existing)
     return existing
   if (scopeCircuits.size >= MAX_TRACKED_SCOPES) {
-    const oldestClosedKey = [...scopeCircuits.entries()]
-      .find(([, circuit]) => circuit.phase === 'closed' && circuit.activeRequests === 0)?.[0]
-    if (oldestClosedKey) {
-      scopeCircuits.delete(oldestClosedKey)
-    }
-    else {
-      const circuits = [...scopeCircuits.values()]
-      const overflowCircuit = circuits.find(circuit => circuit.phase === 'closed') ?? circuits[0]
-      if (!overflowCircuit)
-        throw new Error('Copilot recovery scope registry is unexpectedly empty')
-      consola.debug('Sharing a non-global Copilot recovery circuit slot because the bounded scope registry is saturated:', {
+    if (!evictOneInactiveClosedScope() && !evictOneExcessInactiveScope()) {
+      // Exact endpoint/model isolation is more important than a hard registry
+      // ceiling while retained scopes carry active, recovery, or bounded
+      // cooldown state. Temporary entries are pruned as work settles.
+      consola.debug('Temporarily expanding the Copilot recovery scope registry while retained scopes still carry state:', {
         trackedScopes: scopeCircuits.size,
       })
-      return overflowCircuit
     }
   }
   const circuit = createCircuit()
@@ -764,13 +1243,54 @@ function getScopeCircuit(key: string): ScopeCircuit {
   return circuit
 }
 
+function pruneScopeCircuits(): void {
+  while (scopeCircuits.size > MAX_TRACKED_SCOPES) {
+    if (evictOneInactiveClosedScope())
+      continue
+    if (!evictOneExcessInactiveScope())
+      return
+  }
+}
+
+function evictOneInactiveClosedScope(): boolean {
+  const oldestClosedEntry = [...scopeCircuits.entries()]
+    .find(([, circuit]) =>
+      circuit.phase === 'closed'
+      && circuit.activeRequests === 0
+      && !scopeRecoveries.has(circuit),
+    )
+  if (!oldestClosedEntry)
+    return false
+  deleteScopeCircuit(...oldestClosedEntry)
+  return true
+}
+
+function evictOneExcessInactiveScope(): boolean {
+  const inactiveEntries = [...scopeCircuits.entries()]
+    .filter(([, circuit]) => circuit.activeRequests === 0 && !scopeRecoveries.has(circuit))
+  if (inactiveEntries.length <= MAX_TRACKED_SCOPES)
+    return false
+  deleteScopeCircuit(...inactiveEntries[0]!)
+  return true
+}
+
+function deleteScopeCircuit(key: string, circuit: ScopeCircuit): void {
+  if (scopeCircuits.get(key) !== circuit)
+    return
+  scopeCircuits.delete(key)
+  globalCircuitAffectedScopeEpochs.delete(circuit)
+}
+
 function createCircuit(): ScopeCircuit {
   return {
+    pendingInitialAuthRequests: new Set(),
     activeRequests: 0,
+    circuitEpoch: 0,
     phase: 'closed',
     cooldownMs: INITIAL_CIRCUIT_COOLDOWN_MS,
     probeInFlight: false,
     opaqueFailureTimestamps: [],
+    recoveryEpoch: 0,
   }
 }
 
@@ -778,15 +1298,29 @@ function createScopeKey(endpoint: string, model?: string): string {
   return `${endpoint.slice(0, 128)}\u0000${(model ?? '*').slice(0, 128)}`
 }
 
-function createRecoveryDeferred(): RecoveryDeferred {
+function createRecoveryDeferred(scopeRecoveryEpoch: number): RecoveryDeferred {
   let resolvePromise!: (value: RecoveryResult) => void
+  let resolveFollowersSettled!: () => void
   const promise = new Promise<RecoveryResult>((resolve) => {
     resolvePromise = resolve
   })
+  const followersSettled = new Promise<void>((resolve) => {
+    resolveFollowersSettled = resolve
+  })
   return {
+    acceptingFollowers: true,
+    followerReplayFailed: false,
+    followerReplaysPending: 0,
+    followerReplaysRegistered: 0,
+    followerReplaySuccesses: 0,
+    followersSettled,
+    followersSettledResolved: false,
+    lateFollowerCandidates: 0,
     recovered: false,
     promise,
     resolve: resolvePromise,
+    resolveFollowersSettled,
+    scopeRecoveryEpoch,
   }
 }
 
