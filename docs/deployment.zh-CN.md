@@ -41,6 +41,8 @@ docker run \
 
 网关必须负责用户、API Key、授权、每用户配额、模型权限、审计、计费和下游限流。copilot-proxy 仍是使用单一身份的私有上游。
 
+一个具体的网关选择是 [New API](https://github.com/QuantumNous/new-api)。可将 copilot-proxy 配置为它的私有 OpenAI 兼容上游（例如 `http://copilot-proxy:4399/v1`），并只向客户端暴露 New API。这只是拓扑示例，并非对兼容性或安全性的全面保证；下列要求仍需全部满足。
+
 将网关私有链路实际使用的非回环 Host 值设置为逗号分隔的允许列表，再启动私有后端：
 
 ```sh

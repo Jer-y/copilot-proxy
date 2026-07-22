@@ -41,6 +41,8 @@ Clients -> authenticated gateway -> private copilot-proxy -> GitHub Copilot
 
 The gateway must own users, API keys, authorization, per-user quota, model permissions, audit, billing, and downstream limits. copilot-proxy remains a single-identity private upstream.
 
+One concrete gateway option is [New API](https://github.com/QuantumNous/new-api). Configure copilot-proxy as its private OpenAI-compatible upstream (for example, `http://copilot-proxy:4399/v1`) and expose only New API to clients. This is a topology example, not a blanket compatibility or security guarantee; all requirements below still apply.
+
 Set a comma-separated allowlist containing the exact non-loopback Host value used on the gateway's private hop, then start the private backend:
 
 ```sh
