@@ -10,7 +10,7 @@ afterEach(() => {
 })
 
 describe('createAnthropicSSEWriter', () => {
-  test('sends keepalive ping events until the first non-ping event is written', async () => {
+  test('sends keepalive ping events during idle periods before and after non-ping events', async () => {
     const writes: Array<{ event?: string, data: string }> = []
     const stream = {
       closed: false,
@@ -50,7 +50,35 @@ describe('createAnthropicSSEWriter', () => {
     await wait(12)
 
     const laterPing = writes.slice(messageStartIndex + 1).find(message => message.event === 'ping')
-    expect(laterPing).toBeUndefined()
+    expect(laterPing).toBeDefined()
+
+    await writer.close()
+  })
+
+  test('resets the keepalive interval after each event', async () => {
+    const writes: Array<{ event?: string, data: string }> = []
+    const stream = {
+      closed: false,
+      aborted: false,
+      async writeSSE(message: { event?: string, data: string }) {
+        writes.push(message)
+      },
+    }
+
+    const writer = createAnthropicSSEWriter(stream, {
+      keepAliveIntervalMs: 20,
+    })
+
+    await wait(12)
+    await writer.writeEvent({ type: 'ping' })
+    const explicitPingCount = writes.length
+
+    await wait(12)
+    expect(writes).toHaveLength(explicitPingCount)
+
+    await wait(12)
+    expect(writes.length).toBeGreaterThan(explicitPingCount)
+    expect(writes.at(-1)?.event).toBe('ping')
 
     await writer.close()
   })

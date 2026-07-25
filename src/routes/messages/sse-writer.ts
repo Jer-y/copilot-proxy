@@ -13,18 +13,34 @@ export function createAnthropicSSEWriter(
 ) {
   const keepAliveIntervalMs = options?.keepAliveIntervalMs ?? DEFAULT_ANTHROPIC_KEEPALIVE_INTERVAL_MS
   let stopped = false
-  let firstNonPingEventSent = false
   let writeChain = Promise.resolve()
   let keepAliveTimer: ReturnType<typeof setTimeout> | undefined
 
-  const shouldStop = () => stopped || firstNonPingEventSent || stream.closed || stream.aborted
+  const shouldStop = () => stopped || stream.closed || stream.aborted
 
-  const writeRawEvent = async (event: AnthropicStreamEventData) => {
-    if (shouldStop() && event.type === 'ping') {
+  const clearKeepAliveTimer = () => {
+    if (keepAliveTimer) {
+      clearTimeout(keepAliveTimer)
+      keepAliveTimer = undefined
+    }
+  }
+
+  const scheduleKeepAlive = () => {
+    clearKeepAliveTimer()
+    if (shouldStop()) {
       return
     }
 
-    if (stream.closed || stream.aborted) {
+    // Keep downstream idle timers alive during long gaps between real upstream events.
+    keepAliveTimer = setTimeout(() => {
+      keepAliveTimer = undefined
+      void enqueue({ type: 'ping' })
+    }, keepAliveIntervalMs)
+    keepAliveTimer.unref?.()
+  }
+
+  const writeRawEvent = async (event: AnthropicStreamEventData) => {
+    if (shouldStop()) {
       return
     }
 
@@ -32,33 +48,12 @@ export function createAnthropicSSEWriter(
       event: event.type,
       data: JSON.stringify(event),
     })
-
-    if (event.type !== 'ping') {
-      firstNonPingEventSent = true
-      if (keepAliveTimer) {
-        clearTimeout(keepAliveTimer)
-        keepAliveTimer = undefined
-      }
-    }
+    scheduleKeepAlive()
   }
 
-  const enqueue = (event: AnthropicStreamEventData) => {
+  function enqueue(event: AnthropicStreamEventData) {
     writeChain = writeChain.then(() => writeRawEvent(event))
     return writeChain
-  }
-
-  const scheduleKeepAlive = () => {
-    if (shouldStop() || keepAliveTimer) {
-      return
-    }
-
-    keepAliveTimer = setTimeout(() => {
-      keepAliveTimer = undefined
-      void enqueue({ type: 'ping' }).finally(() => {
-        scheduleKeepAlive()
-      })
-    }, keepAliveIntervalMs)
-    keepAliveTimer.unref?.()
   }
 
   scheduleKeepAlive()
@@ -69,10 +64,7 @@ export function createAnthropicSSEWriter(
     },
     async close() {
       stopped = true
-      if (keepAliveTimer) {
-        clearTimeout(keepAliveTimer)
-        keepAliveTimer = undefined
-      }
+      clearKeepAliveTimer()
       await writeChain
     },
   }
