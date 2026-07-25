@@ -249,6 +249,7 @@ async function completeSetup(
     codexCatalog,
     shell: options.shell,
     smallModel,
+    smallModelContextWindowTokens: smallModelChoice?.model.capabilities?.limits?.max_context_window_tokens,
   })
   if (options.client === 'codex' && probe.websocket.semanticValidation === 'failed') {
     artifact.notes.push(

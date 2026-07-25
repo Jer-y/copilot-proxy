@@ -38,6 +38,23 @@ describe('modelSupportsResponsesWebSocket', () => {
   })
 })
 
+describe('resolveRoute — Claude Opus 5', () => {
+  test('uses native Messages, translated Responses, and direct Chat Completions', () => {
+    expect(resolveRoute('anthropic-messages', 'claude-opus-5', fail)).toEqual({
+      backend: 'anthropic-messages',
+      kind: 'direct',
+    })
+    expect(resolveRoute('responses', 'claude-opus-5', fail)).toEqual({
+      backend: 'anthropic-messages',
+      kind: 'translate',
+    })
+    expect(resolveRoute('chat-completions', 'claude-opus-5', fail)).toEqual({
+      backend: 'chat-completions',
+      kind: 'direct',
+    })
+  })
+})
+
 describe('resolveRoute — anthropic-messages client', () => {
   test('Claude → native /v1/messages (direct)', () => {
     const route = resolveRoute('anthropic-messages', 'claude-opus-4.6', fail)
@@ -406,6 +423,7 @@ describe('assertMessagesPayloadTranslatable', () => {
       ['stop_sequences', { stop_sequences: ['END'] }],
       ['top_k', { top_k: 40 }],
       ['task_budget', { output_config: { task_budget: { type: 'tokens', total: 20_000 } } }],
+      ['fallbacks', { fallbacks: 'default' }],
       ['MCP servers', { mcp_servers: [{ type: 'url', name: 'tools', url: 'https://example.com/mcp' }] }],
       ['context_management', { context_management: { edits: [{ type: 'compact_20260112' }] } }],
     ]
@@ -428,9 +446,33 @@ describe('assertMessagesPayloadTranslatable', () => {
         mcp_servers: [],
         context_management: { edits: [] },
         output_config: { task_budget: null },
+        fallbacks: [],
       } as never,
       (msg) => { throw new Error(msg) },
     )).not.toThrow()
+  })
+
+  test('rejects direct and wrapped Anthropic tool changes instead of dropping them', () => {
+    const toolRemoval = {
+      type: 'tool_removal' as const,
+      tool: { type: 'tool_reference' as const, name: 'lookup' },
+    }
+    const cases = [
+      [toolRemoval],
+      [{ type: 'mid_conv_system' as const, content: [toolRemoval] }],
+      [{ type: 'future_system_control' as const, mode: 'strict' }],
+    ]
+
+    for (const content of cases) {
+      expect(() => assertMessagesPayloadTranslatable(
+        {
+          model: 'gpt-5.4',
+          max_tokens: 64,
+          messages: [{ role: 'system', content }],
+        },
+        (msg) => { throw new Error(msg) },
+      )).toThrow(/non-text mid-conversation system blocks/)
+    }
   })
 
   test('rejects replayed Anthropic server-tool history instead of deleting it', () => {
@@ -448,6 +490,29 @@ describe('assertMessagesPayloadTranslatable', () => {
       },
       (msg) => { throw new Error(msg) },
     )).toThrow(/server-tool history/)
+  })
+
+  test('rejects Anthropic fallback history instead of merging across its boundary', () => {
+    expect(() => assertMessagesPayloadTranslatable(
+      {
+        model: 'gpt-5.4',
+        max_tokens: 64,
+        messages: [{
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'before' },
+            {
+              type: 'fallback',
+              from: { model: 'claude-opus-5' },
+              to: { model: 'claude-opus-4-8' },
+              trigger: { type: 'refusal' },
+            },
+            { type: 'text', text: 'after' },
+          ],
+        }],
+      },
+      (msg) => { throw new Error(msg) },
+    )).toThrow(/fallback history blocks/)
   })
 
   test('rejects explicit tool and reasoning controls only when model capability cannot preserve them', () => {

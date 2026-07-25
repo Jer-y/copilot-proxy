@@ -532,6 +532,33 @@ describe('messages error paths', () => {
     expect(result.success).toBe(false)
   })
 
+  test('official fallback history blocks are validated explicitly', () => {
+    const valid = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      messages: [{
+        role: 'assistant',
+        content: [{
+          type: 'fallback',
+          from: { model: 'claude-opus-5' },
+          to: { model: 'claude-opus-4-8' },
+          trigger: { type: 'refusal', category: 'cyber' },
+        }],
+      }],
+    })
+    const malformed = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      messages: [{
+        role: 'assistant',
+        content: [{ type: 'fallback', from: {}, to: {} }],
+      }],
+    })
+
+    expect(valid.success).toBe(true)
+    expect(malformed.success).toBe(false)
+  })
+
   test('output_config.effort xhigh is accepted for Copilot Claude compatibility', () => {
     const result = AnthropicMessagesPayloadSchema.safeParse({
       model: 'claude-opus-4-7',
@@ -541,6 +568,25 @@ describe('messages error paths', () => {
     })
 
     expect(result.success).toBe(true)
+  })
+
+  test('accepts the official speed values plus the live Copilot legacy spelling', () => {
+    for (const speed of ['standard', 'fast', 'normal', null]) {
+      const result = AnthropicMessagesPayloadSchema.safeParse({
+        model: 'claude-opus-5',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+        speed,
+      })
+      expect(result.success).toBe(true)
+    }
+
+    expect(AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+      speed: 'turbo',
+    }).success).toBe(false)
   })
 
   test('mid-conversation system messages are accepted by schema', () => {
@@ -554,6 +600,201 @@ describe('messages error paths', () => {
     })
 
     expect(result.success).toBe(true)
+  })
+
+  test('official direct and wrapped mid-conversation tool changes are accepted by schema', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      tools: [{ name: 'lookup', input_schema: { type: 'object', properties: {} } }],
+      messages: [
+        { role: 'user', content: 'Check the tool state.' },
+        {
+          role: 'system',
+          content: [
+            {
+              type: 'tool_removal',
+              tool: { type: 'tool_reference', name: 'lookup' },
+              cache_control: { type: 'ephemeral' },
+            },
+            {
+              type: 'tool_addition',
+              tool: { type: 'mcp_tool_reference', server_name: 'ops', name: 'status' },
+            },
+          ],
+        },
+        {
+          role: 'system',
+          content: [{
+            type: 'mid_conv_system',
+            content: [
+              { type: 'text', text: 'Restore the shared toolset.' },
+              {
+                type: 'tool_addition',
+                tool: { type: 'mcp_toolset_reference', server_name: 'ops' },
+              },
+            ],
+          }],
+        },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+  })
+
+  test('unknown typed system blocks remain forward-compatible without masking malformed known blocks', () => {
+    const unknown = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      messages: [{
+        role: 'system',
+        content: [{ type: 'future_system_control', mode: 'strict' }],
+      }],
+    })
+    const malformedKnown = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      messages: [{
+        role: 'system',
+        content: [{ type: 'tool_addition' }],
+      }],
+    })
+
+    expect(unknown.success).toBe(true)
+    expect(malformedKnown.success).toBe(false)
+  })
+
+  test('mid-conversation tool changes still require a valid tool reference', () => {
+    const result = AnthropicMessagesPayloadSchema.safeParse({
+      model: 'claude-opus-5',
+      max_tokens: 100,
+      messages: [{
+        role: 'system',
+        content: [{
+          type: 'tool_removal',
+          tool: { type: 'tool_reference' },
+        }],
+      }],
+    })
+
+    expect(result.success).toBe(false)
+  })
+
+  test('official fallback request shapes are accepted for native upstream validation', () => {
+    for (const fallbacks of [
+      'default',
+      [{
+        model: 'claude-opus-4-8',
+        max_tokens: 64,
+        output_config: { effort: 'xhigh' },
+        speed: 'standard',
+        thinking: { type: 'adaptive' },
+      }],
+    ]) {
+      const result = AnthropicMessagesPayloadSchema.safeParse({
+        model: 'claude-opus-5',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+        fallbacks,
+      })
+
+      expect(result.success).toBe(true)
+    }
+  })
+
+  test('native passthrough preserves official tool-change and fallback fields for upstream truth', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+
+    fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
+      expect(url.endsWith('/v1/messages')).toBe(true)
+      const headers = init?.headers as Record<string, string>
+      expect(headers['anthropic-beta']).toContain('mid-conversation-tool-changes-2026-07-01')
+      expect(headers['anthropic-beta']).toContain('server-side-fallback-2026-06-01')
+      expect(headers['anthropic-beta']).toContain('mid-conversation-system-2026-04-07')
+
+      const forwarded = JSON.parse(String(init?.body)) as Record<string, unknown>
+      expect(forwarded.fallbacks).toEqual([{ model: 'claude-opus-4-8' }])
+      expect(forwarded.messages).toEqual([
+        { role: 'user', content: 'Check the tool state.' },
+        {
+          role: 'system',
+          content: [{
+            type: 'tool_removal',
+            tool: { type: 'tool_reference', name: 'lookup' },
+          }],
+        },
+        {
+          role: 'system',
+          content: [{
+            type: 'mid_conv_system',
+            content: [{
+              type: 'tool_addition',
+              tool: { type: 'tool_reference', name: 'lookup' },
+            }],
+          }],
+        },
+        {
+          role: 'system',
+          content: [{ type: 'future_system_control', mode: 'strict' }],
+        },
+      ])
+
+      return new Response(JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'These fields are not supported by the current Copilot upstream.',
+        },
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    const res = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'mid-conversation-tool-changes-2026-07-01,server-side-fallback-2026-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-5',
+        max_tokens: 100,
+        tools: [{ name: 'lookup', input_schema: { type: 'object', properties: {} } }],
+        fallbacks: [{ model: 'claude-opus-4-8' }],
+        messages: [
+          { role: 'user', content: 'Check the tool state.' },
+          {
+            role: 'system',
+            content: [{
+              type: 'tool_removal',
+              tool: { type: 'tool_reference', name: 'lookup' },
+            }],
+          },
+          {
+            role: 'system',
+            content: [{
+              type: 'mid_conv_system',
+              content: [{
+                type: 'tool_addition',
+                tool: { type: 'tool_reference', name: 'lookup' },
+              }],
+            }],
+          },
+          {
+            role: 'system',
+            content: [{ type: 'future_system_control', mode: 'strict' }],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   test('tool_use and tool_result cache_control are accepted and preserved by schema', () => {
@@ -798,6 +1039,66 @@ describe('messages error paths', () => {
       const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
       expect(forwardedPayload.max_tokens).toBe(128000)
     }
+  })
+
+  test('Opus 5 uses the verified 64K default for Messages and translated Responses', async () => {
+    state.copilotToken = 'test-token'
+    state.vsCodeVersion = '1.0.0'
+    state.accountType = 'individual'
+    state.models = {
+      data: [{
+        id: 'claude-opus-5',
+        capabilities: {
+          limits: {
+            max_output_tokens: 32000,
+          },
+        },
+        supported_endpoints: ['/v1/messages', '/chat/completions'],
+      }],
+    } as typeof state.models
+
+    // @ts-expect-error test mock only needs fetch callable shape
+    globalThis.fetch = fetchMock
+
+    const messagesRes = await server.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+
+    expect(messagesRes.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [messagesUrl, messagesInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(messagesUrl).toBe('https://api.githubcopilot.com/v1/messages')
+    const messagesPayload = JSON.parse(String(messagesInit?.body)) as { max_tokens?: number, model?: string }
+    expect(messagesPayload).toMatchObject({
+      max_tokens: 64000,
+      model: 'claude-opus-5',
+    })
+
+    fetchMock.mockClear()
+    const responsesRes = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-5',
+        store: false,
+        input: 'hi',
+      }),
+    })
+
+    expect(responsesRes.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [responsesUrl, responsesInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(responsesUrl).toBe('https://api.githubcopilot.com/v1/messages')
+    const responsesPayload = JSON.parse(String(responsesInit?.body)) as { max_tokens?: number, model?: string }
+    expect(responsesPayload).toMatchObject({
+      max_tokens: 64000,
+      model: 'claude-opus-5',
+    })
   })
 
   test('translated Responses preserves explicit max_output_tokens and uses the verified Opus default', async () => {

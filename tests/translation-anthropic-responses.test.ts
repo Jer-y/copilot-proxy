@@ -101,6 +101,36 @@ describe('translateAnthropicRequestToResponses', () => {
     )
   })
 
+  test('top-level tool_reference is rejected instead of becoming a null Responses content part', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'tool_reference', tool_name: 'deferred_tool' }],
+      }],
+    }
+
+    expect(() => translateAnthropicRequestToResponses(payload)).toThrow(
+      'Anthropic user content block type "tool_reference" cannot be represented faithfully',
+    )
+  })
+
+  test('non-text system blocks are rejected defensively even when translation preflight is bypassed', () => {
+    const payload: AnthropicMessagesPayload = {
+      model: 'gpt-5.4',
+      max_tokens: 1024,
+      messages: [{
+        role: 'system',
+        content: [{ type: 'future_system_control', mode: 'strict' }],
+      }],
+    }
+
+    expect(() => translateAnthropicRequestToResponses(payload)).toThrow(
+      'Anthropic system content block type "future_system_control" cannot be represented faithfully',
+    )
+  })
+
   test('max_tokens below the Responses minimum is rejected instead of increased', () => {
     const payload: AnthropicMessagesPayload = {
       model: 'gpt-5.4',

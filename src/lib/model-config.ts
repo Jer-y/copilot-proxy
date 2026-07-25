@@ -29,6 +29,7 @@ export interface ModelConfig {
 // Fallback for proxy-generated Opus defaults when live metadata is incomplete.
 // Keep the raw /models snapshot untouched; a newer live limit may raise it.
 const VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS = 128000
+const VERIFIED_OPUS_5_MAX_OUTPUT_TOKENS = 64000
 
 const MODEL_CONFIGS: Record<string, ModelConfig> = {
   // Claude models — use native Anthropic Messages passthrough for /v1/messages
@@ -97,6 +98,16 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     supportsToolChoice: false,
     supportsParallelToolCalls: true,
     verifiedMaxOutputTokens: VERIFIED_OPUS_4_X_MAX_OUTPUT_TOKENS,
+  },
+  'claude-opus-5': {
+    supportedApis: ['anthropic-messages', 'chat-completions'],
+    preferredApi: 'anthropic-messages',
+    enableCacheControl: true,
+    defaultReasoningEffort: 'high',
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    supportsToolChoice: true,
+    supportsParallelToolCalls: true,
+    verifiedMaxOutputTokens: VERIFIED_OPUS_5_MAX_OUTPUT_TOKENS,
   },
   'claude-haiku-4.5': {
     supportedApis: ['anthropic-messages', 'chat-completions'],

@@ -8,7 +8,7 @@ import process from 'node:process'
 
 import { getBundledModelConfig } from '~/lib/model-config'
 import { getUserHomeDir } from '~/lib/paths'
-import { toAnthropicClientModelName } from '~/routes/messages/model-normalization'
+import { toClaudeCodeModelName } from '~/routes/messages/model-normalization'
 import { generateEnvScript, generateShellCommand } from './shell'
 
 export const SETUP_CLIENTS = ['claude', 'codex', 'openai-sdk'] as const
@@ -338,11 +338,22 @@ export function buildClientSetupArtifact(options: {
   runtimeCommand?: 'bun' | 'node'
   shell?: ShellName
   smallModel?: string
+  smallModelContextWindowTokens?: number
 }): ClientSetupArtifact {
   const apiBaseUrl = `${options.baseUrl}/v1`
   if (options.client === 'claude') {
-    const model = toAnthropicClientModelName(options.choice.model.id)
-    const smallModel = toAnthropicClientModelName(options.smallModel ?? options.choice.model.id)
+    const model = toClaudeCodeModelName(
+      options.choice.model.id,
+      options.choice.model.capabilities?.limits?.max_context_window_tokens,
+    )
+    const smallModelId = options.smallModel ?? options.choice.model.id
+    const smallModelContextWindowTokens = smallModelId === options.choice.model.id
+      ? options.choice.model.capabilities?.limits?.max_context_window_tokens
+      : options.smallModelContextWindowTokens
+    const smallModel = toClaudeCodeModelName(
+      smallModelId,
+      smallModelContextWindowTokens,
+    )
     const command = buildClaudeLaunchCommand({
       baseUrl: options.baseUrl,
       model,

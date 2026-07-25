@@ -49,9 +49,20 @@ export interface AnthropicMessagesPayload {
     } | null
   }
   service_tier?: 'auto' | 'standard_only'
-  speed?: 'fast' | 'normal'
+  // Anthropic's official values are standard/fast. Keep the previously
+  // accepted normal spelling as a Copilot-compatible legacy extension.
+  speed?: 'standard' | 'fast' | 'normal' | null
   context_management?: Record<string, unknown> | null
   mcp_servers?: Array<AnthropicMcpServerDefinition>
+  fallbacks?: 'default' | Array<AnthropicFallbackParam> | null
+}
+
+export interface AnthropicFallbackParam {
+  model: string
+  max_tokens?: number | null
+  output_config?: AnthropicMessagesPayload['output_config'] | null
+  speed?: 'standard' | 'fast' | null
+  thinking?: AnthropicMessagesPayload['thinking'] | null
 }
 
 export interface AnthropicOutputConfigJsonSchemaFormat {
@@ -166,6 +177,67 @@ export interface AnthropicToolUseBlock {
   cache_control?: AnthropicCacheControl | null
 }
 
+export interface AnthropicFallbackBlock {
+  type: 'fallback'
+  from: { model: string }
+  to: { model: string }
+  trigger?: unknown
+}
+
+export interface AnthropicToolChangeToolReference {
+  type: 'tool_reference'
+  name: string
+}
+
+export interface AnthropicToolChangeMcpToolReference {
+  type: 'mcp_tool_reference'
+  server_name: string
+  name: string
+}
+
+export interface AnthropicToolChangeMcpToolsetReference {
+  type: 'mcp_toolset_reference'
+  server_name: string
+}
+
+export type AnthropicToolChangeReference
+  = | AnthropicToolChangeToolReference
+    | AnthropicToolChangeMcpToolReference
+    | AnthropicToolChangeMcpToolsetReference
+
+export interface AnthropicToolAdditionBlock {
+  type: 'tool_addition'
+  tool: AnthropicToolChangeReference
+  text?: never
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicToolRemovalBlock {
+  type: 'tool_removal'
+  tool: AnthropicToolChangeReference
+  text?: never
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicMidConversationSystemBlock {
+  type: 'mid_conv_system'
+  content: Array<AnthropicTextBlock | AnthropicToolAdditionBlock | AnthropicToolRemovalBlock>
+  text?: never
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicUnknownSystemContentBlock {
+  type: string
+  [key: string]: unknown
+}
+
+export type AnthropicSystemContentBlock
+  = | AnthropicTextBlock
+    | AnthropicToolAdditionBlock
+    | AnthropicToolRemovalBlock
+    | AnthropicMidConversationSystemBlock
+    | AnthropicUnknownSystemContentBlock
+
 export interface AnthropicThinkingBlock {
   type: 'thinking'
   thinking: string
@@ -205,6 +277,7 @@ export type AnthropicUserContentBlock
 
 export type AnthropicAssistantContentBlock
   = | AnthropicTextBlock
+    | AnthropicFallbackBlock
     | AnthropicToolUseBlock
     | AnthropicThinkingBlock
     | AnthropicRedactedThinkingBlock
@@ -223,7 +296,7 @@ export interface AnthropicAssistantMessage {
 
 export interface AnthropicSystemMessage {
   role: 'system'
-  content: string | Array<AnthropicTextBlock>
+  content: string | Array<AnthropicSystemContentBlock>
 }
 
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage | AnthropicSystemMessage

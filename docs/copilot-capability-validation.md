@@ -197,7 +197,9 @@ claude --bare -p \
   "Reply with exactly: proxy-ok"
 ```
 
-Require `is_error=false`, the exact fixed response, and the requested model in `modelUsage`.
+When the selected live Copilot model advertises a 1M context window through a custom gateway, set `CLAUDE_MODEL_UNDER_TEST` to its Claude Code selector form, for example `<claude-model>[1m]`. Claude Code must report `contextWindow=1000000` for that `modelUsage` entry while the proxy request summary and upstream payload continue to use the base model ID.
+
+Require `is_error=false`, the exact fixed response, and the requested Claude Code selector in `modelUsage`.
 
 Then run a real tool loop from the repository root:
 

@@ -36,12 +36,15 @@ const ANTHROPIC_SERVER_TOOL_REJECTION_MESSAGE
 
 const ANTHROPIC_TRANSLATION_REJECTIONS = {
   context_management: 'Anthropic context_management cannot be represented on the Responses translation path without changing conversation state. Use a model routed directly through /v1/messages.',
+  fallback_history: 'Anthropic fallback history blocks cannot be represented on the Responses translation path without dropping model-transition boundaries. Use a model routed directly through /v1/messages.',
+  fallbacks: 'Anthropic fallbacks cannot be represented on the Responses translation path without changing model-selection semantics. Use a model routed directly through /v1/messages.',
   mcp_servers: 'Anthropic MCP servers cannot be represented on the Responses translation path. Use a model routed directly through /v1/messages.',
   parallel_tool_calls: 'Anthropic disable_parallel_tool_use cannot be preserved because the selected Responses model does not support parallel_tool_calls.',
   reasoning: 'The requested Anthropic thinking/output_config.effort cannot be preserved by the selected Responses model.',
   server_tool_history: 'Anthropic server-tool history cannot be represented on the Responses translation path without dropping conversation state. Use a model routed directly through /v1/messages.',
   stop_sequences: 'Anthropic stop_sequences cannot be enforced by the Responses translation path. Use a model routed directly through /v1/messages.',
   task_budget: 'Anthropic output_config.task_budget cannot be represented on the Responses translation path. Use a model routed directly through /v1/messages.',
+  tool_changes: 'Anthropic non-text mid-conversation system blocks cannot be represented on the Responses translation path without changing system or tool semantics. Use a model routed directly through /v1/messages.',
   tool_choice: 'Anthropic tool_choice cannot be preserved because the selected Responses model does not support tool_choice.',
   top_k: 'Anthropic top_k cannot be represented on the Responses translation path.',
 } as const
@@ -278,6 +281,14 @@ export function assertMessagesPayloadTranslatable(
     onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.task_budget)
   }
 
+  if (hasMeaningfulAnthropicFallbacks(payload.fallbacks)) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.fallbacks)
+  }
+
+  if (payloadHasAnthropicToolChanges(payload)) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.tool_changes)
+  }
+
   const mcpServers = payloadRecord.mcp_servers
   if (mcpServers != null && (!Array.isArray(mcpServers) || mcpServers.length > 0)) {
     onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.mcp_servers)
@@ -289,6 +300,10 @@ export function assertMessagesPayloadTranslatable(
 
   if (payloadHasAnthropicServerToolHistory(payload)) {
     onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.server_tool_history)
+  }
+
+  if (payloadHasAnthropicFallbackHistory(payload)) {
+    onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.fallback_history)
   }
 
   const modelConfig = getModelConfig(payload.model)
@@ -383,6 +398,19 @@ function payloadHasAnthropicServerTools(payload: AnthropicMessagesPayload): bool
   return Boolean(payload.tools?.some(isAnthropicServerTool))
 }
 
+function payloadHasAnthropicToolChanges(payload: AnthropicMessagesPayload): boolean {
+  for (const message of payload.messages) {
+    if (message.role !== 'system' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    if (message.content.some(block => block.type !== 'text'))
+      return true
+  }
+
+  return false
+}
+
 function payloadHasAnthropicServerToolHistory(payload: AnthropicMessagesPayload): boolean {
   for (const message of payload.messages) {
     if (message.role !== 'assistant' || !Array.isArray(message.content)) {
@@ -397,6 +425,12 @@ function payloadHasAnthropicServerToolHistory(payload: AnthropicMessagesPayload)
   }
 
   return false
+}
+
+function payloadHasAnthropicFallbackHistory(payload: AnthropicMessagesPayload): boolean {
+  return payload.messages.some(message => message.role === 'assistant'
+    && Array.isArray(message.content)
+    && message.content.some(block => block.type === 'fallback'))
 }
 
 function hasMeaningfulAnthropicContextManagement(value: unknown): boolean {
@@ -414,4 +448,11 @@ function hasMeaningfulAnthropicContextManagement(value: unknown): boolean {
   }
 
   return entries.some(([key, entryValue]) => key !== 'edits' || !Array.isArray(entryValue) || entryValue.length > 0)
+}
+
+function hasMeaningfulAnthropicFallbacks(
+  fallbacks: AnthropicMessagesPayload['fallbacks'],
+): boolean {
+  return fallbacks != null
+    && (fallbacks === 'default' || fallbacks.length > 0)
 }

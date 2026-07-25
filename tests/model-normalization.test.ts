@@ -4,6 +4,7 @@ import {
   normalizeAnthropicModelName,
   sanitizeAnthropicBetaHeader,
   toAnthropicClientModelName,
+  toClaudeCodeModelName,
 } from '../src/routes/messages/model-normalization'
 
 describe('Anthropic model normalization', () => {
@@ -20,6 +21,8 @@ describe('Anthropic model normalization', () => {
   test('does not route speed or context beta signals to hidden Claude variants', () => {
     expect(normalizeAnthropicModelName('claude-opus-4.6')).toBe('claude-opus-4.6')
     expect(normalizeAnthropicModelName('claude-opus-4.7')).toBe('claude-opus-4.7')
+    expect(normalizeAnthropicModelName('claude-opus-5[1m]')).toBe('claude-opus-5')
+    expect(normalizeAnthropicModelName('claude-opus-4-8[1m]')).toBe('claude-opus-4.8')
   })
 
   test('leaves unknown and non-Claude models unchanged', () => {
@@ -31,6 +34,14 @@ describe('Anthropic model normalization', () => {
     expect(toAnthropicClientModelName('claude-opus-4.8')).toBe('claude-opus-4-8')
     expect(toAnthropicClientModelName('claude-sonnet-5')).toBe('claude-sonnet-5')
     expect(toAnthropicClientModelName('gpt-5.6-sol')).toBe('gpt-5.6-sol')
+  })
+
+  test('adds the Claude Code 1m selector from live context metadata without duplicating it', () => {
+    expect(toClaudeCodeModelName('claude-opus-5', 1_000_000)).toBe('claude-opus-5[1m]')
+    expect(toClaudeCodeModelName('claude-opus-4.8', 1_000_000)).toBe('claude-opus-4-8[1m]')
+    expect(toClaudeCodeModelName('claude-opus-5[1m]', 1_000_000)).toBe('claude-opus-5[1m]')
+    expect(toClaudeCodeModelName('claude-opus-5[1m][1m]', 1_000_000)).toBe('claude-opus-5[1m]')
+    expect(toClaudeCodeModelName('claude-opus-5', 999_999)).toBe('claude-opus-5')
   })
 })
 

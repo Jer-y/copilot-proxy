@@ -59,7 +59,7 @@ These are separate evidence layers: installed-client metadata and routing policy
 
 | Client | Generated result |
 | --- | --- |
-| Claude Code | A launch command with a CLI `--settings` overlay, so conflicting user `settings.json` environment values are not edited or selected |
+| Claude Code | A launch command with a CLI `--settings` overlay, so conflicting user `settings.json` environment values are not edited or selected. Models whose live Copilot metadata advertises a 1M context window use Claude Code's `[1m]` selector; proxy probes and upstream requests continue to use the catalog's base model ID. A user-set `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` remains authoritative and disables that client-side 1M mode. |
 | Codex | TOML content to save manually as `copilot-proxy-home/copilot-proxy.config.toml` under the resolved normal Codex home (`CODEX_HOME` when set, otherwise the platform `.codex` directory), including non-secret command-backed auth for catalog refresh, plus a launch command that scopes `CODEX_HOME` to `copilot-proxy-home` and selects `--profile copilot-proxy` |
 | OpenAI SDK | `OPENAI_BASE_URL`, a dummy local API key, the selected model, and the validated direct API family |
 

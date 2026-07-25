@@ -583,6 +583,48 @@ describe('messages route upstream adaptation', () => {
     expect(body.model).toBe('claude-opus-4-7')
   })
 
+  test('Claude Code 1m selectors normalize generation and count_tokens while preserving the context beta', async () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'anthropic-beta': 'context-1m-2025-08-07',
+    }
+    const payload = {
+      model: 'claude-opus-5[1m]',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'Say hello.' }],
+    }
+
+    const generationRes = await server.request('/v1/messages', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    })
+
+    expect(generationRes.status).toBe(200)
+    expect((await generationRes.json() as { model?: string }).model).toBe('claude-opus-5[1m]')
+
+    const countTokensRes = await server.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    })
+
+    expect(countTokensRes.status).toBe(200)
+    expect(await countTokensRes.json()).toEqual({ input_tokens: 26 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const [generationUrl, generationInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const [countTokensUrl, countTokensInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit]
+    expect(generationUrl).toBe('https://api.githubcopilot.com/v1/messages')
+    expect(countTokensUrl).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
+
+    for (const init of [generationInit, countTokensInit]) {
+      const forwarded = JSON.parse(String(init.body)) as { model?: string }
+      expect(forwarded.model).toBe('claude-opus-5')
+      expect((init.headers as Record<string, string>)['anthropic-beta']).toBe('context-1m-2025-08-07')
+    }
+  })
+
   test('Claude Opus 4.7 rejects advisor tools instead of stripping them and returning 200', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',

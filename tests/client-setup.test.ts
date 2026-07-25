@@ -593,6 +593,34 @@ fi
     expect(sdk.content).toContain('OPENAI_BASE_URL=\'http://127.0.0.1:4399/v1\'')
   })
 
+  test('generates 1m Claude Code selectors from live context metadata while probes keep base slugs', () => {
+    const opus = model('claude-opus-5', ['/v1/messages'])
+    opus.capabilities.limits = {
+      max_context_window_tokens: 1_000_000,
+      max_output_tokens: 64_000,
+    }
+    const sonnet = model('claude-sonnet-5', ['/v1/messages'])
+    sonnet.capabilities.limits = {
+      max_context_window_tokens: 1_000_000,
+      max_output_tokens: 64_000,
+    }
+    const choice = selectSetupModel('claude', [opus, sonnet], opus.id)
+    const artifact = buildClientSetupArtifact({
+      baseUrl: 'http://127.0.0.1:4399',
+      choice,
+      client: 'claude',
+      shell: 'bash',
+      smallModel: sonnet.id,
+      smallModelContextWindowTokens: sonnet.capabilities.limits?.max_context_window_tokens,
+    })
+
+    expect(artifact.content).toContain('"ANTHROPIC_MODEL":"claude-opus-5[1m]"')
+    expect(artifact.content).toContain('"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-5[1m]"')
+    expect(artifact.content).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-sonnet-5[1m]"')
+    expect(artifact.content).not.toContain('[1m][1m]')
+    expect(buildSetupProbeRequest(choice).body.model).toBe('claude-opus-5')
+  })
+
   testPosix('keeps a conflicting user base config outside the generated Codex launch', () => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-codex-isolation-'))
     const codexHome = path.join(fixtureRoot, 'user Codex home (safe)&meta')

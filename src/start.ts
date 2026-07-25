@@ -20,7 +20,7 @@ import { gatewayPresetEnvironmentError, isRunPresetName, resolveRunPreset, RUN_P
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { state } from './lib/state'
-import { toAnthropicClientModelName } from './routes/messages/model-normalization'
+import { toClaudeCodeModelName } from './routes/messages/model-normalization'
 import {
   closeResponsesWebSocketsGracefully,
   forceCloseResponsesWebSockets,
@@ -223,8 +223,8 @@ export async function promptForClaudeCodeLaunchCommand(
 
   return buildClaudeLaunchCommand({
     baseUrl: serverUrl,
-    model: toAnthropicClientModelName(selectedModel),
-    smallModel: toAnthropicClientModelName(selectedSmallModel),
+    model: toClaudeCodeModelName(selectedModel),
+    smallModel: toClaudeCodeModelName(selectedSmallModel),
   })
 }
 
@@ -233,7 +233,14 @@ export function selectClaudeCodeModelIds(models: Model[]): string[] {
   if (modelIds.length === 0) {
     throw new Error('No current Copilot model can serve Claude Code through a faithful direct Messages route.')
   }
-  return modelIds
+  const modelsById = new Map(models.map(model => [model.id, model]))
+  return modelIds.map((modelId) => {
+    const model = modelsById.get(modelId)
+    return toClaudeCodeModelName(
+      modelId,
+      model?.capabilities?.limits?.max_context_window_tokens,
+    )
+  })
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {

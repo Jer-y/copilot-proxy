@@ -1177,6 +1177,10 @@ describe('runSetup', () => {
   test('probes a distinct Claude secondary model before generating configuration', async () => {
     const primary = model('claude-primary', ['/v1/messages'])
     const secondary = model('claude-secondary', ['/v1/messages'])
+    secondary.capabilities.limits = {
+      max_context_window_tokens: 1_000_000,
+      max_output_tokens: 64_000,
+    }
     const probedModels: string[] = []
     const result = await runSetup(options({
       client: 'claude',
@@ -1204,7 +1208,7 @@ describe('runSetup', () => {
       path: '/v1/messages',
       semanticValidation: 'passed',
     })
-    expect(result.artifact.content).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-secondary"')
+    expect(result.artifact.content).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-secondary[1m]"')
   })
 
   test('emits no Claude configuration when a distinct secondary model probe fails', async () => {

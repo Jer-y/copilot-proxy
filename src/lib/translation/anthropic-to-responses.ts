@@ -198,7 +198,15 @@ function handleSystemMessage(
     return
   }
 
-  const cacheControlBlocks = msg.content
+  const unsupportedBlock = msg.content.find(block => block.type !== 'text')
+  if (unsupportedBlock) {
+    throwAnthropicInvalidRequestError(
+      `Anthropic system content block type "${unsupportedBlock.type}" cannot be represented faithfully on the Responses translation path. Use a model routed directly through /v1/messages.`,
+    )
+  }
+
+  const textBlocks = msg.content as Array<AnthropicTextBlock>
+  const cacheControlBlocks = textBlocks
     .map((block, index) => ({ block, index }))
     .filter(({ block }) => block.cache_control)
   if (cacheControlBlocks.length > 0) {
@@ -208,7 +216,7 @@ function handleSystemMessage(
     )
   }
 
-  const text = msg.content.map(block => block.text).join('\n\n')
+  const text = textBlocks.map(block => block.text).join('\n\n')
   if (!text) {
     return
   }
@@ -491,6 +499,7 @@ function translateUserBlockToResponsesContent(
         'Unexpanded document block reached Responses translation layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
       )
     case 'search_result':
+    case 'tool_reference':
       return throwAnthropicInvalidRequestError(
         `Anthropic user content block type "${block.type}" cannot be represented faithfully on the Responses translation path. Use a model routed directly through /v1/messages.`,
       )

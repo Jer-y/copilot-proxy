@@ -42,6 +42,18 @@ describe('getModelConfig', () => {
     expect(config.preferredApi).toBe('anthropic-messages')
   })
 
+  test('should configure claude-opus-5 from the live 1m Copilot capability boundary', () => {
+    const config = getModelConfig('claude-opus-5')
+    expect(config.enableCacheControl).toBe(true)
+    expect(config.defaultReasoningEffort).toBe('high')
+    expect(config.supportsToolChoice).toBe(true)
+    expect(config.supportsParallelToolCalls).toBe(true)
+    expect(config.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(config.verifiedMaxOutputTokens).toBe(64000)
+    expect(config.supportedApis).toEqual(['anthropic-messages', 'chat-completions'])
+    expect(config.preferredApi).toBe('anthropic-messages')
+  })
+
   test('should return config with reasoningMode for gpt-5.2-codex', () => {
     const config = getModelConfig('gpt-5.2-codex')
     expect(config.reasoningMode).toBe('thinking')
@@ -231,5 +243,20 @@ describe('findModelMaxOutputTokens', () => {
 
     expect(findModelMaxOutputTokens('claude-opus-4.8', withLimit(64000))).toBe(128000)
     expect(findModelMaxOutputTokens('claude-opus-4.8', withLimit(256000))).toBe(256000)
+  })
+
+  test('uses the verified Opus 5 64k limit as a floor', () => {
+    const withLimit = (maxOutputTokens: number) => ({
+      object: 'list' as const,
+      data: [{
+        id: 'claude-opus-5',
+        capabilities: {
+          limits: { max_output_tokens: maxOutputTokens },
+        },
+      }],
+    }) as unknown as ModelsResponse
+
+    expect(findModelMaxOutputTokens('claude-opus-5', withLimit(32000))).toBe(64000)
+    expect(findModelMaxOutputTokens('claude-opus-5', withLimit(128000))).toBe(128000)
   })
 })

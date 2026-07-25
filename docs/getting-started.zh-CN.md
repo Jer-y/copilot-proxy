@@ -59,7 +59,7 @@ bun run ./src/main.ts setup openai-sdk
 
 | 客户端 | 生成结果 |
 | --- | --- |
-| Claude Code | 使用 CLI `--settings` overlay 的启动命令，不修改或选中用户 `settings.json` 中冲突的环境值 |
+| Claude Code | 使用 CLI `--settings` overlay 的启动命令，不修改或选中用户 `settings.json` 中冲突的环境值。实时 Copilot metadata 声明 1M 上下文的模型会使用 Claude Code 的 `[1m]` selector；代理探测与上游请求仍使用目录中的基础模型 ID。用户显式设置的 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 仍然优先，并会关闭客户端侧 1M 模式。 |
 | Codex | 生成需要手动保存为 `copilot-proxy-home/copilot-proxy.config.toml` 的 TOML 内容，该路径位于解析后的日常 Codex home 下（设置了 `CODEX_HOME` 时使用该目录，否则使用平台的 `.codex` 目录）；其中包含用于刷新目录的非秘密命令式认证，并提供把 `CODEX_HOME` 限定到 `copilot-proxy-home` 后选择 `--profile copilot-proxy` 的启动命令 |
 | OpenAI SDK | 生成 `OPENAI_BASE_URL`、本地占位 API Key、所选模型和已验证的直连 API 类型 |
 

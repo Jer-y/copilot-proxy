@@ -114,6 +114,51 @@ const AnthropicToolUseBlockSchema = z.object({
   cache_control: AnthropicCacheControlSchema.nullable().optional(),
 }).passthrough()
 
+const AnthropicFallbackBlockSchema = z.object({
+  type: z.literal('fallback'),
+  from: z.object({ model: z.string() }).passthrough(),
+  to: z.object({ model: z.string() }).passthrough(),
+  trigger: z.unknown().optional(),
+}).passthrough()
+
+const AnthropicToolChangeReferenceSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('tool_reference'),
+    name: z.string(),
+  }).passthrough(),
+  z.object({
+    type: z.literal('mcp_tool_reference'),
+    server_name: z.string(),
+    name: z.string(),
+  }).passthrough(),
+  z.object({
+    type: z.literal('mcp_toolset_reference'),
+    server_name: z.string(),
+  }).passthrough(),
+])
+
+const AnthropicToolAdditionBlockSchema = z.object({
+  type: z.literal('tool_addition'),
+  tool: AnthropicToolChangeReferenceSchema,
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
+}).passthrough()
+
+const AnthropicToolRemovalBlockSchema = z.object({
+  type: z.literal('tool_removal'),
+  tool: AnthropicToolChangeReferenceSchema,
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
+}).passthrough()
+
+const AnthropicMidConversationSystemBlockSchema = z.object({
+  type: z.literal('mid_conv_system'),
+  content: z.array(z.union([
+    AnthropicTextBlockSchema,
+    AnthropicToolAdditionBlockSchema,
+    AnthropicToolRemovalBlockSchema,
+  ])),
+  cache_control: AnthropicCacheControlSchema.nullable().optional(),
+}).passthrough()
+
 const AnthropicThinkingBlockSchema = z.object({
   type: z.literal('thinking'),
   thinking: z.string(),
@@ -156,6 +201,7 @@ const STANDARD_ASSISTANT_CONTENT_BLOCK_TYPES = new Set([
   'thinking',
   'redacted_thinking',
   'server_tool_use',
+  'fallback',
 ])
 
 // Anthropic-hosted tools emit evolving content block shapes such as
@@ -184,16 +230,45 @@ const AnthropicAssistantMessageSchema = z.object({
       AnthropicThinkingBlockSchema,
       AnthropicRedactedThinkingBlockSchema,
       AnthropicServerToolUseBlockSchema,
+      AnthropicFallbackBlockSchema,
       AnthropicServerContentBlockSchema,
     ])),
   ]),
 }).passthrough()
 
+const STANDARD_SYSTEM_CONTENT_BLOCK_TYPES = new Set([
+  'text',
+  'tool_addition',
+  'tool_removal',
+  'mid_conv_system',
+])
+
+// Native Messages may add new typed system blocks before the local schema is
+// updated. Preserve unknown blocks for upstream truth, while ensuring malformed
+// versions of already-known blocks cannot fall through this compatibility arm.
+const AnthropicUnknownSystemContentBlockSchema = z.object({
+  type: z.string().min(1),
+}).passthrough().superRefine((value, ctx) => {
+  if (STANDARD_SYSTEM_CONTENT_BLOCK_TYPES.has(value.type)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Malformed system content block of type "${value.type}"`,
+      path: ['type'],
+    })
+  }
+})
+
 const AnthropicSystemMessageSchema = z.object({
   role: z.literal('system'),
   content: z.union([
     z.string(),
-    z.array(AnthropicTextBlockSchema),
+    z.array(z.union([
+      AnthropicTextBlockSchema,
+      AnthropicToolAdditionBlockSchema,
+      AnthropicToolRemovalBlockSchema,
+      AnthropicMidConversationSystemBlockSchema,
+      AnthropicUnknownSystemContentBlockSchema,
+    ])),
   ]),
 }).passthrough()
 
@@ -286,6 +361,14 @@ const AnthropicOutputConfigSchema = z.object({
   }).passthrough().nullable().optional(),
 }).passthrough()
 
+const AnthropicFallbackSchema = z.object({
+  model: z.string(),
+  max_tokens: z.number().int().nonnegative().nullable().optional(),
+  output_config: AnthropicOutputConfigSchema.nullable().optional(),
+  speed: z.enum(['standard', 'fast']).nullable().optional(),
+  thinking: AnthropicThinkingConfigSchema.nullable().optional(),
+}).passthrough()
+
 // ─── Chat Completions (OpenAI format) ─────────────────────────────
 
 export const ChatCompletionsPayloadSchema = z.object({
@@ -327,8 +410,12 @@ export const AnthropicMessagesPayloadSchema = z.object({
   top_p: z.number().optional(),
   top_k: z.number().optional(),
   service_tier: z.enum(['auto', 'standard_only']).optional(),
-  speed: z.enum(['fast', 'normal']).optional(),
+  speed: z.enum(['standard', 'fast', 'normal']).nullable().optional(),
   stop_sequences: z.array(z.string()).optional(),
+  fallbacks: z.union([
+    z.literal('default'),
+    z.array(AnthropicFallbackSchema),
+  ]).nullable().optional(),
 }).passthrough()
 
 // ─── Embeddings ───────────────────────────────────────────────────
