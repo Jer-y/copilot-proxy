@@ -175,6 +175,61 @@ describe('real route authentication recovery', () => {
     })
   }
 
+  test('normalizes a Responses input-item connection 401 without refreshing authentication', async () => {
+    let upstreamAttempts = 0
+    let tokenExchanges = 0
+    const fetchMock = mock(async (url: string) => {
+      if (url.endsWith('/copilot_internal/v2/token')) {
+        tokenExchanges++
+        return Response.json({
+          token: 'unexpected-new-copilot-token',
+          refresh_in: 1_500,
+          expires_at: Math.floor(Date.now() / 1_000) + 1_800,
+        })
+      }
+
+      expect(url.endsWith('/responses')).toBe(true)
+      upstreamAttempts++
+      return Response.json({
+        error: 'Input Item Does Not Belong to This Connection',
+      }, {
+        status: 401,
+        headers: {
+          'X-GitHub-Request-Id': 'github-input-item-mismatch',
+        },
+      })
+    })
+    // @ts-expect-error test mock only needs the fetch call signature
+    globalThis.fetch = fetchMock
+
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4', input: 'replay this item', store: false }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(response.headers.get('x-github-request-id')).toBe('github-input-item-mismatch')
+    expect(await response.json()).toEqual({
+      error: {
+        message: 'Input Item Does Not Belong to This Connection',
+        type: 'invalid_request_error',
+      },
+    })
+    expect(upstreamAttempts).toBe(1)
+    expect(tokenExchanges).toBe(0)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      globalCircuit: { phase: 'closed' },
+      metrics: {
+        recoverableAuthFailures: 0,
+        reactiveRefreshAttempts: 0,
+        replayAttempts: 0,
+        scopeCircuitOpens: 0,
+      },
+      scopes: { open: 0 },
+    })
+  })
+
   test('closes an opaque scope after a cancelled 401 leader and three successful route followers', async () => {
     const leaderController = new AbortController()
     let finishTokenExchange!: () => void

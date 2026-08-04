@@ -19,10 +19,34 @@ const MAX_CIRCUIT_COOLDOWN_MS = 5 * 60_000
 const MAX_TRACKED_SCOPES = 128
 const CONCURRENCY_RETRY_AFTER_SECONDS = 1
 const FAILED_REACTIVE_REFRESH_COOLDOWN_MS = 60_000
+const INPUT_ITEM_CONNECTION_ERRORS = new Set([
+  'input item does not belong to this connection',
+  'input item id does not belong to this connection',
+])
+const MAX_AUTH_FAILURE_BODY_BYTES = 64 * 1024
+const AUTH_FAILURE_BODY_READ_INACTIVITY_TIMEOUT_MS = 1_000
+const AUTH_FAILURE_BODY_READ_TOTAL_TIMEOUT_MS = 5_000
+const AUTH_FAILURE_BODY_READ_DEADLINE = Symbol('auth-failure-body-read-deadline')
 
 type AuthFailureKind = 'unauthorized' | 'opaque_forbidden' | 'token_error'
 type CircuitPhase = 'closed' | 'open' | 'half_open'
 type RecoveryFollowerOutcome = 'cancelled' | 'failed' | 'succeeded'
+
+interface AuthFailureBodyReadResult {
+  done: boolean
+  value?: Uint8Array
+}
+
+interface AuthFailureBodyReader {
+  read: () => Promise<AuthFailureBodyReadResult>
+  cancel: () => Promise<void>
+  releaseLock: () => void
+}
+
+interface AuthFailureClassification {
+  failure?: AuthFailureKind
+  normalizedResponse?: Response
+}
 
 interface AuthenticatedRequestContext {
   lateRecovery?: RecoveryDeferred
@@ -272,13 +296,19 @@ async function fetchAuthenticatedCopilotWithinScope(
     scope.pendingInitialAuthRequests.add(requestContext)
     const firstResponse = await sendAttempt(options, 0)
     responseToDiscard = firstResponse
-    const firstFailure = await classifyRecoverableAuthFailure(firstResponse)
+    const firstClassification = await classifyRecoverableAuthFailure(firstResponse, options.endpoint, options.signal)
+    const firstFailure = firstClassification.failure
     scope.pendingInitialAuthRequests.delete(requestContext)
+    throwIfRequestAborted(options.signal)
 
     if (!firstFailure) {
       releaseLateRecoveryCandidate(requestContext)
       recordCircuitSuccess(reservation, now())
-      const leasedResponse = attachLeaseToResponse(firstResponse, lease, options.signal)
+      const responseForClient = firstClassification.normalizedResponse ?? firstResponse
+      if (firstClassification.normalizedResponse)
+        await discardResponse(firstResponse)
+      responseToDiscard = responseForClient
+      const leasedResponse = attachLeaseToResponse(responseForClient, lease, options.signal)
       responseToDiscard = undefined
       releaseWithResponse = true
       return leasedResponse
@@ -317,7 +347,9 @@ async function fetchAuthenticatedCopilotWithinScope(
       metrics.replayAttempts++
       const replayResponse = await sendAttempt(options, 1)
       responseToDiscard = replayResponse
-      const replayFailure = await classifyRecoverableAuthFailure(replayResponse)
+      // A cancelled caller must not hide a rejected fresh-token canary.
+      const replayClassification = await classifyRecoverableAuthFailure(replayResponse, options.endpoint)
+      const replayFailure = replayClassification.failure
       if (replayFailure) {
         metrics.replayFailures++
         consola.warn('A follower request remained rejected after Copilot token recovery; opening scoped cooldown:', {
@@ -335,7 +367,12 @@ async function fetchAuthenticatedCopilotWithinScope(
       }
       settleJoinedRecovery(replayFailure ? 'failed' : 'succeeded')
       settleJoinedRecovery = undefined
-      const leasedResponse = attachLeaseToResponse(replayResponse, lease, options.signal)
+      throwIfRequestAborted(options.signal)
+      const responseForClient = replayClassification.normalizedResponse ?? replayResponse
+      if (replayClassification.normalizedResponse)
+        await discardResponse(replayResponse)
+      responseToDiscard = responseForClient
+      const leasedResponse = attachLeaseToResponse(responseForClient, lease, options.signal)
       responseToDiscard = undefined
       releaseWithResponse = true
       return leasedResponse
@@ -396,7 +433,9 @@ async function fetchAuthenticatedCopilotWithinScope(
     metrics.replayAttempts++
     const replayResponse = await sendAttempt(options, 1)
     responseToDiscard = replayResponse
-    const replayFailure = await classifyRecoverableAuthFailure(replayResponse)
+    // A cancelled caller must not hide a rejected fresh-token canary.
+    const replayClassification = await classifyRecoverableAuthFailure(replayResponse, options.endpoint)
+    const replayFailure = replayClassification.failure
     if (replayFailure) {
       metrics.replayFailures++
       consola.warn('Copilot authentication recovery replay remained rejected; opening scoped cooldown:', {
@@ -429,7 +468,12 @@ async function fetchAuthenticatedCopilotWithinScope(
       recordCircuitSuccess(reservation, now())
     }
 
-    const leasedResponse = attachLeaseToResponse(replayResponse, lease, options.signal)
+    throwIfRequestAborted(options.signal)
+    const responseForClient = replayClassification.normalizedResponse ?? replayResponse
+    if (replayClassification.normalizedResponse)
+      await discardResponse(replayResponse)
+    responseToDiscard = responseForClient
+    const leasedResponse = attachLeaseToResponse(responseForClient, lease, options.signal)
     responseToDiscard = undefined
     releaseWithResponse = true
     return leasedResponse
@@ -887,11 +931,25 @@ async function sendAttempt(
   }
 }
 
-async function classifyRecoverableAuthFailure(response: Response): Promise<AuthFailureKind | undefined> {
-  if (response.status === 401)
-    return 'unauthorized'
+async function classifyRecoverableAuthFailure(
+  response: Response,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<AuthFailureClassification> {
+  if (response.status === 401) {
+    if (endpoint === '/responses') {
+      const text = await readResponseTextForClassification(response, signal)
+      const message = getInputItemConnectionErrorMessage(text)
+      if (message) {
+        return {
+          normalizedResponse: createInputItemConnectionErrorResponse(response, message),
+        }
+      }
+    }
+    return { failure: 'unauthorized' }
+  }
   if (response.status !== 403)
-    return undefined
+    return {}
 
   const text = await response.clone().text().catch(() => '')
   const normalized = text.trim().toLowerCase()
@@ -907,7 +965,7 @@ async function classifyRecoverableAuthFailure(response: Response): Promise<AuthF
       : payload
     const code = typeof error.code === 'string' ? error.code.toLowerCase() : ''
     if (['expired_token', 'invalid_token', 'token_expired'].includes(code))
-      return 'token_error'
+      return { failure: 'token_error' }
   }
   catch {
     // Non-JSON 403 responses other than the known opaque GitHub response are not replayed.
@@ -922,9 +980,212 @@ async function classifyRecoverableAuthFailure(response: Response): Promise<AuthF
       || response.headers.has('x-github-request-id')
     )
   ) {
-    return 'opaque_forbidden'
+    return { failure: 'opaque_forbidden' }
   }
-  return undefined
+  return {}
+}
+
+async function readResponseTextForClassification(response: Response, signal?: AbortSignal): Promise<string> {
+  const contentLength = response.headers.get('content-length')
+  if (contentLength && Number(contentLength) > MAX_AUTH_FAILURE_BODY_BYTES)
+    return ''
+
+  let reader: AuthFailureBodyReader | undefined
+  let pendingRead: Promise<AuthFailureBodyReadResult> | undefined
+  let totalTimeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const totalTimeoutResult = new Promise<typeof AUTH_FAILURE_BODY_READ_DEADLINE>((resolve) => {
+      totalTimeout = setTimeout(
+        resolve,
+        AUTH_FAILURE_BODY_READ_TOTAL_TIMEOUT_MS,
+        AUTH_FAILURE_BODY_READ_DEADLINE,
+      )
+      totalTimeout.unref?.()
+    })
+    const clone = response.clone()
+    reader = clone.body?.getReader() as AuthFailureBodyReader | undefined
+    if (!reader)
+      return ''
+
+    const decoder = new TextDecoder()
+    let text = ''
+    let totalBytes = 0
+    while (true) {
+      const currentRead = reader.read()
+      pendingRead = currentRead
+      const result = await readAuthFailureBodyChunk(currentRead, totalTimeoutResult, signal)
+      pendingRead = undefined
+      if (result === AUTH_FAILURE_BODY_READ_DEADLINE) {
+        scheduleCloneReaderCleanup(reader, currentRead)
+        reader = undefined
+        return ''
+      }
+      if (!result) {
+        scheduleCloneReaderCleanup(reader, currentRead)
+        reader = undefined
+        // The complete error envelope may already be buffered even when the
+        // upstream branch never closes or the caller cancels.
+        return text + decoder.decode()
+      }
+
+      if (result.done) {
+        reader.releaseLock()
+        reader = undefined
+        return text + decoder.decode()
+      }
+
+      const value = result.value
+      if (!value)
+        return ''
+      totalBytes += value.byteLength
+      if (totalBytes > MAX_AUTH_FAILURE_BODY_BYTES) {
+        scheduleCloneReaderCleanup(reader)
+        reader = undefined
+        return ''
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+  }
+  catch {
+    return ''
+  }
+  finally {
+    if (totalTimeout)
+      clearTimeout(totalTimeout)
+    if (reader) {
+      if (pendingRead) {
+        scheduleCloneReaderCleanup(reader, pendingRead)
+      }
+      else {
+        try {
+          reader.releaseLock()
+        }
+        catch {
+          // The clone reader may already be closing after an upstream stream error.
+        }
+      }
+    }
+  }
+}
+
+async function readAuthFailureBodyChunk(
+  pendingRead: Promise<AuthFailureBodyReadResult>,
+  totalTimeoutResult: Promise<typeof AUTH_FAILURE_BODY_READ_DEADLINE>,
+  signal?: AbortSignal,
+): Promise<AuthFailureBodyReadResult | typeof AUTH_FAILURE_BODY_READ_DEADLINE | undefined> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  try {
+    const timeoutResult = new Promise<undefined>((resolve) => {
+      timeout = setTimeout(resolve, AUTH_FAILURE_BODY_READ_INACTIVITY_TIMEOUT_MS, undefined)
+      timeout.unref?.()
+    })
+    const abortResult = signal
+      ? new Promise<undefined>((resolve) => {
+          onAbort = () => resolve(undefined)
+          signal.addEventListener('abort', onAbort, { once: true })
+          if (signal.aborted)
+            onAbort()
+        })
+      : undefined
+    return await Promise.race(abortResult
+      ? [pendingRead, timeoutResult, totalTimeoutResult, abortResult]
+      : [pendingRead, timeoutResult, totalTimeoutResult])
+  }
+  finally {
+    if (timeout)
+      clearTimeout(timeout)
+    if (onAbort)
+      signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+function scheduleCloneReaderCleanup(
+  reader: AuthFailureBodyReader,
+  pendingRead?: Promise<AuthFailureBodyReadResult>,
+): void {
+  void (async () => {
+    let cancelPromise: Promise<void> | undefined
+    try {
+      // Cancel before waiting for a pending read. Waiting first can deadlock
+      // with discardResponse(), which is cancelling the original tee branch.
+      cancelPromise = reader.cancel()
+    }
+    catch {
+      // Bun can throw synchronously when the tee controller is already closed.
+    }
+
+    try {
+      if (pendingRead)
+        await pendingRead
+    }
+    catch {
+      // The clone may fail while the original response is being discarded.
+    }
+
+    try {
+      await cancelPromise
+    }
+    catch {
+      // Bun can close a tee branch before its reader cancellation settles.
+    }
+
+    try {
+      reader.releaseLock()
+    }
+    catch {
+      // The reader is already released or closed.
+    }
+  })()
+}
+
+function normalizeInputItemConnectionError(value: unknown): string | undefined {
+  if (typeof value !== 'string')
+    return undefined
+  const message = value.trim()
+  return INPUT_ITEM_CONNECTION_ERRORS.has(message.toLowerCase()) ? message : undefined
+}
+
+function getInputItemConnectionErrorMessage(text: string): string | undefined {
+  const directMessage = normalizeInputItemConnectionError(text)
+  if (directMessage)
+    return directMessage
+
+  try {
+    const payload = JSON.parse(text) as unknown
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+      return undefined
+
+    const envelope = payload as Record<string, unknown>
+    const envelopeMessage = normalizeInputItemConnectionError(envelope.message)
+      ?? normalizeInputItemConnectionError(envelope.error)
+    if (envelopeMessage)
+      return envelopeMessage
+
+    if (!envelope.error || typeof envelope.error !== 'object' || Array.isArray(envelope.error))
+      return undefined
+    return normalizeInputItemConnectionError((envelope.error as Record<string, unknown>).message)
+  }
+  catch {
+    return undefined
+  }
+}
+
+function createInputItemConnectionErrorResponse(response: Response, message: string): Response {
+  const headers = new Headers(response.headers)
+  headers.delete('content-encoding')
+  headers.delete('content-length')
+  headers.delete('transfer-encoding')
+  headers.set('content-type', 'application/json')
+  return Response.json({
+    error: {
+      message,
+      type: 'invalid_request_error',
+    },
+  }, {
+    status: 400,
+    headers,
+  })
 }
 
 async function acquireConcurrencyLease(signal?: AbortSignal): Promise<ConcurrencyLease | undefined> {

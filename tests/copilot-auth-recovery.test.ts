@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test, vi } from 'bun:test'
 
 import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { HTTPError } from '~/lib/error'
@@ -66,6 +66,456 @@ describe('authenticated Copilot recovery', () => {
     expect(refreshToken).toHaveBeenCalledTimes(1)
     expect(authorizations).toEqual(['Bearer old-token', 'Bearer new-token'])
     expect(getCopilotRecoveryStatus().metrics.replaySuccesses).toBe(1)
+  })
+
+  test('normalizes the Responses input-item connection 401 without auth recovery', async () => {
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const cases = [
+      {
+        model: 'gpt-input-item-connection-text',
+        expectedMessage: 'Input Item Does Not Belong to This Connection',
+        response: () => new Response('  Input Item Does Not Belong to This Connection  \n', { status: 401 }),
+      },
+      {
+        model: 'gpt-input-item-connection-json',
+        expectedMessage: 'INPUT ITEM DOES NOT BELONG TO THIS CONNECTION',
+        response: () => Response.json({ error: { message: ' INPUT ITEM DOES NOT BELONG TO THIS CONNECTION ' } }, { status: 401 }),
+      },
+      {
+        model: 'gpt-input-item-id-connection-json',
+        expectedMessage: 'input item ID does not belong to this connection',
+        response: () => Response.json({ error: { code: '', message: 'input item ID does not belong to this connection' } }, { status: 401 }),
+      },
+      {
+        model: 'gpt-input-item-connection-top-level-json',
+        expectedMessage: 'Input Item Does Not Belong to This Connection',
+        response: () => Response.json({ error: 'Input Item Does Not Belong to This Connection' }, { status: 401 }),
+      },
+    ]
+
+    for (const { expectedMessage, model, response: createResponse } of cases) {
+      const failedRequest = mock(async () => createResponse())
+      const response = await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model,
+        request: failedRequest,
+      }, { refreshToken })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          message: expectedMessage,
+          type: 'invalid_request_error',
+        },
+      })
+      expect(failedRequest).toHaveBeenCalledTimes(1)
+
+      const healthyRequest = mock(async () => completed('same scope is healthy'))
+      const healthyResponse = await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model,
+        request: healthyRequest,
+      }, { refreshToken })
+
+      expect(await healthyResponse.text()).toBe('same scope is healthy')
+      expect(healthyRequest).toHaveBeenCalledTimes(1)
+    }
+
+    expect(refreshToken).toHaveBeenCalledTimes(0)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      globalCircuit: { phase: 'closed' },
+      metrics: {
+        recoverableAuthFailures: 0,
+        replayAttempts: 0,
+        scopeCircuitOpens: 0,
+        globalCircuitOpens: 0,
+        circuitOpenRejections: 0,
+      },
+      scopes: { open: 0 },
+    })
+  })
+
+  test('keeps the input-item connection exception scoped to Responses', async () => {
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const request = mock(async (attempt: 0 | 1) => attempt === 0
+      ? new Response('Input Item Does Not Belong to This Connection', { status: 401 })
+      : completed('recovered'))
+
+    const response = await fetchAuthenticatedCopilot({
+      endpoint: '/v1/messages',
+      model: 'claude-input-item-connection-text',
+      request,
+    }, { refreshToken })
+
+    expect(await response.text()).toBe('recovered')
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+    expect(getCopilotRecoveryStatus().metrics).toMatchObject({
+      recoverableAuthFailures: 1,
+      replayAttempts: 1,
+      replaySuccesses: 1,
+    })
+  })
+
+  test('waits past the old total deadline for a delayed input-item JSON 401', async () => {
+    const body = JSON.stringify({ error: { message: 'Input Item Does Not Belong to This Connection' } })
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const request = mock(async (attempt: 0 | 1) => {
+      if (attempt === 1)
+        return completed('unexpected replay')
+      return new Response(new ReadableStream({
+        async start(controller) {
+          await new Promise(resolve => setTimeout(resolve, 150))
+          controller.enqueue(new TextEncoder().encode(body))
+          controller.close()
+        },
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const response = await fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-delayed-input-item-connection',
+      request,
+    }, { refreshToken })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message: 'Input Item Does Not Belong to This Connection',
+        type: 'invalid_request_error',
+      },
+    })
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(refreshToken).toHaveBeenCalledTimes(0)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      metrics: {
+        upstreamAttempts: 1,
+        recoverableAuthFailures: 0,
+        reactiveRefreshAttempts: 0,
+        replayAttempts: 0,
+        scopeCircuitOpens: 0,
+      },
+      scopes: { open: 0 },
+    })
+  })
+
+  test('normalizes an input-item connection error returned by the fresh-token replay', async () => {
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const request = mock(async (attempt: 0 | 1) => attempt === 0
+      ? new Response('Unauthorized', { status: 401 })
+      : Response.json({
+          error: { message: 'Input Item Does Not Belong to This Connection' },
+        }, { status: 401 }))
+
+    const response = await fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-replay-input-item-connection',
+      request,
+    }, { refreshToken })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message: 'Input Item Does Not Belong to This Connection',
+        type: 'invalid_request_error',
+      },
+    })
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      globalCircuit: { phase: 'closed' },
+      metrics: {
+        recoverableAuthFailures: 1,
+        reactiveRefreshAttempts: 1,
+        reactiveRefreshSuccesses: 1,
+        replayAttempts: 1,
+        replaySuccesses: 1,
+        replayFailures: 0,
+        scopeCircuitOpens: 0,
+      },
+      scopes: { open: 0 },
+    })
+  })
+
+  test('does not refresh after cancellation while classifying the initial 401 body', async () => {
+    const controller = new AbortController()
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    let markResponseStarted!: () => void
+    const responseStarted = new Promise<void>((resolve) => {
+      markResponseStarted = resolve
+    })
+    let responseCancelled = false
+    const request = mock(async () => new Response(new ReadableStream({
+      start(streamController) {
+        streamController.enqueue(new TextEncoder().encode('Unauthorized'))
+        markResponseStarted()
+      },
+      cancel() {
+        responseCancelled = true
+      },
+    }), { status: 401 }))
+
+    const pendingResponse = fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-cancelled-initial-401-classification',
+      request,
+      signal: controller.signal,
+    }, { refreshToken })
+    await responseStarted
+    controller.abort(new Error('caller left during initial 401 classification'))
+
+    await expect(pendingResponse).rejects.toThrow('caller left during initial 401 classification')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(refreshToken).toHaveBeenCalledTimes(0)
+    expect(responseCancelled).toBe(true)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      globalCircuit: { phase: 'closed' },
+      metrics: {
+        recoverableAuthFailures: 0,
+        reactiveRefreshAttempts: 0,
+        replayAttempts: 0,
+        replayFailures: 0,
+        scopeCircuitOpens: 0,
+      },
+      scopes: { open: 0 },
+    })
+  })
+
+  test('does not open the scope after cancellation while classifying a replay 401', async () => {
+    const controller = new AbortController()
+    const body = JSON.stringify({ error: { message: 'Input Item Does Not Belong to This Connection' } })
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    let markReplayStarted!: () => void
+    const replayStarted = new Promise<void>((resolve) => {
+      markReplayStarted = resolve
+    })
+    let replayCancelled = false
+    const request = mock(async (attempt: 0 | 1) => attempt === 0
+      ? new Response('Unauthorized', { status: 401 })
+      : new Response(new ReadableStream({
+          start(streamController) {
+            streamController.enqueue(new TextEncoder().encode(body))
+            markReplayStarted()
+          },
+          cancel() {
+            replayCancelled = true
+          },
+        }), { status: 401 }))
+
+    const pendingResponse = fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-cancelled-replay-401-classification',
+      request,
+      signal: controller.signal,
+    }, { refreshToken })
+    await replayStarted
+    controller.abort(new Error('caller left during replay 401 classification'))
+
+    await expect(pendingResponse).rejects.toThrow('caller left during replay 401 classification')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+    expect(replayCancelled).toBe(true)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      globalCircuit: { phase: 'closed' },
+      metrics: {
+        recoverableAuthFailures: 1,
+        reactiveRefreshAttempts: 1,
+        reactiveRefreshSuccesses: 1,
+        replayAttempts: 1,
+        replaySuccesses: 1,
+        replayFailures: 0,
+        scopeCircuitOpens: 0,
+      },
+      scopes: { open: 0 },
+    })
+  })
+
+  test('opens the scope after cancellation while classifying an ordinary replay 401', async () => {
+    const controller = new AbortController()
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    let markReplayStarted!: () => void
+    const replayStarted = new Promise<void>((resolve) => {
+      markReplayStarted = resolve
+    })
+    let replayCancelled = false
+    const request = mock(async (attempt: 0 | 1) => attempt === 0
+      ? new Response('Unauthorized', { status: 401 })
+      : new Response(new ReadableStream({
+          start(streamController) {
+            streamController.enqueue(new TextEncoder().encode('Unauthorized'))
+            markReplayStarted()
+          },
+          cancel() {
+            replayCancelled = true
+          },
+        }), { status: 401 }))
+
+    const pendingResponse = fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-cancelled-ordinary-replay-401-classification',
+      request,
+      signal: controller.signal,
+    }, { refreshToken })
+    await replayStarted
+    controller.abort(new Error('caller left during ordinary replay 401 classification'))
+
+    await expect(pendingResponse).rejects.toThrow('caller left during ordinary replay 401 classification')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+    expect(replayCancelled).toBe(true)
+    expect(getCopilotRecoveryStatus()).toMatchObject({
+      globalCircuit: { phase: 'closed' },
+      metrics: {
+        recoverableAuthFailures: 1,
+        reactiveRefreshAttempts: 1,
+        reactiveRefreshSuccesses: 1,
+        replayAttempts: 1,
+        replaySuccesses: 0,
+        replayFailures: 1,
+        scopeCircuitOpens: 1,
+      },
+      scopes: { open: 1 },
+    })
+
+    const blockedRequest = mock(async () => completed('unexpected request'))
+    await expect(fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-cancelled-ordinary-replay-401-classification',
+      request: blockedRequest,
+    })).rejects.toMatchObject({ response: { status: 503 } })
+    expect(blockedRequest).not.toHaveBeenCalled()
+  })
+
+  test('recovers an unfinished ordinary 401 body without unhandled clone errors', async () => {
+    const unhandledRejections: unknown[] = []
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason)
+    }
+    let responseCancelled = false
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const request = mock(async (attempt: 0 | 1) => attempt === 0
+      ? new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('Unauthorized'))
+          },
+          cancel() {
+            responseCancelled = true
+          },
+        }), { status: 401 })
+      : completed('recovered'))
+
+    process.on('unhandledRejection', onUnhandledRejection)
+    try {
+      const response = await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model: 'gpt-unfinished-ordinary-401',
+        request,
+      }, { refreshToken })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe('recovered')
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+    }
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+    expect(responseCancelled).toBe(true)
+    expect(unhandledRejections).toEqual([])
+  })
+
+  test('bounds the body read used to classify a 401', async () => {
+    let chunksRead = 0
+    const chunk = new Uint8Array(1024).fill(65)
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    const request = mock(async (attempt: 0 | 1) => attempt === 0
+      ? new Response(new ReadableStream({
+          pull(controller) {
+            chunksRead++
+            controller.enqueue(chunk)
+            if (chunksRead === 256)
+              controller.close()
+          },
+        }), { status: 401 })
+      : completed('recovered'))
+
+    const response = await fetchAuthenticatedCopilot({
+      endpoint: '/responses',
+      model: 'gpt-bounded-401-body',
+      request,
+    }, { refreshToken })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('recovered')
+    expect(chunksRead).toBeLessThan(128)
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+  })
+
+  test('bounds total time while classifying a continuously trickling 401 body', async () => {
+    vi.useFakeTimers()
+    try {
+      let streamController!: ReadableStreamDefaultController<Uint8Array>
+      const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+      const request = mock(async (attempt: 0 | 1) => attempt === 0
+        ? new Response(new ReadableStream({
+            start(controller) {
+              streamController = controller
+            },
+          }), { status: 401 })
+        : completed('recovered'))
+
+      const pendingResponse = fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model: 'gpt-slow-trickle-401-body',
+        request,
+      }, { refreshToken })
+
+      for (let tick = 0; tick < 10 && vi.getTimerCount() < 2; tick++)
+        await Promise.resolve()
+      expect(vi.getTimerCount()).toBeGreaterThanOrEqual(2)
+
+      const chunk = new Uint8Array([65])
+      for (let index = 0; index < 24; index++) {
+        streamController.enqueue(chunk)
+        for (let tick = 0; tick < 5; tick++)
+          await Promise.resolve()
+        vi.advanceTimersByTime(200)
+        for (let tick = 0; tick < 5; tick++)
+          await Promise.resolve()
+      }
+
+      vi.advanceTimersByTime(199)
+      for (let tick = 0; tick < 5; tick++)
+        await Promise.resolve()
+      expect(request).toHaveBeenCalledTimes(1)
+      expect(refreshToken).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(1)
+      for (let tick = 0; tick < 10 && request.mock.calls.length < 2; tick++)
+        await Promise.resolve()
+
+      const response = await pendingResponse
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe('recovered')
+      expect(request).toHaveBeenCalledTimes(2)
+      expect(refreshToken).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 
   test('only treats eligible authentication failures as recoverable', async () => {
