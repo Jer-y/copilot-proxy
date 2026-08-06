@@ -173,58 +173,6 @@ export function resolveCittyBooleanOption(
   }
 }
 
-export function wasCittyStringOptionPassed(
-  rawArgs: string[],
-  name: string,
-  options: {
-    shortName?: string
-    stringOptions?: readonly CittyStringOptionDefinition[]
-  } = {},
-): boolean {
-  const targetLongNames = cittyLongOptionNames(name)
-  const { processedArgs } = preprocessCittyArgs(rawArgs)
-  const stringLongNames = new Set<string>()
-  const stringShortNames = new Set<string>()
-  for (const option of options.stringOptions ?? []) {
-    for (const longName of cittyLongOptionNames(option.name))
-      stringLongNames.add(longName)
-    if (option.shortName)
-      stringShortNames.add(option.shortName)
-  }
-
-  for (let index = 0; index < processedArgs.length; index++) {
-    const arg = processedArgs[index]
-    if (arg === '--')
-      break
-
-    if (arg.startsWith('--')) {
-      const equalsIndex = arg.indexOf('=')
-      const rawName = arg.slice(2, equalsIndex === -1 ? undefined : equalsIndex)
-      if (targetLongNames.has(rawName))
-        return true
-      if (equalsIndex === -1 && stringLongNames.has(rawName) && index + 1 < processedArgs.length)
-        index++
-      continue
-    }
-
-    if (!arg.startsWith('-') || arg === '-')
-      continue
-
-    const cluster = arg.slice(1)
-    for (let clusterIndex = 0; clusterIndex < cluster.length; clusterIndex++) {
-      const shortName = cluster[clusterIndex]
-      if (!stringShortNames.has(shortName))
-        continue
-      if (shortName === options.shortName)
-        return true
-      if (clusterIndex === cluster.length - 1 && index + 1 < processedArgs.length)
-        index++
-      break
-    }
-  }
-  return false
-}
-
 function preprocessCittyArgs(rawArgs: string[]): {
   negatedNames: string[]
   processedArgs: string[]

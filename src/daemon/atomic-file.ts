@@ -3,26 +3,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
-export interface FileSnapshot {
-  content: Uint8Array
-  mode: number
-}
-
-export function readFileSnapshot(filePath: string): FileSnapshot | undefined {
-  try {
-    const stat = fs.statSync(filePath)
-    return {
-      content: fs.readFileSync(filePath),
-      mode: stat.mode & 0o777,
-    }
-  }
-  catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-      return undefined
-    throw error
-  }
-}
-
 export function writeOwnerOnlyFileAtomically(
   filePath: string,
   content: string | Uint8Array,
@@ -52,16 +32,4 @@ export function writeFileAtomically(
   finally {
     fs.rmSync(temporaryPath, { force: true })
   }
-}
-
-export function restoreFileSnapshot(
-  filePath: string,
-  snapshot: FileSnapshot | undefined,
-): void {
-  if (!snapshot) {
-    fs.rmSync(filePath, { force: true })
-    return
-  }
-
-  writeFileAtomically(filePath, snapshot.content, snapshot.mode)
 }

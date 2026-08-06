@@ -87,7 +87,6 @@ const START_RUN_OPTION_DEFINITIONS: readonly RunOptionDefinition[] = [
   { name: 'show-token', type: 'boolean' },
   { name: 'proxy-env', type: 'boolean' },
   { name: 'daemon', short: 'd', type: 'boolean' },
-  { name: '_supervisor', type: 'boolean' },
   { name: '_service', type: 'boolean' },
   { name: '_log-file', type: 'boolean' },
   { name: '_data-dir', type: 'string' },

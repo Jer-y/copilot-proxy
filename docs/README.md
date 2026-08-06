@@ -14,7 +14,7 @@ The documentation is split by task so that product policy, operations, deploymen
 
 ## Operations
 
-[Operations](operations.md) covers runtime presets, the `models` and `doctor` commands, diagnostics, native services, and legacy-daemon migration.
+[Operations](operations.md) covers runtime presets, the `models` and `doctor` commands, diagnostics, native services, and upgrades from pre-v0.10.0 installations.
 
 ## Deployment
 

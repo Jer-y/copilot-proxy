@@ -1,12 +1,23 @@
-import type { DaemonConfig } from '../src/daemon/config'
+import type { ServiceConfig } from '../src/daemon/config'
 
-import { describe, expect, test } from 'bun:test'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { parseArgs as parseCittyArgs } from 'citty'
-import { buildServiceStartArgs, isEphemeralPackageRunnerPath, nativeServiceHostEnvironmentError, resolveExplicitBooleanOption, resolveLegacyDaemonRestoreConfig, resolveNativeServiceEnableConfig, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
+import { loadLegacyServiceConfig } from '../src/daemon/config'
+import { buildServiceStartArgs, isEphemeralPackageRunnerPath, nativeServiceHostEnvironmentError, resolveExplicitBooleanOption, resolveNativeServiceEnableConfig, resolveNativeServiceInstallLocations, rollbackEnableTransaction } from '../src/daemon/enable'
 import { readinessProbeHostHeader, readinessProbeHostname, resolveNativeServiceReadinessHost, waitForNativeServiceReadiness } from '../src/daemon/native-service'
 import { PATHS } from '../src/lib/paths'
 
-const baseConfig: DaemonConfig = {
+const tempDirs: string[] = []
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0))
+    fs.rmSync(dir, { force: true, recursive: true })
+})
+
+const baseConfig: ServiceConfig = {
   port: 4399,
   host: '127.0.0.1',
   verbose: false,
@@ -36,8 +47,8 @@ describe('buildServiceStartArgs', () => {
     ])
   })
 
-  test('includes optional switches and never includes github token or show-token', () => {
-    const config: DaemonConfig = {
+  test('includes optional switches and never includes show-token', () => {
+    const config: ServiceConfig = {
       ...baseConfig,
       port: 4411,
       host: '0.0.0.0',
@@ -54,7 +65,6 @@ describe('buildServiceStartArgs', () => {
       connectTimeoutMs: 15000,
       showToken: true,
       proxyEnv: true,
-      githubToken: 'ghu_secret_should_not_be_in_args',
     }
 
     const args = buildServiceStartArgs('/tmp/main.js', config)
@@ -92,7 +102,6 @@ describe('buildServiceStartArgs', () => {
       '--proxy-env',
     ])
     expect(args).not.toContain('--github-token')
-    expect(args).not.toContain(config.githubToken!)
     expect(args).not.toContain('--show-token')
     expect(args).not.toContain('--_supervisor')
   })
@@ -127,20 +136,63 @@ describe('resolveNativeServiceEnableConfig', () => {
     })
   })
 
-  test('prefers a recoverable v0.8 daemon config over the legacy service baseline', () => {
-    const savedConfig = {
+  test('migrates a pre-v0.9 native service config instead of resetting its listener and account', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-legacy-service-config-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'daemon.json')
+    const legacyConfig = {
       ...baseConfig,
-      maxConcurrency: 7,
-      maxQueue: 9,
-      queueTimeoutMs: 1234,
+      port: 4411,
+      host: '172.17.0.1',
+      accountType: 'enterprise',
+      proxyEnv: true,
+      headersTimeoutMs: 600_000,
+      githubToken: 'must-not-be-migrated',
     }
+    fs.writeFileSync(filePath, JSON.stringify(legacyConfig))
+
+    const loaded = loadLegacyServiceConfig(filePath)
+    expect(loaded).toEqual({
+      ...baseConfig,
+      port: 4411,
+      host: '172.17.0.1',
+      accountType: 'enterprise',
+      proxyEnv: true,
+      headersTimeoutMs: 600_000,
+    })
     expect(resolveNativeServiceEnableConfig({
       existingNativeService: true,
-      savedConfig,
-    })).toEqual(savedConfig)
+      legacyConfig: loaded,
+    })).toEqual(loaded!)
   })
 
-  test('reuses the installed native config when no legacy config exists', () => {
+  test('keeps installed native config ahead of migration-only daemon config', () => {
+    const installedConfig = { ...baseConfig, port: 4500 }
+    expect(resolveNativeServiceEnableConfig({
+      installedConfig,
+      legacyConfig: { ...baseConfig, port: 4600 },
+    })).toEqual(installedConfig)
+  })
+
+  test('distinguishes a missing legacy config from invalid and unreadable migration state', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-invalid-legacy-config-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'daemon.json')
+
+    expect(loadLegacyServiceConfig(filePath)).toBeUndefined()
+
+    fs.writeFileSync(filePath, JSON.stringify({ ...baseConfig, host: 'bad/host' }))
+    expect(() => loadLegacyServiceConfig(filePath)).toThrow('service config is invalid')
+
+    fs.writeFileSync(filePath, JSON.stringify({ ...baseConfig, maxQueue: 10 }))
+    expect(() => loadLegacyServiceConfig(filePath)).toThrow('service config is invalid')
+
+    fs.rmSync(filePath)
+    fs.mkdirSync(filePath)
+    expect(() => loadLegacyServiceConfig(filePath)).toThrow('service config is unreadable')
+  })
+
+  test('reuses the installed native config', () => {
     expect(resolveNativeServiceEnableConfig({
       installedConfig: {
         ...baseConfig,
@@ -157,21 +209,6 @@ describe('resolveNativeServiceEnableConfig', () => {
       maxConcurrency: 12,
       maxQueue: 24,
       queueTimeoutMs: 5000,
-    })
-  })
-
-  test('uses the installed native config ahead of stale legacy config after migration', () => {
-    expect(resolveNativeServiceEnableConfig({
-      savedConfig: { ...baseConfig, host: '127.0.0.2' },
-      installedConfig: {
-        ...baseConfig,
-        host: '172.17.0.1',
-        maxConcurrency: 12,
-      },
-    })).toEqual({
-      ...baseConfig,
-      host: '172.17.0.1',
-      maxConcurrency: 12,
     })
   })
 
@@ -196,40 +233,6 @@ describe('resolveNativeServiceEnableConfig', () => {
       installedConfig,
       clearConcurrencyLimit: true,
     })).toEqual(baseConfig)
-  })
-
-  test('does not restore stale legacy concurrency settings on a later enable', () => {
-    const staleLegacyConfig = {
-      ...baseConfig,
-      maxConcurrency: 12,
-      maxQueue: 24,
-      queueTimeoutMs: 5000,
-    }
-    const clearedConfig = resolveNativeServiceEnableConfig({
-      savedConfig: staleLegacyConfig,
-      installedConfig: staleLegacyConfig,
-      clearConcurrencyLimit: true,
-    })
-    expect(resolveNativeServiceEnableConfig({
-      savedConfig: staleLegacyConfig,
-      installedConfig: clearedConfig,
-    })).toEqual(baseConfig)
-
-    const overriddenConfig = resolveNativeServiceEnableConfig({
-      savedConfig: staleLegacyConfig,
-      installedConfig: baseConfig,
-      maxConcurrency: '8',
-      maxQueue: '16',
-      queueTimeoutMs: '2500',
-    })
-    expect(resolveNativeServiceEnableConfig({
-      savedConfig: staleLegacyConfig,
-      installedConfig: overriddenConfig,
-    })).toMatchObject({
-      maxConcurrency: 8,
-      maxQueue: 16,
-      queueTimeoutMs: 2500,
-    })
   })
 
   test('applies named safe presets before explicit overrides', () => {
@@ -281,7 +284,7 @@ describe('resolveNativeServiceEnableConfig', () => {
     })
   })
 
-  test('persists every non-interactive service runtime option without a legacy daemon', () => {
+  test('persists every non-interactive service runtime option without legacy state', () => {
     expect(resolveNativeServiceEnableConfig({
       bodyTimeoutMs: '910000',
       connectTimeoutMs: '45000',
@@ -475,22 +478,6 @@ describe('nativeServiceHostEnvironmentError', () => {
   })
 })
 
-describe('resolveLegacyDaemonRestoreConfig', () => {
-  test('snapshots the pre-migration config and refuses to stop an unconfigured daemon', () => {
-    const savedConfig = {
-      ...baseConfig,
-      host: '192.168.1.10',
-      maxConcurrency: 7,
-    }
-    const restoreConfig = resolveLegacyDaemonRestoreConfig(true, savedConfig)
-
-    expect(restoreConfig).toEqual(savedConfig)
-    expect(restoreConfig).not.toBe(savedConfig)
-    expect(resolveLegacyDaemonRestoreConfig(false, savedConfig)).toBeUndefined()
-    expect(() => resolveLegacyDaemonRestoreConfig(true, null)).toThrow('persisted daemon config is missing or invalid')
-  })
-})
-
 describe('isEphemeralPackageRunnerPath', () => {
   test('detects common npx and dlx cache paths', () => {
     expect(isEphemeralPackageRunnerPath('/home/alice/.npm/_npx/abc/node_modules/@jer-y/copilot-proxy/dist/main.js')).toBe(true)
@@ -562,36 +549,6 @@ describe('enable transaction rollback', () => {
       'persisted:previous',
       'activation:true:true',
     ])
-  })
-
-  test('restores a stopped legacy daemon with its pre-migration host', async () => {
-    const previousConfig = {
-      ...baseConfig,
-      host: '192.168.1.10',
-      maxConcurrency: 7,
-      maxQueue: 9,
-      queueTimeoutMs: 1234,
-    }
-    const replacementConfig = resolveNativeServiceEnableConfig({
-      savedConfig: previousConfig,
-      preset: 'service',
-    })
-    const legacyRestoreConfig = resolveLegacyDaemonRestoreConfig(true, previousConfig)
-    const restoredConfigs: DaemonConfig[] = []
-
-    expect(replacementConfig.host).toBe('127.0.0.1')
-    expect(await rollbackEnableTransaction({ installed: false, enabled: false, running: false }, {
-      restorePreviousPersistedState: () => true,
-      restoreReplacementPersistedState: () => true,
-      rollbackPlatformDefinition: () => true,
-      restorePreviousAutoStartState: () => true,
-      restoreLegacyDaemon: (config) => {
-        restoredConfigs.push(config)
-        return true
-      },
-    }, legacyRestoreConfig)).toBe(true)
-    expect(restoredConfigs).toEqual([previousConfig])
-    expect(restoredConfigs[0]?.host).toBe('192.168.1.10')
   })
 
   test('restores replacement metadata when the platform definition rollback fails', async () => {

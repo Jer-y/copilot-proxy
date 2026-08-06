@@ -44,21 +44,15 @@ export function getAppDir(options: AppDirOptions = {}): string {
 const APP_DIR = getAppDir()
 
 const GITHUB_TOKEN_PATH = path.join(APP_DIR, 'github_token')
-const DAEMON_PID = path.join(APP_DIR, 'daemon.pid')
 const DAEMON_LOG = path.join(APP_DIR, 'daemon.log')
-const DAEMON_JSON = path.join(APP_DIR, 'daemon.json')
 const DAEMON_STOP = path.join(APP_DIR, 'daemon.stop')
-const DAEMON_ENV = path.join(APP_DIR, 'daemon-env.json')
 const NATIVE_SERVICE_ENV = path.join(APP_DIR, 'service-env.json')
 
 export const PATHS = {
   APP_DIR,
   GITHUB_TOKEN_PATH,
-  DAEMON_PID,
   DAEMON_LOG,
-  DAEMON_JSON,
   DAEMON_STOP,
-  DAEMON_ENV,
   NATIVE_SERVICE_ENV,
 }
 

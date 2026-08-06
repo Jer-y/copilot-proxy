@@ -19,8 +19,6 @@ const FLOORS: CoverageFloor[] = [
   { file: 'src/daemon/log-file.ts', lines: 0.85, functions: 0.85 },
   { file: 'src/daemon/service-env.ts', lines: 0.95, functions: 0.95 },
   { file: 'src/daemon/service-install-state.ts', lines: 0.80, functions: 0.75 },
-  { file: 'src/daemon/start.ts', lines: 0.30, functions: 0.25 },
-  { file: 'src/daemon/supervisor.ts', lines: 0.55, functions: 0.60 },
   { file: 'src/lib/proxy.ts', lines: 0.18, functions: 0.25 },
   { file: 'src/lib/proxy-environment.ts', lines: 0.85, functions: 0.85 },
   { file: 'src/lib/routing-policy.ts', lines: 0.95, functions: 0.95 },

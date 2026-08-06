@@ -1,4 +1,4 @@
-import type { DaemonConfig } from '~/daemon/config'
+import type { ServiceConfig } from '~/daemon/config'
 import type { NativeServiceActivationState, NativeServiceCommands } from '~/daemon/native-service'
 import type { NativeServiceConfig } from '~/daemon/service-install-state'
 import { randomUUID } from 'node:crypto'
@@ -9,12 +9,10 @@ import { defineCommand } from 'citty'
 
 import consola from 'consola'
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
-import { DEFAULT_SERVICE_CONFIG, LEGACY_UNBOUNDED_SERVICE_CONFIG, loadDaemonConfig } from '~/daemon/config'
+import { DEFAULT_SERVICE_CONFIG, loadLegacyServiceConfig, UNBOUNDED_NATIVE_SERVICE_CONFIG } from '~/daemon/config'
 import { loadInstalledNativeServiceCommands, loadNativeServiceCommands, resolveNativeServiceReadinessHost, waitForNativeServiceReadiness } from '~/daemon/native-service'
-import { isDaemonRunning } from '~/daemon/pid'
-import { loadNativeServiceEnvironment, saveNativeServiceEnvironment } from '~/daemon/service-env'
+import { saveNativeServiceEnvironment } from '~/daemon/service-env'
 import { loadNativeServiceInstallState, NATIVE_SERVICE_DEFINITION_PATH_ENV, removeNativeServiceInstallState, saveNativeServiceInstallState, toNativeServiceConfig } from '~/daemon/service-install-state'
-import { stopDaemon } from '~/daemon/stop'
 import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from '~/lib/cli-validators'
 import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { getUserHomeDir, PATHS } from '~/lib/paths'
@@ -38,7 +36,7 @@ const ENABLE_STRING_OPTIONS = [
 
 export function buildServiceStartArgs(
   scriptPath: string,
-  config: DaemonConfig,
+  config: ServiceConfig,
   instanceToken?: string,
 ): string[] {
   const args = [
@@ -94,8 +92,8 @@ interface NativeServiceEnableConfigOptions {
   existingNativeService?: boolean
   headersTimeoutMs?: string
   host?: string
-  savedConfig?: DaemonConfig
   installedConfig?: NativeServiceConfig
+  legacyConfig?: ServiceConfig
   maxConcurrency?: string
   maxQueue?: string
   port?: string
@@ -110,11 +108,11 @@ interface NativeServiceEnableConfigOptions {
 
 export function resolveNativeServiceEnableConfig(
   options: NativeServiceEnableConfigOptions,
-): DaemonConfig {
-  const config: DaemonConfig = {
+): ServiceConfig {
+  const config: ServiceConfig = {
     ...(options.installedConfig
-      ?? options.savedConfig
-      ?? (options.existingNativeService ? LEGACY_UNBOUNDED_SERVICE_CONFIG : DEFAULT_SERVICE_CONFIG)),
+      ?? options.legacyConfig
+      ?? (options.existingNativeService ? UNBOUNDED_NATIVE_SERVICE_CONFIG : DEFAULT_SERVICE_CONFIG)),
   }
 
   if (options.preset !== undefined) {
@@ -235,18 +233,6 @@ export function resolveNativeServiceEnableConfig(
 
   resolveConcurrencyLimitConfig(config)
   return config
-}
-
-export function resolveLegacyDaemonRestoreConfig(
-  legacyRunning: boolean,
-  savedConfig: DaemonConfig | null,
-): DaemonConfig | undefined {
-  if (!legacyRunning)
-    return undefined
-  if (!savedConfig) {
-    throw new Error('Cannot replace the running app-managed daemon because its persisted daemon config is missing or invalid. Restore it, or stop the daemon and rerun `start -d` with the intended options, before retrying `enable`.')
-  }
-  return { ...savedConfig }
 }
 
 export function nativeServiceHostEnvironmentError(
@@ -385,7 +371,16 @@ export const enable = defineCommand({
   },
   async run({ args, rawArgs }) {
     const previousInstallState = loadNativeServiceInstallState()
-    const savedConfig = loadDaemonConfig()
+    let legacyConfig: ServiceConfig | undefined
+    if (!previousInstallState?.config) {
+      try {
+        legacyConfig = loadLegacyServiceConfig()
+      }
+      catch (error) {
+        consola.error('Cannot migrate the pre-v0.10.0 service config:', error instanceof Error ? error.message : error)
+        process.exit(1)
+      }
+    }
     let existingNativeService = previousInstallState !== undefined
     try {
       if (!existingNativeService)
@@ -395,7 +390,7 @@ export const enable = defineCommand({
       consola.error('Cannot inspect the existing native service before resolving its configuration:', error instanceof Error ? error.message : error)
       process.exit(1)
     }
-    let config: DaemonConfig
+    let config: ServiceConfig
     try {
       const proxyEnv = resolveExplicitBooleanOption(
         rawArgs,
@@ -420,8 +415,8 @@ export const enable = defineCommand({
         existingNativeService,
         headersTimeoutMs: args['headers-timeout-ms'],
         host: args.host,
-        savedConfig: savedConfig ?? undefined,
         installedConfig: previousInstallState?.config,
+        legacyConfig,
         maxConcurrency: args['max-concurrency'],
         maxQueue: args['max-queue'],
         port: args.port,
@@ -438,20 +433,23 @@ export const enable = defineCommand({
       consola.error(error instanceof Error ? error.message : error)
       process.exit(1)
     }
-    if (previousInstallState?.config)
+    if (previousInstallState?.config) {
       consola.info('Reusing the previously installed native service config.')
-    else if (existingNativeService && !savedConfig)
-      consola.info('The existing native service predates persisted config; preserving its legacy unbounded concurrency behavior.')
-    else if (!savedConfig)
-      consola.info('No legacy daemon config found. Using default native service config.')
-    else
-      consola.info('Migrating the legacy daemon config to the native service config.')
+    }
+    else if (legacyConfig) {
+      consola.info('Migrating the pre-v0.10.0 service config into native service control state.')
+    }
+    else {
+      consola.info(existingNativeService
+        ? 'The existing native service predates persisted control state; preserving its unbounded concurrency behavior.'
+        : 'Using default native service config.')
+    }
     if (config.showToken) {
-      consola.error('Cannot enable auto-start while --show-token is persisted in the legacy daemon config. Save the config again without --show-token first.')
+      consola.error('Cannot enable auto-start while --show-token is persisted in native service state. Run `enable` again without that setting.')
       process.exit(1)
     }
     if (config.manual) {
-      consola.error('Cannot enable auto-start with manual approval enabled because native services have no interactive TTY. Disable manual mode in the saved daemon config first.')
+      consola.error('Cannot enable auto-start with manual approval enabled because native services have no interactive TTY. Disable manual mode before enabling the service.')
       process.exit(1)
     }
     const hostEnvironmentError = nativeServiceHostEnvironmentError(config.host)
@@ -579,28 +577,6 @@ export const enable = defineCommand({
       process.exit(1)
     }
 
-    const daemon = isDaemonRunning()
-    let legacyRestoreConfig: DaemonConfig | undefined
-    try {
-      // The replacement preset may change host or concurrency. The legacy
-      // supervisor reloads daemon.json, so rollback readiness must use this
-      // pre-migration snapshot rather than the replacement service config.
-      legacyRestoreConfig = resolveLegacyDaemonRestoreConfig(daemon.running, savedConfig)
-    }
-    catch (error) {
-      consola.error(error instanceof Error ? error.message : error)
-      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)
-      process.exit(1)
-    }
-    if (daemon.running) {
-      consola.info('Stopping existing app-managed daemon before starting the native service...')
-      if (!stopDaemon()) {
-        consola.error('Cannot start native service: failed to stop existing app-managed daemon')
-        await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)
-        process.exit(1)
-      }
-    }
-
     let serviceStarted = false
     try {
       serviceStarted = nativeService.restartAutoStartService()
@@ -609,7 +585,7 @@ export const enable = defineCommand({
       consola.error('Failed to activate native service:', error instanceof Error ? error.message : error)
     }
     if (!serviceStarted) {
-      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands, legacyRestoreConfig)
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)
       process.exit(1)
     }
 
@@ -618,7 +594,7 @@ export const enable = defineCommand({
       requestHost: readinessRequestHost,
     })) {
       consola.error(`Native service did not become ready on ${config.host}:${config.port} within the startup deadline.`)
-      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands, legacyRestoreConfig)
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)
       process.exit(1)
     }
 
@@ -627,7 +603,7 @@ export const enable = defineCommand({
     }
     catch (error) {
       consola.error('Failed to commit native service installation:', error instanceof Error ? error.message : error)
-      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands, legacyRestoreConfig)
+      await rollbackEnableInstallation(platform, previousServiceEnvironment, previousInstallState, replacementServiceEnvironment, replacementInstallState, previousAutoStartState, platformCommands)
       process.exit(1)
     }
 
@@ -661,13 +637,11 @@ interface RollbackEnableTransactionOperations {
   restoreReplacementPersistedState: () => boolean
   rollbackPlatformDefinition: () => boolean | Promise<boolean>
   restorePreviousAutoStartState: (state: NativeServiceActivationState) => boolean | Promise<boolean>
-  restoreLegacyDaemon?: (config: DaemonConfig) => boolean | Promise<boolean>
 }
 
 export async function rollbackEnableTransaction(
   previousAutoStartState: NativeServiceActivationState,
   operations: RollbackEnableTransactionOperations,
-  legacyRestoreConfig?: DaemonConfig,
 ): Promise<boolean> {
   // Platform definition rollback does not activate the previous service. Keep
   // replacement metadata in place until the definition is known to be restored.
@@ -684,11 +658,6 @@ export async function rollbackEnableTransaction(
   try {
     if (!await operations.restorePreviousAutoStartState(previousAutoStartState))
       return false
-    if (legacyRestoreConfig) {
-      if (!operations.restoreLegacyDaemon)
-        return false
-      return await operations.restoreLegacyDaemon(legacyRestoreConfig)
-    }
     return true
   }
   catch {
@@ -704,7 +673,6 @@ async function rollbackEnableInstallation(
   replacementInstallState: ReturnType<typeof loadNativeServiceInstallState>,
   previousAutoStartState: NativeServiceActivationState,
   platformCommands: NativeServiceCommands,
-  legacyRestoreConfig?: DaemonConfig,
 ): Promise<boolean> {
   const restored = await rollbackEnableTransaction(previousAutoStartState, {
     restorePreviousPersistedState: () => tryRestorePersistedState(
@@ -719,8 +687,7 @@ async function rollbackEnableInstallation(
     ),
     rollbackPlatformDefinition: () => rollbackAutoStartInstall(platform),
     restorePreviousAutoStartState: state => platformCommands.restoreAutoStartState(state),
-    restoreLegacyDaemon,
-  }, legacyRestoreConfig)
+  })
   if (!restored) {
     consola.error('Native service rollback did not fully restore its previous service state.')
   }
@@ -770,25 +737,6 @@ function tryRestorePersistedState(
   }
   catch (error) {
     consola.error(`Failed to restore ${label}:`, error instanceof Error ? error.message : error)
-    return false
-  }
-}
-
-async function restoreLegacyDaemon(config: DaemonConfig): Promise<boolean> {
-  try {
-    const env: NodeJS.ProcessEnv = { ...process.env }
-    loadNativeServiceEnvironment({
-      proxyEnv: config.proxyEnv,
-      targetEnv: env,
-      filePath: PATHS.DAEMON_ENV,
-    })
-    const { spawnLegacySupervisor } = await import('~/daemon/start')
-    const pid = await spawnLegacySupervisor(config, env)
-    consola.warn(`Native service activation failed; restored the previous legacy daemon (PID: ${pid}).`)
-    return true
-  }
-  catch (error) {
-    consola.error('Native service activation failed and the previous legacy daemon could not be restored:', error instanceof Error ? error.message : error)
     return false
   }
 }

@@ -11,7 +11,7 @@ import { PATHS } from '~/lib/paths'
 export const logs = defineCommand({
   meta: {
     name: 'logs',
-    description: 'Show native background service or legacy daemon logs',
+    description: 'Show native background service logs',
   },
   args: {
     follow: {
@@ -31,6 +31,10 @@ export const logs = defineCommand({
     const count = Number.parseInt(args.lines, 10)
     const lineCount = Number.isFinite(count) ? count : 50
     const nativeService = await loadInstalledNativeServiceCommands()
+    if (!nativeService) {
+      consola.info('Native service is not installed')
+      return
+    }
     if (nativeService?.showAutoStartLogs({ follow: args.follow, lines: lineCount }))
       return
 

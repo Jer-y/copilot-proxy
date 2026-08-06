@@ -106,7 +106,6 @@ describe('native service install control state', () => {
       headersTimeoutMs: 600_000,
       bodyTimeoutMs: 900_000,
       connectTimeoutMs: 15_000,
-      githubToken: 'must-not-be-persisted',
       showToken: false,
       proxyEnv: true,
     })
@@ -124,7 +123,28 @@ describe('native service install control state', () => {
       instanceToken: 'instance_token_20260713',
       config,
     })
-    expect(fs.readFileSync(filePath, 'utf8')).not.toContain('must-not-be-persisted')
+    expect(fs.readFileSync(filePath, 'utf8')).not.toContain('githubToken')
+  })
+
+  test('rejects native service state containing a GitHub token', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    fs.writeFileSync(filePath, JSON.stringify({
+      dataDir: '/installed/data',
+      config: {
+        port: 4399,
+        host: '127.0.0.1',
+        verbose: false,
+        accountType: 'individual',
+        manual: false,
+        rateLimitWait: false,
+        githubToken: 'must-not-be-persisted',
+        showToken: false,
+        proxyEnv: false,
+      },
+    }))
+
+    expect(() => loadNativeServiceInstallState(filePath)).toThrow('control state is invalid')
   })
 
   test('rejects native service config with queue settings but no concurrency limit', () => {

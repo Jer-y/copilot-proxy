@@ -92,7 +92,7 @@ copilot-proxy status
 copilot-proxy logs -f
 ```
 
-`enable` installs foreground `start` under systemd, launchd, or Task Scheduler. A new installation defaults to the `service` preset. Configure a fresh service directly instead of creating a legacy daemon first, for example:
+`enable` installs foreground `start` under systemd, launchd, or Task Scheduler. A new installation defaults to the `service` preset. Configure a fresh service directly, for example:
 
 ```sh
 copilot-proxy enable --account-type business --port 4400 --proxy-env
@@ -102,18 +102,20 @@ Use `--host` only with the matching `COPILOT_PROXY_ALLOWED_HOSTS` deployment bou
 
 Use `restart`, `stop`, and `disable` for the remaining lifecycle operations.
 
-## Legacy daemon migration
+## Upgrade from pre-v0.10.0 installations
 
-The app-managed `start -d` path is deprecated and retained only for migration. Move to the native service:
+Before upgrading from a release that still supported the app-managed daemon or an older native-service state, first move to the final migration-capable release and refresh the native service state:
 
 ```sh
-copilot-proxy stop
-npm i -g @jer-y/copilot-proxy@latest
+npm i -g @jer-y/copilot-proxy@0.9.3
 copilot-proxy enable
+copilot-proxy status
+npm i -g @jer-y/copilot-proxy@0.10.0
+copilot-proxy restart
 copilot-proxy status
 ```
 
-After migration, use `status`, `logs`, `restart`, and `stop`. Do not build new automation around daemon PID or log files.
+`v0.10.0` no longer runs `start -d` or uses daemon PID files. The v0.9.3 `enable` step above persists the complete native-service control state before the old runtime is removed. If v0.10.0 was installed first, `enable` and `restart` accept a validated `daemon.json` only as a migration fallback when that control state lacks its config; run `enable` to persist the migrated config. Afterwards, use only `enable`, `status`, `logs`, `restart`, `stop`, and `disable`.
 
 ## Proxy environment
 

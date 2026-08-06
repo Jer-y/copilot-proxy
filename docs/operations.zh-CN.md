@@ -92,7 +92,7 @@ copilot-proxy status
 copilot-proxy logs -f
 ```
 
-`enable` 会在 systemd、launchd 或 Task Scheduler 中安装以前台 `start` 方式运行的服务。新安装默认使用 `service` 预设，可直接配置服务而无需先创建旧 daemon，例如：
+`enable` 会在 systemd、launchd 或 Task Scheduler 中安装以前台 `start` 方式运行的服务。新安装默认使用 `service` 预设，可直接配置服务，例如：
 
 ```sh
 copilot-proxy enable --account-type business --port 4400 --proxy-env
@@ -102,18 +102,20 @@ copilot-proxy enable --account-type business --port 4400 --proxy-env
 
 其余生命周期操作使用 `restart`、`stop` 和 `disable`。
 
-## 旧 daemon 迁移
+## 从 v0.10.0 之前的安装升级
 
-应用自行管理的 `start -d` 已弃用，只用于迁移。请迁移到原生服务：
+如果旧版本仍使用应用自行管理的 daemon，或原生服务安装状态尚未保存完整配置，请先升级到最后一个支持迁移的版本并刷新原生服务状态：
 
 ```sh
-copilot-proxy stop
-npm i -g @jer-y/copilot-proxy@latest
+npm i -g @jer-y/copilot-proxy@0.9.3
 copilot-proxy enable
+copilot-proxy status
+npm i -g @jer-y/copilot-proxy@0.10.0
+copilot-proxy restart
 copilot-proxy status
 ```
 
-迁移后使用 `status`、`logs`、`restart` 和 `stop`。不要再围绕 daemon PID 或日志文件构建自动化。
+`v0.10.0` 不再运行 `start -d`，也不再使用 daemon PID 文件。上面的 v0.9.3 `enable` 步骤会在旧运行时被移除前写入完整的原生服务控制状态。如果已经先安装了 v0.10.0，只有当控制状态缺少配置时，`enable` 和 `restart` 才会把通过校验的 `daemon.json` 作为迁移回退读取；请运行 `enable` 将迁移后的配置持久化。之后只使用 `enable`、`status`、`logs`、`restart`、`stop` 和 `disable`。
 
 ## 代理环境
 

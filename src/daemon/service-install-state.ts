@@ -1,4 +1,4 @@
-import type { DaemonConfig } from '~/daemon/config'
+import type { ServiceConfig } from '~/daemon/config'
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -22,7 +22,7 @@ export interface NativeServiceInstallState {
   xdgConfigHome?: string
 }
 
-export type NativeServiceConfig = Omit<DaemonConfig, 'githubToken'>
+export type NativeServiceConfig = ServiceConfig
 
 export interface ApplyInstalledNativeServiceDataDirResult {
   ignoredInvalidStatePath?: string
@@ -68,7 +68,7 @@ export function removeNativeServiceInstallState(
   fs.rmSync(filePath, { force: true })
 }
 
-export function toNativeServiceConfig(config: DaemonConfig): NativeServiceConfig {
+export function toNativeServiceConfig(config: ServiceConfig): NativeServiceConfig {
   return {
     port: config.port,
     host: config.host,

@@ -29,7 +29,7 @@
 - **Responses WebSocket tests:**
   `bun test tests/responses-websocket.test.ts tests/responses-websocket-upgrade.test.ts tests/responses-websocket-upstream.test.ts tests/copilot-responses-transport-parity.test.ts tests/routing-policy.test.ts tests/models-route.test.ts tests/copilot-auth-recovery.test.ts tests/start-shutdown.test.ts` covers the downstream session, Host/Origin Upgrade policy, authenticated upstream handshake, SSE/WSS parity classification, live-model gating, Codex catalog flags, recovery/lease behavior, and shutdown; `bun run test:node:http` is the packaged Node HTTP + WebSocket Upgrade smoke
 - **Background service commands:**
-  `bun run ./src/main.ts enable` installs a native systemd/launchd/Task Scheduler service that runs foreground `start`; on Linux this requires systemd user lingering so the service can start after boot before login. `stop`, `restart`, `status`, and `logs` prefer the native service and fall back to the legacy app-managed daemon. `bun run ./src/main.ts start -d` remains a compatibility daemon path.
+  `bun run ./src/main.ts enable` installs a native systemd/launchd/Task Scheduler service that runs foreground `start`; on Linux this requires systemd user lingering so the service can start after boot before login. `stop`, `restart`, `status`, and `logs` operate on the native service. The removed `start -d` legacy daemon path now returns a migration error; run `enable` instead.
 - **Other CLI subcommands:**
   `setup`, `models`, `doctor`, `auth`, `check-usage`, and `debug`
 - **Codex setup policy:**

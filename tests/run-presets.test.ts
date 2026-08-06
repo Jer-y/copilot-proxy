@@ -88,7 +88,6 @@ describe('run presets', () => {
       { alias: 'claudeCode', expected: true, longName: 'claude-code' },
       { alias: 'showToken', expected: true, longName: 'show-token' },
       { alias: 'proxyEnv', expected: true, longName: 'proxy-env' },
-      { alias: 'supervisor', expected: true, longName: '_supervisor' },
       { alias: 'service', expected: true, longName: '_service' },
       { alias: 'logFile', expected: true, longName: '_log-file' },
       { alias: 'dataDir', expected: 'C:\\runtime', longName: '_data-dir' },

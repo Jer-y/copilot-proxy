@@ -14,7 +14,7 @@
 
 ## 运维
 
-[运维](operations.zh-CN.md)介绍运行预设、`models` 与 `doctor` 命令、诊断、原生服务和旧 daemon 迁移。
+[运维](operations.zh-CN.md)介绍运行预设、`models` 与 `doctor` 命令、诊断、原生服务以及从 v0.10.0 之前的安装升级。
 
 ## 部署
 

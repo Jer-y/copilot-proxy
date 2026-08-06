@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import type { Server, ServerHandler } from 'srvx'
-import type { DaemonConfig } from '~/daemon/config'
 import type { Model } from '~/services/copilot/get-models'
 import fs from 'node:fs'
 import process from 'node:process'
@@ -599,12 +598,7 @@ export const start = defineCommand({
       alias: 'd',
       type: 'boolean',
       default: false,
-      description: 'Deprecated: run the legacy app-managed daemon; prefer `enable`',
-    },
-    '_supervisor': {
-      type: 'boolean',
-      default: false,
-      description: 'Internal: run as supervisor (do not use directly)',
+      description: 'Removed: use `enable` to install a native background service',
     },
     '_service': {
       type: 'boolean',
@@ -626,6 +620,11 @@ export const start = defineCommand({
     },
   },
   async run({ args, rawArgs }) {
+    if (args.daemon) {
+      consola.error('The legacy app-managed daemon was removed. If an older daemon is still running, temporarily reinstall `@jer-y/copilot-proxy@0.9.3` and run `copilot-proxy enable` to migrate it before upgrading. Otherwise, run `copilot-proxy enable` for a native background service.')
+      process.exit(1)
+    }
+
     if (args['_log-file']) {
       const { installRotatingProcessLog } = await import('~/daemon/log-file')
       installRotatingProcessLog()
@@ -755,108 +754,6 @@ export const start = defineCommand({
         'https://update.code.visualstudio.com',
         'https://raw.githubusercontent.com',
       ])
-    }
-
-    if (args._supervisor) {
-      const { loadDaemonConfigWithRecovery, mergeDaemonConfigWithExplicitFlags } = await import('~/daemon/config')
-      const fallbackConfig: DaemonConfig = {
-        port,
-        host,
-        verbose: args.verbose,
-        accountType: args['account-type'],
-        manual: args.manual,
-        rateLimit,
-        rateLimitWait: args.wait,
-        maxConcurrency,
-        maxQueue,
-        queueTimeoutMs,
-        headersTimeoutMs,
-        bodyTimeoutMs,
-        connectTimeoutMs,
-        githubToken: args['github-token'],
-        showToken: args['show-token'],
-        proxyEnv: args['proxy-env'],
-      }
-      const configResult = loadDaemonConfigWithRecovery(fallbackConfig)
-
-      if (configResult.recovered) {
-        const reason = configResult.reason ?? 'unknown'
-        consola.warn(`Supervisor mode: daemon config ${reason}, fallback applied`)
-        if (configResult.backupPath) {
-          consola.warn(`Supervisor mode: backed up previous config to ${configResult.backupPath}`)
-        }
-        if (!configResult.persisted) {
-          consola.warn('Supervisor mode: failed to persist recovered daemon config')
-        }
-      }
-
-      const mergedConfig = mergeDaemonConfigWithExplicitFlags(
-        configResult.config,
-        fallbackConfig,
-        rawArgs,
-      )
-      if (mergedConfig.showToken) {
-        consola.error('Cannot use --show-token in supervisor mode because tokens would be written to daemon logs.')
-        process.exit(1)
-      }
-      if (mergedConfig.manual) {
-        consola.error('Cannot use manual approval in supervisor mode because no interactive TTY is available.')
-        process.exit(1)
-      }
-
-      const { runAsSupervisor } = await import('~/daemon/supervisor')
-      const options: RunServerOptions = {
-        ...mergedConfig,
-        claudeCode: false,
-        exitOnPortInUse: false,
-        nativeService: false,
-      }
-
-      return runAsSupervisor(() => runServer(options))
-    }
-
-    if (args.daemon) {
-      consola.warn('`start --daemon` is deprecated and will be removed after the v1 migration window. Use `copilot-proxy enable` for a native background service.')
-      if (args['claude-code']) {
-        consola.error('Cannot use --claude-code with --daemon (interactive mode)')
-        process.exit(1)
-      }
-      if (args['show-token']) {
-        consola.error('Cannot use --show-token with --daemon because tokens would be written to daemon logs.')
-        process.exit(1)
-      }
-      if (args.manual) {
-        consola.error('Cannot use --manual with --daemon because manual approval requires an interactive foreground TTY.')
-        process.exit(1)
-      }
-      const { loadInstalledNativeServiceCommands } = await import('~/daemon/native-service')
-      const nativeService = await loadInstalledNativeServiceCommands()
-      if (nativeService) {
-        consola.error('Cannot use legacy --daemon while a native auto-start service is installed. Use `restart`/`stop`, or run `disable` before starting a legacy daemon.')
-        process.exit(1)
-      }
-
-      const { daemonStart } = await import('~/daemon/start')
-
-      await daemonStart({
-        port,
-        host,
-        verbose: args.verbose,
-        accountType: args['account-type'],
-        manual: args.manual,
-        rateLimit,
-        rateLimitWait: args.wait,
-        maxConcurrency,
-        maxQueue,
-        queueTimeoutMs,
-        headersTimeoutMs,
-        bodyTimeoutMs,
-        connectTimeoutMs,
-        githubToken: args['github-token'],
-        showToken: args['show-token'],
-        proxyEnv: args['proxy-env'],
-      })
-      return
     }
 
     return runServer({

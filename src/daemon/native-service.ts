@@ -1,4 +1,4 @@
-import type { DaemonConfig } from '~/daemon/config'
+import type { ServiceConfig } from '~/daemon/config'
 
 import http from 'node:http'
 import { isIP } from 'node:net'
@@ -42,7 +42,7 @@ export interface NativeServiceReadinessOptions {
 export const NATIVE_SERVICE_INSTANCE_HEADER = 'x-copilot-proxy-instance-token'
 
 export async function waitForNativeServiceReadiness(
-  config: Pick<DaemonConfig, 'host' | 'port'>,
+  config: Pick<ServiceConfig, 'host' | 'port'>,
   options: NativeServiceReadinessOptions = {},
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 30_000

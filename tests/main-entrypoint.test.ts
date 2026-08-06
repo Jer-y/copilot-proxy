@@ -171,6 +171,47 @@ describe('CLI entrypoint', () => {
     }
   }, 60_000)
 
+  test('rejects invalid legacy service config before native-service installation', () => {
+    const entrypoints = [
+      { name: 'source', path: path.resolve('src/main.ts'), runtime: process.execPath },
+      { name: 'packaged', path: packagedCliEntrypoint(), runtime: 'node' },
+    ] as const
+
+    for (const entrypoint of entrypoints) {
+      const testHome = fs.mkdtempSync(path.join(os.tmpdir(), `copilot-proxy-main-${entrypoint.name}-invalid-service-home-`))
+      const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `copilot-proxy-main-${entrypoint.name}-invalid-service-data-`))
+      try {
+        fs.writeFileSync(path.join(dataDir, 'daemon.json'), '{broken')
+        const result = spawnSync(
+          entrypoint.runtime,
+          [entrypoint.path, 'enable'],
+          {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              COPILOT_PROXY_DATA_DIR: dataDir,
+              COPILOT_PROXY_TEST_HOME: testHome,
+            },
+            timeout: 10_000,
+          },
+        )
+
+        expect(result.error).toBeUndefined()
+        expect(result.status).toBe(1)
+        expect(`${result.stdout}\n${result.stderr}`).toContain('Cannot migrate the pre-v0.10.0 service config')
+        expect(`${result.stdout}\n${result.stderr}`).toContain('service config is invalid')
+        expect(`${result.stdout}\n${result.stderr}`).not.toContain('Using default native service config')
+        expect(fs.existsSync(path.join(dataDir, 'service-env.json'))).toBe(false)
+        expect(fs.existsSync(path.join(testHome, '.copilot-proxy-native-service.json'))).toBe(false)
+      }
+      finally {
+        fs.rmSync(testHome, { force: true, recursive: true })
+        fs.rmSync(dataDir, { force: true, recursive: true })
+      }
+    }
+  }, 60_000)
+
   test('keeps internal lifecycle arguments out of public start help', () => {
     const result = spawnSync(
       process.execPath,
@@ -194,6 +235,33 @@ describe('CLI entrypoint', () => {
     expect(result.stdout).not.toContain('--_data-dir')
     expect(result.stdout).not.toContain('--_instance-token')
   })
+
+  test('rejects the removed legacy daemon flag with native-service guidance', () => {
+    const entrypoints = [
+      { path: path.resolve('src/main.ts'), runtime: process.execPath },
+      { path: packagedCliEntrypoint(), runtime: 'node' },
+    ] as const
+
+    for (const entrypoint of entrypoints) {
+      const result = spawnSync(
+        entrypoint.runtime,
+        [entrypoint.path, 'start', '-d'],
+        {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 10_000,
+        },
+      )
+
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(1)
+      expect(`${result.stdout}\n${result.stderr}`).toContain('legacy app-managed daemon was removed')
+      expect(`${result.stdout}\n${result.stderr}`).toContain('temporarily reinstall `@jer-y/copilot-proxy@0.9.3`')
+      expect(`${result.stdout}\n${result.stderr}`).toContain('migrate it before upgrading')
+      expect(`${result.stdout}\n${result.stderr}`).toContain('copilot-proxy enable')
+    }
+  }, 60_000)
 
   test('keeps internal lifecycle arguments out of colorized start help', () => {
     const env: NodeJS.ProcessEnv = {
@@ -358,7 +426,7 @@ describe('CLI entrypoint', () => {
         )
         expect(result.error).toBeUndefined()
         expect(result.status).toBe(0)
-        expect(result.stdout).toContain('Show native background service or legacy daemon status')
+        expect(result.stdout).toContain('Show native background service status')
         expect(result.stderr).not.toContain('control state is invalid')
       }
 

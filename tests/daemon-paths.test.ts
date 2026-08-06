@@ -4,25 +4,16 @@ import { expect, test } from 'bun:test'
 
 import { getAppDir, getUserHomeDir, PATHS } from '../src/lib/paths'
 
-test('PATHS includes DAEMON_PID path', () => {
-  expect(PATHS.DAEMON_PID).toBe(path.join(PATHS.APP_DIR, 'daemon.pid'))
-})
-
 test('PATHS includes DAEMON_LOG path', () => {
   expect(PATHS.DAEMON_LOG).toBe(path.join(PATHS.APP_DIR, 'daemon.log'))
 })
 
-test('PATHS includes DAEMON_JSON path', () => {
-  expect(PATHS.DAEMON_JSON).toBe(path.join(PATHS.APP_DIR, 'daemon.json'))
+test('PATHS includes the native service stop marker path', () => {
+  expect(PATHS.DAEMON_STOP).toBe(path.join(PATHS.APP_DIR, 'daemon.stop'))
 })
 
 test('PATHS includes the owner-only service environment path', () => {
   expect(PATHS.NATIVE_SERVICE_ENV).toBe(path.join(PATHS.APP_DIR, 'service-env.json'))
-})
-
-test('PATHS keeps legacy and native service environments separate', () => {
-  expect(PATHS.DAEMON_ENV).toBe(path.join(PATHS.APP_DIR, 'daemon-env.json'))
-  expect(PATHS.DAEMON_ENV).not.toBe(PATHS.NATIVE_SERVICE_ENV)
 })
 
 test('getAppDir honors the native-service data directory before platform defaults', () => {
