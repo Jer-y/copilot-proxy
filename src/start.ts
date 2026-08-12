@@ -430,7 +430,10 @@ export async function closeServerGracefully(
       gracefulClose.then(() => 'graceful' as const),
       new Promise<'timeout'>((resolve) => {
         timeout = setTimeout(resolve, timeoutMs, 'timeout')
-        timeout.unref?.()
+        // Keep the shutdown deadline referenced. It is the only completion
+        // path when graceful HTTP and WebSocket closes both remain pending;
+        // unref'ing it can leave Windows/Bun waiting forever once other
+        // runtime schedules have already been stopped.
       }),
     ])
 
