@@ -19,9 +19,55 @@ copilot-proxy start --preset service
 copilot-proxy start --preset custom --max-concurrency 3 --max-queue 10
 ```
 
-Plain `start` defaults to `custom`, preserving the unbounded behavior of releases that predate presets. Setup prints an explicit `--preset personal` command for new local configurations. Existing native services and commands with concurrency flags also remain `custom`; only an explicit `--preset` opts into preset values. The limiter is identity-wide and holds a lease until the upstream response body or stream finishes or is cancelled.
+Plain `start` defaults to `custom`, preserving the unbounded behavior of releases that predate presets. Setup prints an explicit `--preset personal` command for new local configurations. Existing native services and commands with concurrency flags also remain `custom`; only an explicit `--preset` opts into preset values. The global limiter holds a lease until the upstream response body or stream finishes or is cancelled. When an account also has `maxConcurrency`, its account lease is acquired before the global lease so one busy account cannot occupy global capacity while waiting for its own slot.
 
 `gateway-upstream` is a deployment contract, not permission to expose the service publicly. It also requires `COPILOT_PROXY_ALLOWED_HOSTS`; see [Authenticated private gateway](deployment.md#authenticated-private-gateway).
+
+## Multiple Copilot accounts
+
+Multi-account mode is for one trusted operator who owns several GitHub Copilot identities. It is deterministic routing, not multi-tenancy, load balancing, quota pooling, or automatic failover.
+
+Before the first `accounts` mutation after upgrading from a build without multi-account runtime locks, stop or restart every foreground proxy that was launched by the older build. Installed native services are detected and restarted transactionally, but an older foreground process cannot publish `runtime.lock`; leaving it running would keep serving its old in-memory single-account state.
+
+```sh
+# Device flow
+copilot-proxy accounts add personal --account-type individual
+copilot-proxy accounts add work --account-type enterprise
+
+# Or provide an existing token without putting it in argv
+printf '%s\n' "$TOKEN" | copilot-proxy accounts auth work --token-stdin --yes
+
+copilot-proxy accounts default personal --yes
+copilot-proxy accounts route set 'claude-*' work --yes
+copilot-proxy accounts route set 'gpt-5*' personal --yes
+copilot-proxy accounts list
+copilot-proxy accounts route list
+
+# Optional per-account concurrency and required startup/readiness routes
+copilot-proxy accounts concurrency set work 2 --yes
+copilot-proxy accounts required-route set responses-http gpt-5.4 --yes
+copilot-proxy accounts required-route list
+```
+
+`accounts.json` and `tokens/<account-id>` live in the normal owner-only data directory. Account IDs are lowercase, at most 32 characters, and limited to letters, digits, `_`, and `-`. At most eight accounts are accepted. `--token-stdin` reads at most 8 KiB, removes one final newline, and rejects empty or whitespace-bearing input. When `accounts.json` exists, the early `--github-token` bootstrap is rejected; use `accounts auth <id>` instead.
+
+`accounts concurrency set <id> <max>` stores a positive account-specific `maxConcurrency`; `accounts concurrency clear <id>` removes that narrower limiter. If it is absent, the account has no separate limiter but still participates in any configured global limiter. The account-specific limiter uses the bounded default queue of 50 requests and a 30-second wait.
+
+`accounts required-route set <surface> <model>` makes the selected model route a startup and readiness requirement; it does not add fallback or account switching. Supported surfaces are `responses-http`, `responses-websocket`, `anthropic-messages`, `chat-completions`, and `embeddings`. The model's normal static route selects the account, and the set operation validates the resulting required-route capabilities before committing. Use the exact pair with `accounts required-route remove <surface> <model>`, and inspect the configured gates with `accounts required-route list [--json]`.
+
+Request selection order is:
+
+1. An already pinned Responses WebSocket account.
+2. `x-copilot-account: <id>`.
+3. A `<account-id>/<model-id>` model prefix.
+4. The first matching `accounts.json` route glob.
+5. `defaultAccount`.
+
+Selectors that disagree return `409`. An unavailable statically bound account returns `503`; the proxy does not scan another account. Responses WebSocket selects on the first `response.create` unless the Upgrade request already supplied `x-copilot-account`, then remains pinned for the connection.
+
+`GET /readyz?account=<id>` checks one account. The ordinary `/readyz` response includes safe per-account availability, identity verification state, token/recovery state, and global/per-account concurrency. GitHub login and numeric user ID remain hidden from HTTP responses unless `COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY=1` (or foreground `start --expose-account-identity`) is explicitly enabled. `COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS=1` or `start --expose-account-models` adds `<account>/<model>` aliases only to non-Codex model-list requests.
+
+Account, route, concurrency, and required-route writes use an owner-only lock and atomic files. If a native service is running, the CLI restarts it, probes the affected account and overall readiness, and rolls disk state back on failure. A foreground proxy using the same data directory must be stopped first. When a native service uses a custom data directory, `accounts` and `auth --account` target that installed directory by default; set `COPILOT_PROXY_DATA_DIR` explicitly to manage a separate instance. A second proxy process cannot use the same data directory.
 
 ## Model inspection
 
@@ -30,11 +76,15 @@ copilot-proxy models --client all
 copilot-proxy models --client claude
 copilot-proxy models --client codex --json
 copilot-proxy models --client openai-sdk
+copilot-proxy models --account work --client all
+copilot-proxy check-usage --account work
 ```
 
-The command authenticates and reads the current model catalog for the selected `--account-type`. Its table shows both `direct` and bounded `translated` routes, plus maturity, limits, and selected feature flags; JSON adds compact route source, target, and reason-code fields. Setup is stricter: it configures only a current **direct** route. Entries with `model_picker_enabled=false` are omitted from both `models` and diagnostics.
+When `accounts.json` is active, `models` and `check-usage` default to `defaultAccount`; use `--account <id>` to inspect another configured account. They load only that account's persisted token, verify its numeric GitHub identity against the recorded account slot, and never fall back to the legacy `github_token` or Device Flow. Without `accounts.json`, `models --account-type` and the legacy authentication path retain their previous meaning.
 
-`models` and setup share that picker-enabled, live-route visibility baseline, but not necessarily the same candidates. `setup codex` also requires installed Codex 0.134.0 or newer and intersects direct Responses candidates with bundled entries that have usable `base_instructions` and `context_window` metadata. Because `models --client codex` does not inspect that local bundled catalog, it may show transport-specific or metadata-missing models that setup cannot configure on the current machine. The compatibility-oriented `/v1/models` response remains a separate client contract. Releases that provide `models` also include the relative documentation path returned by `models --json` in the npm package and Docker image.
+`models` shows the selected account's complete live catalog, including models reachable only through an explicit account header or model prefix; it is not reduced to that account's unprefixed static glob bindings. The table shows both `direct` and bounded `translated` routes, plus maturity, limits, and selected feature flags; JSON adds the selected account id, account type, compact route source, target, and reason-code fields. Setup is stricter: it configures only a current **direct** route. Entries with `model_picker_enabled=false` are omitted from both `models` and diagnostics.
+
+`models` and setup share that picker-enabled, live-route visibility baseline, but not necessarily the same candidates. `setup codex` also requires installed Codex 0.134.0 or newer and intersects direct Responses candidates with bundled entries that have usable `base_instructions` and `context_window` metadata. Because `models --client codex` does not inspect that local bundled catalog, it may show transport-specific or metadata-missing models that setup cannot configure on the current machine. The compatibility-oriented `/v1/models` response is a separate, statically bound client catalog. Releases that provide `models` also include the relative documentation path returned by `models --json` in the npm package and Docker image.
 
 These values describe current routing eligibility, not universal semantic support. Route definitions are in [Protocol compatibility](protocol-compatibility.md); live validation procedures are in [Copilot capability validation](copilot-capability-validation.md).
 
@@ -124,9 +174,13 @@ Ambient `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` values are not automatically
 ```sh
 copilot-proxy start --proxy-env
 copilot-proxy enable --proxy-env
+copilot-proxy accounts add work --account-type enterprise --proxy-env
+copilot-proxy accounts auth work --proxy-env
 copilot-proxy models --client all --proxy-env
 copilot-proxy doctor --endpoint https://proxy.internal --proxy-env
 ```
+
+Account mutations perform their own GitHub identity, Copilot-token, and model-catalog validation. Add `--proxy-env` to each `accounts add` or `accounts auth` invocation that needs the proxy; a proxy setting persisted for the native service does not implicitly opt an interactive CLI command into that egress path.
 
 `--proxy-env` is an explicit egress policy and fails closed when it cannot establish a usable proxy route. Proxy URLs may embed usernames or passwords. Native-service configuration persists the choice and relevant proxy/TLS environment in owner-only state, so treat that state and any copied proxy URL as credentials. Use `--proxy-env` only for infrastructure you trust.
 

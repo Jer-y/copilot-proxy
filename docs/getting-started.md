@@ -102,9 +102,10 @@ bun run ./src/main.ts models --client all
 bun run ./src/main.ts models --client claude
 bun run ./src/main.ts models --client codex --json
 bun run ./src/main.ts models --client openai-sdk
+bun run ./src/main.ts models --account work --client all
 ```
 
-Catalog metadata supports routing decisions; it does not prove every request semantic. See [Protocol compatibility](protocol-compatibility.md) for that distinction.
+With `accounts.json`, the command defaults to `defaultAccount`; `--account <id>` selects another account after strict persisted-token identity verification. It shows that account's complete live catalog rather than only its unprefixed static bindings. Catalog metadata supports routing decisions; it does not prove every request semantic. See [Protocol compatibility](protocol-compatibility.md) for that distinction.
 
 After the long-running proxy starts, diagnose it by base URL:
 

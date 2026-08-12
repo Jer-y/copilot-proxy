@@ -2,10 +2,10 @@ English | [简体中文](README.zh-CN.md)
 
 # Copilot API Proxy
 
-A local, single-user adapter that exposes one GitHub Copilot identity through OpenAI- and Anthropic-compatible APIs for Claude Code, Codex, SDKs, and custom tools.
+A local adapter for one trusted operator that exposes one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs for Claude Code, Codex, SDKs, and custom tools.
 
 > [!IMPORTANT]
-> copilot-proxy is designed for one trusted user on loopback. Business and enterprise account modes select a Copilot upstream route; they do not add downstream authentication, tenant isolation, audit, billing, or enterprise governance. See [product support](docs/product-support.md) before using a gateway or non-loopback listener.
+> copilot-proxy is designed for one trusted user on loopback. Each configured account's individual, business, or enterprise type selects its Copilot upstream route; multi-account support does not add downstream authentication, tenant isolation, audit, billing, or enterprise governance. See [product support](docs/product-support.md) before using a gateway or non-loopback listener.
 
 > [!WARNING]
 > This is a reverse-engineered proxy. It is not supported by GitHub and may break when Copilot changes. Excessive automated or bulk use may trigger GitHub abuse controls. Review the [GitHub Acceptable Use Policies](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github) and [GitHub Copilot Terms](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot), and use it responsibly.
@@ -82,7 +82,7 @@ Capability availability depends on the current Copilot account, model, endpoint,
 | Direct team sharing | Unsupported |
 | Public multi-tenant service | Unsupported |
 
-The proxy deliberately keeps one Copilot identity and its runtime state in one process. It is not a multi-tenant gateway. See [Product support](docs/product-support.md) for the full rationale.
+One process may hold several owner-configured Copilot identities for deterministic model routing, but the proxy still serves one trusted operator and is not a multi-tenant gateway. It does not load-balance or automatically fail over between accounts. See [Operations](docs/operations.md#multiple-copilot-accounts) and [Product support](docs/product-support.md).
 
 ## Documentation
 

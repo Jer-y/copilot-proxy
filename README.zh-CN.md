@@ -2,10 +2,10 @@
 
 # Copilot API Proxy
 
-一个本地、单用户适配器：把一个 GitHub Copilot 身份转换成兼容 OpenAI 和 Anthropic 的 API，供 Claude Code、Codex、SDK 与自定义工具使用。
+一个面向单一可信操作者的本地适配器：把一个或多个由所有者配置的 GitHub Copilot 身份转换成兼容 OpenAI 和 Anthropic 的 API，供 Claude Code、Codex、SDK 与自定义工具使用。
 
 > [!IMPORTANT]
-> copilot-proxy 面向一个通过本机回环地址访问的可信用户。Business 与 Enterprise 账号模式只选择对应的 Copilot 上游路由，不会提供下游认证、租户隔离、审计、计费或企业治理。使用网关或非回环监听地址前，请先阅读[产品支持](docs/product-support.zh-CN.md)。
+> copilot-proxy 面向一个通过本机回环地址访问的可信用户。每个已配置账号的 Individual、Business 或 Enterprise 类型只决定该账号的 Copilot 上游路由；多账号支持不会提供下游认证、租户隔离、审计、计费或企业治理。使用网关或非回环监听地址前，请先阅读[产品支持](docs/product-support.zh-CN.md)。
 
 > [!WARNING]
 > 这是一个通过逆向工程实现的代理，不受 GitHub 官方支持，并可能因 Copilot 变化而失效。过度自动化或批量使用可能触发 GitHub 的滥用控制。请阅读 [GitHub 可接受使用政策](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github)与 [GitHub Copilot 条款](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot)，并负责任地使用。
@@ -82,7 +82,7 @@ bun install --frozen-lockfile
 | 团队直接共享 | 不支持 |
 | 公共多租户服务 | 不支持 |
 
-代理有意在单个进程中维护一个 Copilot 身份及其运行状态，不是多租户网关。完整理由见[产品支持](docs/product-support.zh-CN.md)。
+单个进程可以保存多个由所有者配置的 Copilot 身份，并按模型进行确定性路由；但代理仍只服务一个可信操作者，不是多租户网关，也不会在账号间负载均衡或自动故障转移。详见[运维](docs/operations.zh-CN.md#多个-copilot-账号)与[产品支持](docs/product-support.zh-CN.md)。
 
 ## 文档
 

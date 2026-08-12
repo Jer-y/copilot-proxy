@@ -2,7 +2,7 @@
 
 # 部署
 
-copilot-proxy 使用一个 GitHub Copilot 身份，且没有下游用户认证。更改监听地址前，请先从[产品支持矩阵](product-support.zh-CN.md#部署支持矩阵)选择合适的拓扑。
+copilot-proxy 可以保存一个或多个由所有者配置的 GitHub Copilot 身份，但只服务一个可信操作者，也没有下游用户认证。更改监听地址前，请先从[产品支持矩阵](product-support.zh-CN.md#部署支持矩阵)选择合适的拓扑。
 
 ## 本机回环地址
 
@@ -12,7 +12,7 @@ copilot-proxy 使用一个 GitHub Copilot 身份，且没有下游用户认证�
 copilot-proxy start --preset personal
 ```
 
-该命令绑定 `127.0.0.1`，并在整个身份范围内应用有界并发。凭据和应用数据目录应仅对当前操作系统用户可见。为客户端生成的占位 API Key 只用于通过客户端格式校验，不构成安全边界。
+该命令绑定 `127.0.0.1`，并应用进程级有界并发；还可以按需叠加更严格的账号级限制。凭据和应用数据目录应仅对当前操作系统用户可见。为客户端生成的占位 API Key 只用于通过客户端格式校验，不构成安全边界。
 
 如果同一个私有监听器需要跨终端和登录会话运行，请通过原生服务使用 `service` 预设，详见[运维](operations.zh-CN.md#原生服务管理)。
 
@@ -39,7 +39,7 @@ docker run \
 客户端 -> 认证网关 -> 私有 copilot-proxy -> GitHub Copilot
 ```
 
-网关必须负责用户、API Key、授权、每用户配额、模型权限、审计、计费和下游限流。copilot-proxy 仍是使用单一身份的私有上游。
+网关必须负责用户、API Key、授权、每用户配额、模型权限、审计、计费和下游限流。即使 copilot-proxy 配置了多个由所有者管理的上游账号，它仍是面向单一操作者的私有上游，不构成租户边界。
 
 一个具体的网关选择是 [New API](https://github.com/QuantumNous/new-api)。可将 copilot-proxy 配置为它的私有 OpenAI 兼容上游（例如 `http://copilot-proxy:4399/v1`），并只向客户端暴露 New API。这只是拓扑示例，并非对兼容性或安全性的全面保证；下列要求仍需全部满足。
 
@@ -57,7 +57,7 @@ copilot-proxy start --preset gateway-upstream
 - 通过网络限制确保只有网关能访问 copilot-proxy；
 - 在网关认证并授权每个外部客户端；
 - 在可信边界终止 TLS，并按环境要求保护私有链路；
-- 在网关执行每用户限流，在 copilot-proxy 执行身份级最终限流；
+- 在网关执行每用户限流，在 copilot-proxy 执行进程级最终限流，并按需增加账号级限制；
 - 避免重试风暴：不要盲目重试上游 `403` 或 `429`，并遵守代理在本地熔断打开时返回的 `503`、`Retry-After` 与 `X-Copilot-Proxy-Recovery-State`；
 - 保留客户端所需的协议与模型目录查询行为；
 - 阻止不受信任方访问诊断和令牌相关入口；

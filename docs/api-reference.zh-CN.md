@@ -29,6 +29,8 @@ OpenAI 路由也接受对应的不带 `/v1` 前缀路径。Anthropic Messages �
 
 可用性取决于模型和当前上游。对受上游能力约束的路由作支持结论前，请阅读[协议兼容性](protocol-compatibility.zh-CN.md)并运行相应的[能力验证](copilot-capability-validation.md)。
 
+多账号模式下，生成路由接受 `x-copilot-account: <id>`。带模型的请求也可以使用 `<account-id>/<model-id>`。selector 冲突时返回 `409`；所选账号不可用时返回 `503`，不会自动切换。`/usage?account=<id>` 与 `/readyz?account=<id>` 可检查单个账号。
+
 当认证恢复打开单路由或全局熔断器时，受保护的上游路由会在本地返回 `503`、`Retry-After`、错误码 `copilot_upstream_circuit_open` 和 `X-Copilot-Proxy-Recovery-State`。全局熔断器打开期间，`/readyz` 也会带 `Retry-After` 返回 `503`。客户端和网关应遵守该等待时间，不要自行启动重启或重试循环。
 
 ## 安全与请求控制
@@ -40,6 +42,8 @@ OpenAI 路由也接受对应的不带 `/v1` 前缀路径。Anthropic Messages �
 | `COPILOT_PROXY_MAX_JSON_BODY_BYTES` | 正整数 JSON body 限制；默认 32 MiB |
 | `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1` | 启用翻译路径的文档 URL 抓取；仍会阻止私网、loopback、metadata、保留地址及不安全重定向 |
 | `COPILOT_PROXY_EXPOSE_TOKEN=1` | 在 loopback 与同源限制下启用 `/token`，直到移除该变量；原生服务环境可以让它跨重启持续生效 |
+| `COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY=1` | 在账号健康数据中加入 GitHub login 与数值 user ID；默认关闭 |
+| `COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS=1` | 为非 Codex `/models` 响应增加 `<account>/<model>` 别名 |
 
 带 JSON body 的请求必须使用 `application/json` 或 `application/*+json`。
 
@@ -55,10 +59,12 @@ copilot-proxy <command> --help
 常用的非交互认证与超时控制包括：
 
 ```sh
-copilot-proxy auth --github-token <token>
+printf '%s\n' "$TOKEN" | copilot-proxy accounts auth <id> --token-stdin --yes
 copilot-proxy start --headers-timeout-ms <ms> --body-timeout-ms <ms> --connect-timeout-ms <ms>
 ```
 
-`--github-token` 会保存 token 后立即退出，避免长时间运行的 launcher 在进程参数中保留它。不要把真实 token 写入共享 shell history 或日志；分享 CLI 输出前，还要脱敏本地路径、用户名、内部 endpoint 和带认证信息的代理 URL。
+`--github-token` 只保留为旧版单账号 bootstrap；存在 `accounts.json` 时会被拒绝。多账号应使用 `--token-stdin`，避免 token 进入 argv。不要把真实 token 写入共享 shell history 或日志；分享 CLI 输出前，还要脱敏本地路径、用户名、内部 endpoint 和带认证信息的代理 URL。
+
+可通过 `accounts concurrency set|clear` 配置可选的账号级限制，通过 `accounts required-route set|remove|list` 配置启动/readiness 能力门槛。这些写操作与[运维](operations.zh-CN.md#多个-copilot-账号)说明的账号事务及回滚边界一致。
 
 运行预设、诊断、代理环境和服务生命周期见[运维](operations.zh-CN.md)。

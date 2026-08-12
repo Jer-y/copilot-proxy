@@ -2,7 +2,7 @@ English | [简体中文](deployment.zh-CN.md)
 
 # Deployment
 
-copilot-proxy owns one GitHub Copilot identity and has no downstream user authentication. Choose a topology from the [Product support matrix](product-support.md#deployment-support-matrix) before changing its listener.
+copilot-proxy may hold one or more owner-configured GitHub Copilot identities, but it serves one trusted operator and has no downstream user authentication. Choose a topology from the [Product support matrix](product-support.md#deployment-support-matrix) before changing its listener.
 
 ## Local loopback
 
@@ -12,7 +12,7 @@ The supported default is one trusted user on loopback:
 copilot-proxy start --preset personal
 ```
 
-This binds to `127.0.0.1` and applies bounded identity-wide concurrency. Keep credentials and the application data directory private to the operating-system user. A dummy API key generated for a client satisfies client validation only; it is not a security boundary.
+This binds to `127.0.0.1` and applies bounded process-wide concurrency; optional account-specific limits can add narrower caps. Keep credentials and the application data directory private to the operating-system user. A dummy API key generated for a client satisfies client validation only; it is not a security boundary.
 
 Use the `service` preset with the native service when the same private listener must survive terminal and login sessions. See [Operations](operations.md#native-service-management).
 
@@ -39,7 +39,7 @@ The conditionally supported shared topology is:
 Clients -> authenticated gateway -> private copilot-proxy -> GitHub Copilot
 ```
 
-The gateway must own users, API keys, authorization, per-user quota, model permissions, audit, billing, and downstream limits. copilot-proxy remains a single-identity private upstream.
+The gateway must own users, API keys, authorization, per-user quota, model permissions, audit, billing, and downstream limits. Even when copilot-proxy has several owner-configured upstream accounts, it remains a single-operator private upstream rather than a tenant boundary.
 
 One concrete gateway option is [New API](https://github.com/QuantumNous/new-api). Configure copilot-proxy as its private OpenAI-compatible upstream (for example, `http://copilot-proxy:4399/v1`) and expose only New API to clients. This is a topology example, not a blanket compatibility or security guarantee; all requirements below still apply.
 
@@ -57,7 +57,7 @@ The deployment must also:
 - restrict the network so only the gateway can reach copilot-proxy;
 - authenticate and authorize every external client at the gateway;
 - terminate TLS at a trusted boundary and protect the private hop as required by the environment;
-- keep per-user limits at the gateway and an identity-wide final limit in copilot-proxy;
+- keep per-user limits at the gateway and a process-wide final limit in copilot-proxy, with account-specific limits where needed;
 - avoid retry storms: do not retry upstream `403` or `429` blindly, and honor the proxy's local circuit-open `503`, `Retry-After`, and `X-Copilot-Proxy-Recovery-State` response;
 - preserve required client protocol and model-catalog query behavior;
 - prevent untrusted access to diagnostics and token-related surfaces;

@@ -4,15 +4,15 @@ English | [简体中文](product-support.zh-CN.md)
 
 ## Product definition
 
-copilot-proxy is a local, single-user protocol adapter. It lets trusted clients use one GitHub Copilot identity through OpenAI- and Anthropic-compatible APIs.
+copilot-proxy is a local protocol adapter for one trusted operator. It lets trusted clients use one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs.
 
-One running process intentionally shares one upstream identity, account route, model-catalog snapshot, recovery circuit, concurrency boundary, and diagnostic surface. Selecting the `business` or `enterprise` account type only changes the Copilot upstream route. It does not add downstream users or enterprise controls.
+One running process owns one data directory, listener, optional global concurrency limiter, and diagnostic surface. Each configured identity retains its own token lifecycle, model catalog, recovery state, account type, and optional account limiter. Every upstream request binds to exactly one account before dispatch; an unavailable account fails instead of triggering load balancing or automatic failover. These capabilities do not add downstream users or enterprise controls.
 
 ## Deployment support matrix
 
 | Topology | Support | Product boundary |
 | --- | --- | --- |
-| One trusted user on local loopback | **Supported** | Matches the single-identity design and keeps credentials and state local |
+| One trusted user on local loopback | **Supported** | Matches the single-operator design and keeps credentials and state local |
 | Private upstream behind an authenticated gateway | **Conditional** | The gateway and network must provide downstream authentication, authorization, limits, and isolation |
 | Direct shared team listener | **Unsupported** | The proxy has no downstream user authentication or tenant isolation |
 | Public multi-tenant API | **Unsupported** | The proxy has no public-service security boundary, credential isolation, distributed limits, billing, audit, or HA control plane |
@@ -34,7 +34,7 @@ A public or independently multi-tenant product would require a separate control-
 ## Related documentation
 
 - [Getting started](getting-started.md): prove a first real response and generate client configuration.
-- [Operations](operations.md): presets, model inspection, diagnostics, and native-service lifecycle.
+- [Operations](operations.md): presets, deterministic multi-account routing, model inspection, diagnostics, and native-service lifecycle.
 - [Deployment](deployment.md): loopback, Docker, and authenticated private-gateway topologies.
 - [Protocol compatibility](protocol-compatibility.md): direct and translated routes, maturity labels, and protocol boundaries.
 - [Copilot capability validation](copilot-capability-validation.md): live-probe procedures and semantic validation rules.

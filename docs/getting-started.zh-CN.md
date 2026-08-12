@@ -102,9 +102,10 @@ bun run ./src/main.ts models --client all
 bun run ./src/main.ts models --client claude
 bun run ./src/main.ts models --client codex --json
 bun run ./src/main.ts models --client openai-sdk
+bun run ./src/main.ts models --account work --client all
 ```
 
-模型目录元数据可用于路由决策，但不能证明所有请求语义均受支持。两者区别见[协议兼容性](protocol-compatibility.zh-CN.md)。
+启用 `accounts.json` 后，该命令默认使用 `defaultAccount`；`--account <id>` 会在严格验证持久 token 身份后选择其他账号。它显示该账号的完整实时目录，而不是只显示未前缀静态绑定。模型目录元数据可用于路由决策，但不能证明所有请求语义均受支持。两者区别见[协议兼容性](protocol-compatibility.zh-CN.md)。
 
 长期代理启动后，通过基础地址进行诊断：
 

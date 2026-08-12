@@ -19,9 +19,55 @@ copilot-proxy start --preset service
 copilot-proxy start --preset custom --max-concurrency 3 --max-queue 10
 ```
 
-不带 preset 的 `start` 默认使用 `custom`，保留引入 preset 之前版本的无限制行为。setup 会为新的本地配置输出显式带 `--preset personal` 的命令。旧版原生服务和已经包含并发参数的命令也继续按 `custom` 解释；只有显式 `--preset` 才会采用预设值。限流器在整个身份范围内生效，租约会一直持有到上游响应正文或流结束或被取消。
+不带 preset 的 `start` 默认使用 `custom`，保留引入 preset 之前版本的无限制行为。setup 会为新的本地配置输出显式带 `--preset personal` 的命令。旧版原生服务和已经包含并发参数的命令也继续按 `custom` 解释；只有显式 `--preset` 才会采用预设值。全局限流租约会一直持有到上游响应正文或流结束或被取消。账号另有 `maxConcurrency` 时，先获取账号租约再获取全局租约，避免一个繁忙账号在等待自身槽位时占住全局容量。
 
 `gateway-upstream` 是部署约定，不代表可以公开暴露服务。该预设还要求设置 `COPILOT_PROXY_ALLOWED_HOSTS`，详见[认证私有网关](deployment.zh-CN.md#认证私有网关)。
+
+## 多个 Copilot 账号
+
+多账号模式面向一个可信操作者管理自己拥有的多个 GitHub Copilot 身份。它提供确定性路由，不提供多租户、负载均衡、配额池化或自动故障转移。
+
+从尚未支持多账号 runtime lock 的构建升级后，首次执行会修改配置的 `accounts` 命令前，必须停止或重启所有由旧构建启动的前台 proxy。已安装的原生服务会被检测并按事务重启，但旧前台进程无法发布 `runtime.lock`；继续运行会让它仍使用旧的单账号内存状态。
+
+```sh
+# Device flow
+copilot-proxy accounts add personal --account-type individual
+copilot-proxy accounts add work --account-type enterprise
+
+# 安全地从 stdin 提供已有 token，避免进入 argv
+printf '%s\n' "$TOKEN" | copilot-proxy accounts auth work --token-stdin --yes
+
+copilot-proxy accounts default personal --yes
+copilot-proxy accounts route set 'claude-*' work --yes
+copilot-proxy accounts route set 'gpt-5*' personal --yes
+copilot-proxy accounts list
+copilot-proxy accounts route list
+
+# 可选的账号级并发与启动/readiness 必需路由
+copilot-proxy accounts concurrency set work 2 --yes
+copilot-proxy accounts required-route set responses-http gpt-5.4 --yes
+copilot-proxy accounts required-route list
+```
+
+`accounts.json` 与 `tokens/<account-id>` 保存在原有的仅所有者可访问数据目录中。账号 ID 必须为小写，最长 32 个字符，只能包含字母、数字、`_` 与 `-`；最多配置八个账号。`--token-stdin` 最多读取 8 KiB，只移除一个结尾换行，并拒绝空值或含空白的输入。存在 `accounts.json` 时，早期 `--github-token` bootstrap 会明确拒绝；请改用 `accounts auth <id>`。
+
+`accounts concurrency set <id> <max>` 保存一个正整数账号级 `maxConcurrency`；`accounts concurrency clear <id>` 会移除这个更窄的限制。未设置时，该账号没有独立限制器，但仍受已配置的全局限制器约束。账号级限制器使用默认的有界队列：最多等待 50 个请求，最长等待 30 秒。
+
+`accounts required-route set <surface> <model>` 把所选模型路由设为启动与 readiness 必需项；它不会增加 fallback 或账号切换。支持的 surface 为 `responses-http`、`responses-websocket`、`anthropic-messages`、`chat-completions` 和 `embeddings`，账号仍由该模型的正常静态路由决定；set 操作会在提交前验证最终必需路由的能力。使用完全相同的 pair 执行 `accounts required-route remove <surface> <model>`，并通过 `accounts required-route list [--json]` 查看已配置门槛。
+
+请求选择顺序为：
+
+1. 已经 pin 的 Responses WebSocket 账号。
+2. `x-copilot-account: <id>`。
+3. `<account-id>/<model-id>` 模型前缀。
+4. `accounts.json` 中第一条命中的 glob 规则。
+5. `defaultAccount`。
+
+显式 selector 冲突时返回 `409`。静态绑定账号不可用时返回 `503`，不会扫描其他账号。Responses WebSocket 默认在首个 `response.create` 选择账号；Upgrade 已提供 `x-copilot-account` 时会预先 pin，随后整个连接不换账号。
+
+`GET /readyz?account=<id>` 只检查指定账号。普通 `/readyz` 会返回安全的逐账号 availability、身份校验状态、token/recovery 状态以及全局/账号级并发；默认不会通过 HTTP 返回 GitHub login 或数值 user ID。只有显式设置 `COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY=1`（或前台 `start --expose-account-identity`）才暴露身份。`COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS=1` 或 `start --expose-account-models` 只为非 Codex 模型列表增加 `<account>/<model>` 别名。
+
+账号、路由、并发和必需路由写操作使用仅所有者可访问的排他锁和原子文件。原生服务运行时，CLI 会重启服务、探测受影响账号与整体 readiness，并在失败时恢复磁盘状态。相同 data-dir 中若运行的是前台 proxy，必须先停止。原生服务使用自定义 data-dir 时，`accounts` 与 `auth --account` 默认操作已安装服务的目录；如需管理独立实例，请显式设置 `COPILOT_PROXY_DATA_DIR`。第二个 proxy 不能复用同一 data-dir。
 
 ## 模型检查
 
@@ -30,11 +76,15 @@ copilot-proxy models --client all
 copilot-proxy models --client claude
 copilot-proxy models --client codex --json
 copilot-proxy models --client openai-sdk
+copilot-proxy models --account work --client all
+copilot-proxy check-usage --account work
 ```
 
-该命令会认证并读取所选 `--account-type` 的当前模型目录。表格同时显示 `direct` 直连路由和有界的 `translated` 翻译路由，以及成熟度、限制和部分功能标志；JSON 输出增加精简的路由 source、target 与 reason code。setup 更严格，只会配置当前可用的**直连**路由。`models` 和 diagnostics 都会省略 `model_picker_enabled=false` 的条目。
+启用 `accounts.json` 后，`models` 与 `check-usage` 默认使用 `defaultAccount`；可通过 `--account <id>` 检查其他已配置账号。两者只加载所选账号的持久 token，并以数值 GitHub identity 严格核对已记录的账号槽位，绝不会回退到旧版 `github_token` 或 Device Flow。没有 `accounts.json` 时，`models --account-type` 与旧版认证路径保持原有含义。
 
-`models` 与 setup 共享这个 picker-enabled 和实时路由可见性基线，但候选集不一定相同。`setup codex` 还要求本机 Codex 不低于 0.134.0，并将直连 Responses 候选与 bundled catalog 中具备可用 `base_instructions` 和 `context_window` metadata 的条目取交集。`models --client codex` 不检查本机 bundled catalog，因此可能展示当前机器上的 setup 无法配置的特定传输模型或 metadata 缺失模型。面向兼容性的 `/v1/models` 响应仍是独立的客户端契约。提供 `models` 的发布版会在 npm package 和 Docker 镜像中包含 `models --json` 返回的相对文档路径。
+`models` 显示所选账号的完整实时目录，包括只能通过显式账号 header 或模型前缀访问的模型；不会按该账号的未前缀静态 glob 绑定进行裁剪。表格同时显示 `direct` 直连路由和有界的 `translated` 翻译路由，以及成熟度、限制和部分功能标志；JSON 输出还包含所选账号 ID、账号类型，以及精简的路由 source、target 与 reason code。setup 更严格，只会配置当前可用的**直连**路由。`models` 和 diagnostics 都会省略 `model_picker_enabled=false` 的条目。
+
+`models` 与 setup 共享这个 picker-enabled 和实时路由可见性基线，但候选集不一定相同。`setup codex` 还要求本机 Codex 不低于 0.134.0，并将直连 Responses 候选与 bundled catalog 中具备可用 `base_instructions` 和 `context_window` metadata 的条目取交集。`models --client codex` 不检查本机 bundled catalog，因此可能展示当前机器上的 setup 无法配置的特定传输模型或 metadata 缺失模型。面向兼容性的 `/v1/models` 响应是另一套按静态绑定生成的客户端目录。提供 `models` 的发布版会在 npm package 和 Docker 镜像中包含 `models --json` 返回的相对文档路径。
 
 这些信息表示当前路由是否可用，并不代表所有语义均受支持。路由定义见[协议兼容性](protocol-compatibility.zh-CN.md)，实时验证方法见[Copilot 能力验证](copilot-capability-validation.md)。
 
@@ -124,9 +174,13 @@ copilot-proxy status
 ```sh
 copilot-proxy start --proxy-env
 copilot-proxy enable --proxy-env
+copilot-proxy accounts add work --account-type enterprise --proxy-env
+copilot-proxy accounts auth work --proxy-env
 copilot-proxy models --client all --proxy-env
 copilot-proxy doctor --endpoint https://proxy.internal --proxy-env
 ```
+
+账号变更会独立执行 GitHub 身份、Copilot token 与模型目录验证。需要代理时，每次 `accounts add` 或 `accounts auth` 都要显式添加 `--proxy-env`；原生服务中保存的代理设置不会让交互式 CLI 命令自动选择该出口。
 
 `--proxy-env` 是显式出口策略；无法建立可用代理路由时会直接失败。代理 URL 可能内嵌用户名或密码。原生服务配置会把该选项及相关代理和 TLS 环境保存在仅所有者可访问的状态中，因此这些状态和复制出的代理 URL 都应按凭据处理。只对受信任的基础设施使用 `--proxy-env`。
 

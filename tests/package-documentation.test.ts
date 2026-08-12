@@ -321,6 +321,48 @@ describe('published documentation', () => {
     expect(chineseReadme).not.toContain('不写入用户文件')
   })
 
+  test('keeps the single-operator multi-account product boundary consistent', () => {
+    const englishGuides = [
+      'README.md',
+      'docs/deployment.md',
+      'docs/product-support.md',
+    ].map(filePath => fs.readFileSync(path.join(ROOT, filePath), 'utf8'))
+    const chineseGuides = [
+      'README.zh-CN.md',
+      'docs/deployment.zh-CN.md',
+      'docs/product-support.zh-CN.md',
+    ].map(filePath => fs.readFileSync(path.join(ROOT, filePath), 'utf8'))
+
+    for (const guide of englishGuides) {
+      expect(guide).toMatch(/one or more owner-configured|several owner-configured/)
+      expect(guide).not.toContain('owns one GitHub Copilot identity')
+      expect(guide).not.toContain('single-identity design')
+    }
+    for (const guide of chineseGuides) {
+      expect(guide).toMatch(/一个或多个由所有者配置|多个由所有者管理/)
+      expect(guide).not.toContain('使用一个 GitHub Copilot 身份')
+      expect(guide).not.toContain('单身份设计')
+    }
+  })
+
+  test('documents account concurrency and required-route transaction commands', () => {
+    const englishGuide = fs.readFileSync(path.join(ROOT, 'docs/operations.md'), 'utf8')
+    const chineseGuide = fs.readFileSync(path.join(ROOT, 'docs/operations.zh-CN.md'), 'utf8')
+    const commands = [
+      'accounts concurrency set <id> <max>',
+      'accounts concurrency clear <id>',
+      'accounts required-route set <surface> <model>',
+      'accounts required-route remove <surface> <model>',
+      'accounts required-route list [--json]',
+    ]
+    for (const guide of [englishGuide, chineseGuide]) {
+      for (const command of commands)
+        expect(guide).toContain(command)
+      for (const surface of ['responses-http', 'responses-websocket', 'anthropic-messages', 'chat-completions', 'embeddings'])
+        expect(guide).toContain(`\`${surface}\``)
+    }
+  })
+
   test('documents layered setup route evidence without promoting policy fallback to live proof', () => {
     const englishReadme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
     const chineseReadme = fs.readFileSync(path.join(ROOT, 'README.zh-CN.md'), 'utf8')
