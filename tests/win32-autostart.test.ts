@@ -528,7 +528,7 @@ foreach ($entry in @($payload.targets)) {
       ...process.env,
       [targetsEnv]: JSON.stringify({ targets }),
     },
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   })
 }

@@ -42,9 +42,11 @@ try {
     } else {
       [System.Security.AccessControl.FileSecurity]::new()
     }
-    $acl.SetSecurityDescriptorSddlForm(
-      "D:P(A;$aceFlags;FA;;;$sid)",
+    $sections = [System.Security.AccessControl.AccessControlSections]::Owner -bor
       [System.Security.AccessControl.AccessControlSections]::Access
+    $acl.SetSecurityDescriptorSddlForm(
+      "O:$($sid)D:P(A;$aceFlags;FA;;;$sid)",
+      $sections
     )
     if ($isDirectory) {
       $target = [System.IO.DirectoryInfo]::new($targetPath)
