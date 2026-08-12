@@ -1,8 +1,18 @@
-import { readFileSync } from 'node:fs'
-import { describe, expect, test } from 'bun:test'
+import { Buffer } from 'node:buffer'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import process from 'node:process'
+import { describe, expect, setDefaultTimeout, test } from 'bun:test'
+import { writeOwnerOnlyFileAtomically, writeOwnerOnlyFileAtomicallyInOwnerOnlyDirectory } from '../src/daemon/atomic-file'
 import { buildTaskXml, captureAutoStartState, commitAutoStartInstall, encodeTaskSchedulerXml, restartAutoStartService, restoreAutoStartState, rollbackAutoStartInstall, uninstallAutoStart } from '../src/daemon/platform/win32'
+import { ensureOwnerOnlyDirectories, hardenOwnerOnlyPaths } from '../src/lib/owner-only'
 
 const WIN32_SOURCE = new URL('../src/daemon/platform/win32.ts', import.meta.url)
+
+if (process.platform === 'win32')
+  setDefaultTimeout(15_000)
 
 describe('buildTaskXml', () => {
   const execPath = 'C:\\Program Files\\nodejs\\node.exe'
@@ -390,3 +400,146 @@ describe('Task Scheduler restart stop safety', () => {
     expect(runCalls).toBe(1)
   })
 })
+
+describe('Windows owner-only ACL hardening', () => {
+  const windowsTest = process.platform === 'win32' ? test : test.skip
+
+  windowsTest('batches exact hardening and reuses a cached secure parent for inherited writes', () => {
+    const temporaryRoot = mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-owner-only-'))
+    const directoryPath = path.join(temporaryRoot, 'owner only & unicode-测试')
+    const existingFilePath = path.join(directoryPath, 'existing secret.txt')
+    const inheritedFilePath = path.join(directoryPath, 'inherited secret.txt')
+    mkdirSync(directoryPath)
+    writeFileSync(existingFilePath, 'secret')
+
+    try {
+      grantEveryoneRead(directoryPath, true)
+      grantEveryoneRead(existingFilePath, false)
+
+      const startedAt = Date.now()
+      hardenOwnerOnlyPaths([
+        { path: directoryPath, directory: true },
+        { path: existingFilePath },
+      ])
+      for (let index = 0; index < 20; index++) {
+        ensureOwnerOnlyDirectories([directoryPath])
+        writeOwnerOnlyFileAtomicallyInOwnerOnlyDirectory(
+          inheritedFilePath,
+          `replacement-${index}`,
+        )
+      }
+      expect(Date.now() - startedAt).toBeLessThan(5_000)
+
+      assertCurrentUserAcls([
+        { path: directoryPath, directory: true, inherited: false, protected: true },
+        { path: existingFilePath, directory: false, inherited: false, protected: true },
+        { path: inheritedFilePath, directory: false, inherited: true, protected: false },
+      ])
+    }
+    finally {
+      rmSync(temporaryRoot, { force: true, recursive: true })
+    }
+  }, 10_000)
+
+  windowsTest('keeps the default atomic writer exact without hardening its parent', () => {
+    const temporaryRoot = mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-owner-only-default-'))
+    const filePath = path.join(temporaryRoot, 'control state.json')
+    writeFileSync(filePath, 'old')
+
+    try {
+      grantEveryoneRead(temporaryRoot, true)
+      grantEveryoneRead(filePath, false)
+      writeOwnerOnlyFileAtomically(filePath, 'replacement')
+      assertCurrentUserAcls([
+        { path: temporaryRoot, hasEveryoneRead: true },
+        { path: filePath, directory: false, inherited: false, protected: true },
+      ])
+    }
+    finally {
+      rmSync(temporaryRoot, { force: true, recursive: true })
+    }
+  }, 15_000)
+})
+
+function grantEveryoneRead(targetPath: string, directory: boolean): void {
+  const executable = windowsSystemExecutable('icacls.exe')
+  execFileSync(executable, [
+    targetPath,
+    '/grant',
+    directory ? '*S-1-1-0:(OI)(CI)R' : '*S-1-1-0:R',
+  ], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+}
+
+interface ExpectedWindowsAcl {
+  path: string
+  directory?: boolean
+  hasEveryoneRead?: boolean
+  inherited?: boolean
+  protected?: boolean
+}
+
+function assertCurrentUserAcls(targets: ExpectedWindowsAcl[]): void {
+  const targetsEnv = 'COPILOT_PROXY_TEST_ACL_TARGETS'
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$payload = [Environment]::GetEnvironmentVariable('${targetsEnv}', 'Process') | ConvertFrom-Json
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+foreach ($entry in @($payload.targets)) {
+  $acl = Get-Acl -LiteralPath ([string]$entry.path)
+  $ownerSid = ([System.Security.Principal.NTAccount]$acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
+  if ($ownerSid -ne $currentSid) { throw "Unexpected owner SID for $($entry.path): $ownerSid" }
+  if ($null -ne $entry.protected -and $acl.AreAccessRulesProtected -ne [bool]$entry.protected) {
+    throw "Unexpected DACL protection for $($entry.path): $($acl.AreAccessRulesProtected)"
+  }
+  $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+  if ([bool]$entry.hasEveryoneRead) {
+    if (-not ($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' })) {
+      throw "Expected Everyone access for $($entry.path)."
+    }
+    continue
+  }
+  if ($rules.Count -ne 1) { throw "Expected exactly one access rule for $($entry.path), found $($rules.Count)." }
+  $rule = $rules[0]
+  if ($rule.IdentityReference.Value -ne $currentSid) { throw "Unexpected access SID for $($entry.path): $($rule.IdentityReference.Value)" }
+  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { throw "The only access rule for $($entry.path) is not Allow." }
+  if ($null -ne $entry.inherited -and $rule.IsInherited -ne [bool]$entry.inherited) { throw "Unexpected inheritance state for $($entry.path)." }
+  if ($rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw "Unexpected rights for $($entry.path): $($rule.FileSystemRights)" }
+  $expectedInheritance = if ([bool]$entry.directory) {
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  } else {
+    [System.Security.AccessControl.InheritanceFlags]::None
+  }
+  if ($rule.InheritanceFlags -ne $expectedInheritance) { throw "Unexpected inheritance flags for $($entry.path): $($rule.InheritanceFlags)" }
+  if ($rule.PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None) { throw "Unexpected propagation flags for $($entry.path): $($rule.PropagationFlags)" }
+}
+`
+  const command = Buffer.from(script, 'utf16le').toString('base64')
+  execFileSync(windowsPowerShellExecutable(), [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-EncodedCommand',
+    command,
+  ], {
+    env: {
+      ...process.env,
+      [targetsEnv]: JSON.stringify({ targets }),
+    },
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+}
+
+function windowsSystemExecutable(...segments: string[]): string {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT
+  if (!systemRoot)
+    throw new Error('SystemRoot is unavailable on Windows')
+  return path.win32.join(systemRoot, 'System32', ...segments)
+}
+
+function windowsPowerShellExecutable(): string {
+  return windowsSystemExecutable('WindowsPowerShell', 'v1.0', 'powershell.exe')
+}

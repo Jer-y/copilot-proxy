@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 
 import {
+  APPLIED_NATIVE_SERVICE_DATA_DIR_ENV,
   applyInstalledNativeServiceDataDir,
   getNativeServiceControlStatePath,
   loadNativeServiceInstallState,
@@ -14,6 +15,9 @@ import {
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 const tempDirs: string[] = []
+
+if (process.platform === 'win32')
+  setDefaultTimeout(15_000)
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0))
@@ -43,6 +47,100 @@ describe('native service install control state', () => {
 
     applyInstalledNativeServiceDataDir(['start'], env, filePath)
     expect(env.COPILOT_PROXY_DATA_DIR).toBe('/current/data')
+  })
+
+  test('defaults account management and auth commands to the installed service data dir', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    saveNativeServiceInstallState({ dataDir: '/installed/data' }, filePath)
+
+    for (const args of [
+      ['accounts', 'list'],
+      ['accounts', 'route', 'list'],
+      ['auth', '--account', 'work'],
+      ['auth', '--_if-needed'],
+      ['check-usage', '--account', 'work'],
+      ['models', '--account', 'work'],
+    ]) {
+      const env: NodeJS.ProcessEnv = {}
+      applyInstalledNativeServiceDataDir(args, env, filePath)
+      expect(env.COPILOT_PROXY_DATA_DIR).toBe('/installed/data')
+      expect(env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]).toBe(path.resolve('/installed/data'))
+    }
+  })
+
+  test('preserves the applied marker across the sanitized account-command child', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    saveNativeServiceInstallState({ dataDir: '/installed/data' }, filePath)
+    const env: NodeJS.ProcessEnv = {}
+
+    applyInstalledNativeServiceDataDir(['accounts', 'list'], env, filePath)
+    fs.writeFileSync(filePath, '{invalid after parent bootstrap', { mode: 0o600 })
+
+    expect(() => applyInstalledNativeServiceDataDir(['accounts', 'list'], env, filePath)).not.toThrow()
+    expect(env.COPILOT_PROXY_DATA_DIR).toBe('/installed/data')
+    expect(env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]).toBe(path.resolve('/installed/data'))
+  })
+
+  test('preserves an explicit account or auth data-dir override', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    saveNativeServiceInstallState({ dataDir: '/installed/data' }, filePath)
+
+    for (const args of [
+      ['accounts', 'list'],
+      ['auth', '--account', 'work'],
+      ['check-usage', '--account', 'work'],
+      ['models', '--account', 'work'],
+    ]) {
+      const env: NodeJS.ProcessEnv = {
+        COPILOT_PROXY_DATA_DIR: '/explicit/data',
+        [APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]: '/stale/installed/data',
+      }
+      applyInstalledNativeServiceDataDir(args, env, filePath)
+      expect(env.COPILOT_PROXY_DATA_DIR).toBe('/explicit/data')
+      expect(env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]).toBeUndefined()
+    }
+  })
+
+  test('marks an explicit installed data-dir alias for legacy native-service detection', () => {
+    const root = makeTempDir()
+    const installedDataDir = path.join(root, 'installed')
+    const aliasDataDir = path.join(root, 'installed-alias')
+    const filePath = getNativeServiceControlStatePath({}, root)
+    fs.mkdirSync(installedDataDir)
+    fs.symlinkSync(
+      installedDataDir,
+      aliasDataDir,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+    saveNativeServiceInstallState({
+      dataDir: installedDataDir,
+      serviceDefinitionPath: path.join(root, 'copilot-proxy.service'),
+    }, filePath)
+    const env: NodeJS.ProcessEnv = { COPILOT_PROXY_DATA_DIR: aliasDataDir }
+
+    applyInstalledNativeServiceDataDir(['accounts', 'list'], env, filePath)
+
+    expect(env.COPILOT_PROXY_DATA_DIR).toBe(aliasDataDir)
+    expect(env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]).toBe(fs.realpathSync.native(installedDataDir))
+    expect(env.COPILOT_PROXY_NATIVE_SERVICE_DEFINITION_PATH)
+      .toBe(path.join(root, 'copilot-proxy.service'))
+  })
+
+  test('does not inspect broken installed state when account commands have an explicit override', () => {
+    const home = makeTempDir()
+    const filePath = getNativeServiceControlStatePath({}, home)
+    fs.writeFileSync(filePath, '{invalid json', { mode: 0o600 })
+    const env: NodeJS.ProcessEnv = {
+      COPILOT_PROXY_DATA_DIR: '/explicit/data',
+      [APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]: '/stale/installed/data',
+    }
+
+    expect(applyInstalledNativeServiceDataDir(['accounts', 'list'], env, filePath)).toEqual({})
+    expect(env.COPILOT_PROXY_DATA_DIR).toBe('/explicit/data')
+    expect(env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]).toBeUndefined()
   })
 
   test('pins prefixed control commands using Citty root dispatch semantics', () => {

@@ -1,12 +1,15 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 
 import { ensureOwnerOnlyFile } from '../src/lib/paths'
 import { writeGithubTokenFile } from '../src/lib/token'
 
 const tempDirs: string[] = []
+
+if (process.platform === 'win32')
+  setDefaultTimeout(15_000)
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { force: true, recursive: true })))

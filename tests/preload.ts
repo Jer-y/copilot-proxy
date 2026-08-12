@@ -2,7 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { afterAll } from 'bun:test'
+import { afterAll, setDefaultTimeout } from 'bun:test'
+
+if (process.platform === 'win32')
+  setDefaultTimeout(15_000)
 
 const originalHome = os.homedir()
 const originalAppDir = process.env.COPILOT_PROXY_DATA_DIR

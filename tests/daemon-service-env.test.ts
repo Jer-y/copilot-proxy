@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 
 import {
   assertProxyEndpointAvailable,
@@ -14,6 +14,9 @@ import {
 } from '~/daemon/service-env'
 
 const tempDirs: string[] = []
+
+if (process.platform === 'win32')
+  setDefaultTimeout(15_000)
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0))

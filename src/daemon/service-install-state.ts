@@ -11,7 +11,20 @@ import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 const CONTROL_STATE_FILE = '.copilot-proxy-native-service.json'
-const NATIVE_CONTROL_COMMANDS = new Set(['enable', 'stop', 'restart', 'status', 'logs', 'disable'])
+const NATIVE_CONTROL_COMMANDS = new Set([
+  'disable',
+  'enable',
+  'logs',
+  'restart',
+  'status',
+  'stop',
+])
+const INSTALLED_DATA_DIR_DEFAULT_COMMANDS = new Set([
+  'accounts',
+  'auth',
+  'check-usage',
+  'models',
+])
 
 export interface NativeServiceInstallState {
   dataDir: string
@@ -29,6 +42,7 @@ export interface ApplyInstalledNativeServiceDataDirResult {
 }
 
 export const INVALID_NATIVE_SERVICE_CONTROL_STATE_ENV = 'COPILOT_PROXY_INVALID_NATIVE_SERVICE_CONTROL_STATE'
+export const APPLIED_NATIVE_SERVICE_DATA_DIR_ENV = 'COPILOT_PROXY_APPLIED_NATIVE_SERVICE_DATA_DIR'
 export const NATIVE_SERVICE_DEFINITION_PATH_ENV = 'COPILOT_PROXY_NATIVE_SERVICE_DEFINITION_PATH'
 const INSTANCE_TOKEN_PATTERN = /^[\w-]{16,128}$/
 
@@ -205,8 +219,33 @@ export function applyInstalledNativeServiceDataDir(
   if (hasCittyRootHelpFlag(args))
     return {}
   const command = findCittyRootCommand(args)?.command ?? ''
-  if (!NATIVE_CONTROL_COMMANDS.has(command))
+  const nativeControlCommand = NATIVE_CONTROL_COMMANDS.has(command)
+  const installedDataDirDefaultCommand = INSTALLED_DATA_DIR_DEFAULT_COMMANDS.has(command)
+  if (!nativeControlCommand && !installedDataDirDefaultCommand)
     return {}
+  const explicitDataDir = installedDataDirDefaultCommand
+    ? env.COPILOT_PROXY_DATA_DIR?.trim()
+    : undefined
+  if (explicitDataDir) {
+    const appliedDataDir = env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]?.trim()
+    if (appliedDataDir && sameDataDirectory(appliedDataDir, explicitDataDir))
+      return {}
+
+    let explicitState: NativeServiceInstallState | undefined
+    try {
+      explicitState = loadNativeServiceInstallState(filePath)
+    }
+    catch {
+      delete env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]
+      return {}
+    }
+    if (!explicitState || !sameDataDirectory(explicitState.dataDir, explicitDataDir)) {
+      delete env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV]
+      return {}
+    }
+    applyNativeServiceInstallState(explicitState, env, false)
+    return {}
+  }
 
   let state: NativeServiceInstallState | undefined
   try {
@@ -222,16 +261,45 @@ export function applyInstalledNativeServiceDataDir(
       { cause: error },
     )
   }
-  if (state) {
-    env.COPILOT_PROXY_DATA_DIR = state.dataDir
-    if (state.serviceDefinitionPath)
-      env[NATIVE_SERVICE_DEFINITION_PATH_ENV] = state.serviceDefinitionPath
-    else
-      delete env[NATIVE_SERVICE_DEFINITION_PATH_ENV]
-    if (state.xdgConfigHome)
-      env.XDG_CONFIG_HOME = state.xdgConfigHome
-    else if (process.platform === 'linux')
-      delete env.XDG_CONFIG_HOME
-  }
+  if (state)
+    applyNativeServiceInstallState(state, env, true)
   return {}
+}
+
+export function sameDataDirectory(left: string, right: string): boolean {
+  const normalizedLeft = canonicalDataDirectory(left)
+  const normalizedRight = canonicalDataDirectory(right)
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight
+}
+
+function applyNativeServiceInstallState(
+  state: NativeServiceInstallState,
+  env: NodeJS.ProcessEnv,
+  applyDataDir: boolean,
+): void {
+  if (applyDataDir)
+    env.COPILOT_PROXY_DATA_DIR = state.dataDir
+  env[APPLIED_NATIVE_SERVICE_DATA_DIR_ENV] = canonicalDataDirectory(state.dataDir)
+  if (state.serviceDefinitionPath)
+    env[NATIVE_SERVICE_DEFINITION_PATH_ENV] = state.serviceDefinitionPath
+  else
+    delete env[NATIVE_SERVICE_DEFINITION_PATH_ENV]
+  if (state.xdgConfigHome)
+    env.XDG_CONFIG_HOME = state.xdgConfigHome
+  else if (process.platform === 'linux')
+    delete env.XDG_CONFIG_HOME
+}
+
+function canonicalDataDirectory(dataDir: string): string {
+  const resolved = path.resolve(dataDir)
+  try {
+    return fs.realpathSync.native(resolved)
+  }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
+      return resolved
+    throw error
+  }
 }
