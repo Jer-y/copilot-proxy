@@ -488,8 +488,13 @@ $ErrorActionPreference = 'Stop'
 $payload = [Environment]::GetEnvironmentVariable('${targetsEnv}', 'Process') | ConvertFrom-Json
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 foreach ($entry in @($payload.targets)) {
-  $acl = Get-Acl -LiteralPath ([string]$entry.path)
-  $ownerSid = ([System.Security.Principal.NTAccount]$acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
+  $targetPath = [string]$entry.path
+  $acl = if ([bool]$entry.directory) {
+    [System.IO.DirectoryInfo]::new($targetPath).GetAccessControl()
+  } else {
+    [System.IO.FileInfo]::new($targetPath).GetAccessControl()
+  }
+  $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
   if ($ownerSid -ne $currentSid) { throw "Unexpected owner SID for $($entry.path): $ownerSid" }
   if ($null -ne $entry.protected -and $acl.AreAccessRulesProtected -ne [bool]$entry.protected) {
     throw "Unexpected DACL protection for $($entry.path): $($acl.AreAccessRulesProtected)"
