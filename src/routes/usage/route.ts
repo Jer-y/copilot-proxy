@@ -1,51 +1,67 @@
+import type { AccountContext } from '~/lib/account/types'
+import type { CopilotUsageResponse } from '~/services/github/get-copilot-usage'
+
 import consola from 'consola'
 import { Hono } from 'hono'
 
+import { getAccountRegistry } from '~/lib/account/registry'
 import { getCopilotUsage } from '~/services/github/get-copilot-usage'
 
 export const usageRoute = new Hono()
 
 const USAGE_CACHE_MS = 15_000
 const USAGE_FAILURE_CACHE_MS = 5_000
-let usageCache: { expiresAt: number, value: Awaited<ReturnType<typeof getCopilotUsage>> } | undefined
-let usageFailure: { error: unknown, expiresAt: number } | undefined
-let usageInFlight: Promise<Awaited<ReturnType<typeof getCopilotUsage>>> | undefined
+interface UsageCacheState {
+  cache?: { expiresAt: number, value: CopilotUsageResponse }
+  failure?: { error: unknown, expiresAt: number }
+  inFlight?: Promise<CopilotUsageResponse>
+}
+const usageStates = new Map<string, UsageCacheState>()
 
 export function resetUsageCacheForTests(): void {
-  usageCache = undefined
-  usageFailure = undefined
-  usageInFlight = undefined
+  usageStates.clear()
 }
 
-export async function getCachedCopilotUsage(): Promise<Awaited<ReturnType<typeof getCopilotUsage>>> {
+export async function getCachedCopilotUsage(
+  ctx: AccountContext = getAccountRegistry().defaultAccount,
+): Promise<CopilotUsageResponse> {
+  const usageState = getUsageState(ctx.id)
   const now = Date.now()
-  if (usageCache && usageCache.expiresAt > now)
-    return usageCache.value
-  if (usageFailure && usageFailure.expiresAt > now)
-    throw usageFailure.error
-  if (usageInFlight)
-    return await usageInFlight
+  if (usageState.cache && usageState.cache.expiresAt > now)
+    return usageState.cache.value
+  if (usageState.failure && usageState.failure.expiresAt > now)
+    throw usageState.failure.error
+  if (usageState.inFlight)
+    return await usageState.inFlight
 
-  usageInFlight = getCopilotUsage()
+  usageState.inFlight = getCopilotUsage(ctx)
     .then((value) => {
-      usageCache = { expiresAt: Date.now() + USAGE_CACHE_MS, value }
-      usageFailure = undefined
+      ctx.copilotPlan = value.copilot_plan
+      usageState.cache = { expiresAt: Date.now() + USAGE_CACHE_MS, value }
+      usageState.failure = undefined
       return value
     })
     .catch((error: unknown) => {
-      usageFailure = { error, expiresAt: Date.now() + USAGE_FAILURE_CACHE_MS }
+      usageState.failure = { error, expiresAt: Date.now() + USAGE_FAILURE_CACHE_MS }
       throw error
     })
     .finally(() => {
-      usageInFlight = undefined
+      usageState.inFlight = undefined
     })
-  return await usageInFlight
+  return await usageState.inFlight
 }
 
 usageRoute.get('/', async (c) => {
   try {
     c.header('Cache-Control', 'no-store')
-    const usage = await getCachedCopilotUsage()
+    const registry = getAccountRegistry()
+    const accountId = new URL(c.req.url).searchParams.get('account') ?? registry.defaultAccountId
+    const ctx = registry.get(accountId)
+    if (!ctx)
+      return c.json({ error: `Unknown Copilot account: ${accountId}` }, 400)
+    if (ctx.availability === 'unavailable')
+      return c.json({ error: `Copilot account ${accountId} is unavailable` }, 503)
+    const usage = await getCachedCopilotUsage(ctx)
     return c.json(usage)
   }
   catch (error) {
@@ -53,3 +69,12 @@ usageRoute.get('/', async (c) => {
     return c.json({ error: 'Failed to fetch Copilot usage' }, 500)
   }
 })
+
+function getUsageState(accountId: string): UsageCacheState {
+  const existing = usageStates.get(accountId)
+  if (existing)
+    return existing
+  const created: UsageCacheState = {}
+  usageStates.set(accountId, created)
+  return created
+}

@@ -5,6 +5,7 @@ export const DEFAULT_HOST = '127.0.0.1'
 export const CORS_ORIGINS_ENV = 'COPILOT_PROXY_CORS_ORIGINS'
 export const ALLOWED_HOSTS_ENV = 'COPILOT_PROXY_ALLOWED_HOSTS'
 export const EXPOSE_TOKEN_ENV = 'COPILOT_PROXY_EXPOSE_TOKEN'
+export const EXPOSE_ACCOUNT_IDENTITY_ENV = 'COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY'
 export const HOSTED_USAGE_VIEWER_ORIGIN = 'https://jer-y.github.io'
 
 interface RequestWithIp extends Request {
@@ -231,6 +232,10 @@ export function isRequestHostAllowed(request: Request): boolean {
 
 export function isTokenExposureEnabled(): boolean {
   return process.env[EXPOSE_TOKEN_ENV]?.trim() === '1'
+}
+
+export function isAccountIdentityExposureEnabled(): boolean {
+  return process.env[EXPOSE_ACCOUNT_IDENTITY_ENV]?.trim() === '1'
 }
 
 function requestHostname(request: Request): string | null {

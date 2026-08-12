@@ -2,6 +2,8 @@ import type { Context } from 'hono'
 
 import type { AnthropicMessagesPayload } from '~/lib/translation/types'
 
+import { getAccountRegistry } from '~/lib/account/registry'
+import { selectAccount } from '~/lib/account/router'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
@@ -28,7 +30,13 @@ export async function handleCountTokens(c: Context) {
 
   let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
 
-  const effectiveModel = normalizeAnthropicModelName(anthropicPayload.model)
+  const selection = selectAccount({
+    registry: getAccountRegistry(),
+    requestedModel: anthropicPayload.model,
+    headers: c.req.raw.headers,
+    normalizeModel: normalizeAnthropicModelName,
+  })
+  const effectiveModel = selection.effectiveModel
   if (effectiveModel !== anthropicPayload.model) {
     anthropicPayload = {
       ...anthropicPayload,
@@ -40,7 +48,7 @@ export async function handleCountTokens(c: Context) {
   assertNoUnsupportedAdvisorToolsForCopilot(anthropicPayload)
 
   const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
-    models: state.models?.data,
+    models: selection.ctx.models?.data,
   })
 
   if (route.backend === 'responses') {
@@ -64,6 +72,7 @@ export async function handleCountTokens(c: Context) {
 
   const result = await createAnthropicCountTokens(anthropicPayload, {
     anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
+    ctx: selection.ctx,
   })
 
   forwardUpstreamHeaders(c, result.headers)

@@ -2,6 +2,8 @@ import type { ServerSentEventMessage } from 'fetch-event-stream'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import type { Server, ServerHandler } from 'srvx'
 import type { RawData } from 'ws'
+import type { AccountsConfiguration } from './lib/account/types'
+import type { AccountType } from './lib/cli-validators'
 import type { CodexClientCatalog, SetupClient, SetupModelChoice, SetupProbeRequest } from './lib/client-setup'
 import type { ShellName } from './lib/shell'
 import type { Model } from './services/copilot/get-models'
@@ -20,6 +22,8 @@ import { events } from 'fetch-event-stream'
 import WebSocket from 'ws'
 
 import { assertProxyEndpointAvailable } from './daemon/service-env'
+import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
+import { readAccountsConfiguration, resolveConfiguredAccountTypes } from './lib/account/store'
 import { validateAccountType, validateHost, validatePort } from './lib/cli-validators'
 import { assertCodexClientModelMetadata, assertSetupProbeSucceeded, buildClientSetupArtifact, buildSetupProbeRequest, compatibleModelsForClient, inspectCodexClientCatalog, isSetupClient, resolveCodexProfilePaths, selectSetupModel, SETUP_CLIENTS } from './lib/client-setup'
 import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
@@ -31,6 +35,7 @@ import { SHELL_NAMES } from './lib/shell'
 import { state } from './lib/state'
 import { cancelInFlightCopilotTokenRefreshes, stopCopilotTokenRefresh } from './lib/token'
 import { stopModelRefresh } from './lib/utils'
+import { buildBoundModelCatalog } from './routes/models/route'
 import { server } from './server'
 import { closeServerGracefully, createAppServer } from './start'
 
@@ -135,7 +140,7 @@ const defaultDependencies: SetupDependencies = {
   initialize: initializeServer,
   inspectCodexClient: inspectCodexClientCatalog,
   isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
-  models: () => state.models?.data ?? [],
+  models: () => buildBoundModelCatalog(),
   probe: runDisposableSetupProbe,
   writeJson: (value) => {
     process.stdout.write(`${JSON.stringify(value, null, 2)}\n`)
@@ -160,17 +165,34 @@ export async function runSetup(
     : undefined
   if (options.model?.trim() && codexCatalog)
     assertCodexClientModelMetadata(options.model, codexCatalog)
+  const runtimeLock = await acquireRuntimeLock({
+    host: options.host,
+    port: options.port,
+    nativeService: false,
+    purpose: 'setup',
+  })
   let initializationStarted = false
   try {
-    initializationStarted = true
-    await dependencies.initialize(toRunServerOptions(options))
+    const accountStateLock = await acquireAccountStateLock()
+    try {
+      initializationStarted = true
+      await dependencies.initialize(toRunServerOptions(options))
+    }
+    finally {
+      accountStateLock.release()
+    }
     return await completeSetup(options, dependencies, interactive, codexCatalog)
   }
   finally {
-    if (initializationStarted) {
-      await (dependencies.cleanup ?? cleanupSetupRuntime)(
-        new Error('Setup workflow finished.'),
-      )
+    try {
+      if (initializationStarted) {
+        await (dependencies.cleanup ?? cleanupSetupRuntime)(
+          new Error('Setup workflow finished.'),
+        )
+      }
+    }
+    finally {
+      runtimeLock.release()
     }
   }
 }
@@ -339,9 +361,7 @@ async function completeSetup(
 }
 
 export async function cleanupSetupRuntime(reason: Error): Promise<void> {
-  stopCopilotTokenRefresh()
-  await cancelInFlightCopilotTokenRefreshes(reason)
-  stopModelRefresh()
+  await stopAndCancelSetupRefreshes(reason)
 }
 
 export function findExistingClientConfigs(
@@ -389,14 +409,18 @@ export function buildSetupStartCommand(
   ].join(' ')
 }
 
-export function setupProxyRequiredTargets(accountType: string): string[] {
-  const copilotOrigin = accountType === 'individual'
-    ? 'https://api.githubcopilot.com'
-    : `https://api.${accountType}.githubcopilot.com`
+export function setupProxyRequiredTargets(
+  fallbackAccountType: AccountType,
+  configuration: AccountsConfiguration | undefined = readAccountsConfiguration(),
+): string[] {
+  const copilotOrigins = resolveConfiguredAccountTypes(fallbackAccountType, configuration)
+    .map(accountType => accountType === 'individual'
+      ? 'https://api.githubcopilot.com'
+      : `https://api.${accountType}.githubcopilot.com`)
   return [
     'https://github.com',
     'https://api.github.com',
-    copilotOrigin,
+    ...copilotOrigins,
     'https://update.code.visualstudio.com',
     'https://raw.githubusercontent.com',
   ]
@@ -503,12 +527,20 @@ export async function runDisposableSetupProbe(options: {
     clearTimeout(deadline)
     if (!setupController.signal.aborted)
       setupController.abort(new Error('Disposable setup probe completed.'))
-    stopCopilotTokenRefresh()
-    await cancelInFlightCopilotTokenRefreshes(new Error('Disposable setup probe finished.'))
+    await stopAndCancelSetupRefreshes(new Error('Disposable setup probe finished.'))
     if (appServer)
       await closeServerGracefully(appServer, 10_000)
-    stopModelRefresh()
   }
+}
+
+async function stopAndCancelSetupRefreshes(reason: Error): Promise<void> {
+  if (state.accounts) {
+    await state.accounts.stopAndCancelRefreshes(reason)
+    return
+  }
+  stopCopilotTokenRefresh()
+  await cancelInFlightCopilotTokenRefreshes(reason)
+  stopModelRefresh()
 }
 
 export async function fetchDirectSetupWebSocketProbe(

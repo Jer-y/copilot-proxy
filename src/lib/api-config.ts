@@ -1,4 +1,4 @@
-import type { State } from './state'
+import type { AccountContext } from './account/types'
 
 import { randomUUID } from 'node:crypto'
 
@@ -15,17 +15,17 @@ const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
 
 const API_VERSION = '2025-05-01'
 
-export function copilotBaseUrl(state: State) {
-  return state.accountType === 'individual'
+export function copilotBaseUrl(ctx: AccountContext) {
+  return ctx.accountType === 'individual'
     ? 'https://api.githubcopilot.com'
-    : `https://api.${state.accountType}.githubcopilot.com`
+    : `https://api.${ctx.accountType}.githubcopilot.com`
 }
-export function copilotHeaders(state: State, vision: boolean = false) {
+export function copilotHeaders(ctx: AccountContext, vision: boolean = false) {
   const headers: Record<string, string> = {
-    'Authorization': `Bearer ${state.copilotToken}`,
+    'Authorization': `Bearer ${ctx.copilotToken}`,
     'content-type': standardHeaders()['content-type'],
     'copilot-integration-id': 'vscode-chat',
-    'editor-version': `vscode/${state.vsCodeVersion}`,
+    'editor-version': `vscode/${ctx.vsCodeVersion}`,
     'editor-plugin-version': EDITOR_PLUGIN_VERSION,
     'user-agent': USER_AGENT,
     'openai-intent': 'conversation-agent',
@@ -42,11 +42,11 @@ export function copilotHeaders(state: State, vision: boolean = false) {
 }
 
 export const GITHUB_API_BASE_URL = 'https://api.github.com'
-export function githubHeaders(state: State) {
+export function githubHeaders(ctx: AccountContext) {
   return {
     ...standardHeaders(),
-    'authorization': `token ${state.githubToken}`,
-    'editor-version': `vscode/${state.vsCodeVersion}`,
+    'authorization': `token ${ctx.githubToken}`,
+    'editor-version': `vscode/${ctx.vsCodeVersion}`,
     'editor-plugin-version': EDITOR_PLUGIN_VERSION,
     'user-agent': USER_AGENT,
     'x-github-api-version': API_VERSION,

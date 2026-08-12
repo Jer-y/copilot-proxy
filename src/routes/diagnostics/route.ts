@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 
 import { buildModelCapabilitySnapshot } from '~/lib/product-capabilities'
-import { state } from '~/lib/state'
 
 import { buildReadinessStatus } from '../health/route'
+import { buildBoundModelCatalog } from '../models/route'
 import { getCachedCopilotUsage } from '../usage/route'
 
 export const DIAGNOSTICS_USAGE_TIMEOUT_MS = 8_000
@@ -13,10 +13,12 @@ export const diagnosticsRoute = new Hono()
 diagnosticsRoute.get('/', async (c) => {
   c.header('Cache-Control', 'no-store')
 
-  const modelSnapshot = buildModelCapabilitySnapshot(state.models?.data ?? [])
-  const readiness = buildReadinessStatus(modelSnapshot.models)
+  const modelSnapshot = buildModelCapabilitySnapshot(buildBoundModelCatalog())
+  const readiness = buildReadinessStatus()
   const usage = await loadUsageStatus()
-  const status = readiness.status === 'degraded' || readiness.warnings.length > 0
+  const status = modelSnapshot.profiles.length === 0
+    || readiness.status === 'degraded'
+    || readiness.warnings.length > 0
     ? 'degraded' as const
     : 'ready' as const
 

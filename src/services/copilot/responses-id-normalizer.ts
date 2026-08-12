@@ -1,10 +1,5 @@
 import type { ServerSentEventMessage } from 'fetch-event-stream'
 
-interface ResponsesIdAliasEntry {
-  expiresAt: number
-  upstreamId: string
-}
-
 export interface ResponsesIdNormalizationOptions {
   clientPreviousResponseId?: string
 }
@@ -13,8 +8,6 @@ export interface CopilotResponsesItemIdNormalizer {
   normalize: (event: Record<string, unknown>) => Record<string, unknown>
 }
 
-const RESPONSE_ID_ALIAS_TTL_MS = 65 * 60 * 1000
-const RESPONSE_ID_ALIAS_MAX_ENTRIES = 1024
 const RESPONSE_LIFECYCLE_EVENTS = new Set([
   'response.created',
   'response.in_progress',
@@ -22,12 +15,6 @@ const RESPONSE_LIFECYCLE_EVENTS = new Set([
   'response.failed',
   'response.incomplete',
 ])
-const RESPONSE_TERMINAL_EVENTS = new Set([
-  'response.completed',
-  'response.failed',
-  'response.incomplete',
-])
-const responseIdAliases = new Map<string, ResponsesIdAliasEntry>()
 
 /**
  * Copilot currently emits a different opaque item ID for successive events
@@ -106,31 +93,11 @@ export function createCopilotResponsesItemIdNormalizer(): CopilotResponsesItemId
 }
 
 /**
- * Resolve the stable client-facing ID emitted by a prior streaming response to
- * the terminal opaque ID expected by Copilot. Aliases are deliberately
- * in-memory and bounded: Copilot's current continuation state is transport
- * local, and response IDs must not be persisted as proxy metadata.
- */
-export function resolveCopilotResponseIdAlias(
-  responseId: string,
-  now = Date.now(),
-): string {
-  pruneExpiredAliases(now)
-  const entry = responseIdAliases.get(responseId)
-  if (!entry)
-    return responseId
-
-  // Refresh insertion order so actively chained responses are not evicted
-  // ahead of older aliases when the bounded registry reaches capacity.
-  responseIdAliases.delete(responseId)
-  responseIdAliases.set(responseId, entry)
-  return entry.upstreamId
-}
-
-/**
  * Normalize Copilot's event-local lifecycle IDs into one stable Response ID.
- * The terminal upstream ID is retained in a bounded alias registry so a later
- * previous_response_id can be translated back before forwarding to Copilot.
+ * This mapping is response-local only. Copilot HTTP Responses state is not
+ * reusable across requests, so lifecycle IDs must never create process-global
+ * continuation aliases. WebSocket continuation keeps its own connection-local
+ * mapping in the WebSocket session.
  */
 export async function* normalizeCopilotResponsesEventStream(
   source: AsyncIterable<ServerSentEventMessage>,
@@ -181,9 +148,6 @@ export async function* normalizeCopilotResponsesEventStream(
     }
 
     publicResponseId ??= upstreamResponseId
-    if (RESPONSE_TERMINAL_EVENTS.has(eventType))
-      rememberResponseIdAlias(publicResponseId, upstreamResponseId)
-
     const upstreamPreviousResponseId = typeof response.previous_response_id === 'string'
       ? response.previous_response_id
       : undefined
@@ -215,37 +179,6 @@ export async function* normalizeCopilotResponsesEventStream(
         },
       }),
     }
-  }
-}
-
-export function resetCopilotResponseIdAliasesForTests(): void {
-  responseIdAliases.clear()
-}
-
-function rememberResponseIdAlias(
-  publicResponseId: string,
-  upstreamResponseId: string,
-  now = Date.now(),
-): void {
-  pruneExpiredAliases(now)
-  responseIdAliases.delete(publicResponseId)
-  responseIdAliases.set(publicResponseId, {
-    expiresAt: now + RESPONSE_ID_ALIAS_TTL_MS,
-    upstreamId: upstreamResponseId,
-  })
-
-  while (responseIdAliases.size > RESPONSE_ID_ALIAS_MAX_ENTRIES) {
-    const oldestKey = responseIdAliases.keys().next().value
-    if (oldestKey === undefined)
-      break
-    responseIdAliases.delete(oldestKey)
-  }
-}
-
-function pruneExpiredAliases(now: number): void {
-  for (const [publicResponseId, entry] of responseIdAliases) {
-    if (entry.expiresAt <= now)
-      responseIdAliases.delete(publicResponseId)
   }
 }
 

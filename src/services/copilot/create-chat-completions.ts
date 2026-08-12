@@ -1,6 +1,7 @@
+import type { AccountContext } from '~/lib/account/types'
 import consola from 'consola'
-import { events } from 'fetch-event-stream'
 
+import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
@@ -12,9 +13,10 @@ import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream
 
 export async function createChatCompletions(
   payload: ChatCompletionsPayload,
-  options?: { signal?: AbortSignal },
+  options?: { ctx?: AccountContext, signal?: AbortSignal },
 ) {
-  if (!state.copilotToken)
+  const ctx = options?.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
   const enableVision = payload.messages.some(
@@ -33,14 +35,14 @@ export async function createChatCompletions(
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
   const upstreamController = createUpstreamRequestController(options?.signal)
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/chat/completions',
     model: payload.model,
     signal: upstreamController.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/chat/completions`, {
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/chat/completions`, {
       method: 'POST',
       headers: {
-        ...copilotHeaders(state, enableVision),
+        ...copilotHeaders(ctx, enableVision),
         'X-Initiator': isAgentCall ? 'agent' : 'user',
       },
       body,

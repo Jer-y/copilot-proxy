@@ -4,13 +4,10 @@ import { describe, expect, test } from 'bun:test'
 import {
   createCopilotResponsesItemIdNormalizer,
   normalizeCopilotResponsesEventStream,
-  resetCopilotResponseIdAliasesForTests,
-  resolveCopilotResponseIdAlias,
 } from '~/services/copilot/responses-id-normalizer'
 
 describe('Copilot Responses lifecycle ID normalization', () => {
-  test('emits one stable Response ID and maps it back to the terminal upstream ID', async () => {
-    resetCopilotResponseIdAliasesForTests()
+  test('emits one stable response-local ID without creating a cross-request alias', async () => {
     const normalized = await collect(normalizeCopilotResponsesEventStream(source([
       event('response.created', 0, 'upstream-created'),
       event('response.in_progress', 1, 'upstream-progress'),
@@ -24,13 +21,10 @@ describe('Copilot Responses lifecycle ID normalization', () => {
       'upstream-created',
       'upstream-created',
     ])
-    expect(resolveCopilotResponseIdAlias('upstream-created')).toBe('upstream-terminal')
-    expect(resolveCopilotResponseIdAlias('persisted-or-unknown')).toBe('persisted-or-unknown')
     expect(JSON.parse(normalized.at(-1)!.data!).response.previous_response_id).toBe('public-previous')
   })
 
   test('leaves non-lifecycle, malformed, and DONE events untouched', async () => {
-    resetCopilotResponseIdAliasesForTests()
     const messages = [
       { event: 'response.output_text.delta', data: '{"type":"response.output_text.delta","delta":"ok"}' },
       { event: 'message', data: 'not-json' },
@@ -41,7 +35,6 @@ describe('Copilot Responses lifecycle ID normalization', () => {
   })
 
   test('normalizes item IDs and lifecycle IDs in the same SSE stream', async () => {
-    resetCopilotResponseIdAliasesForTests()
     const normalized = await collect(normalizeCopilotResponsesEventStream(source([
       responseEvent('response.created', {
         id: 'resp_created',
@@ -82,11 +75,9 @@ describe('Copilot Responses lifecycle ID normalization', () => {
     expect(events[2].item_id).toBe('msg_added')
     expect(events[3].response.id).toBe('resp_created')
     expect(events[3].response.output[0].id).toBe('msg_added')
-    expect(resolveCopilotResponseIdAlias('resp_created')).toBe('resp_terminal')
   })
 
   test('preserves the original SSE message and data when upstream IDs are already stable', async () => {
-    resetCopilotResponseIdAliasesForTests()
     const rawData = [
       '{ "type": "response.created", "sequence_number": 0, "response": { "id": "resp_stable", "output": [] } } ',
       '{\n  "type": "response.output_item.added", "output_index": 0, "sequence_number": 1,\n  "item": { "type": "message", "id": "item_stable", "role": "\\u0061ssistant", "content": [] }\n}',

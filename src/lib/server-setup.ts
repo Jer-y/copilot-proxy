@@ -2,6 +2,7 @@ import type { RunServerOptions } from '~/start'
 import process from 'node:process'
 import consola from 'consola'
 
+import { loadAccountRegistry } from '~/lib/account/registry'
 import { AsyncConcurrencyLimiter, resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
 import { ensurePaths } from '~/lib/paths'
 import { initializeNodeHttpClient } from '~/lib/proxy'
@@ -27,6 +28,7 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   // A supervisor retry runs initialization again in the same process. Clear
   // any prior schedules first so failed retries cannot accumulate refresh
   // loops.
+  state.accounts?.stopRefreshes()
   stopCopilotTokenRefresh()
   stopModelRefresh()
 
@@ -42,11 +44,11 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
     connectTimeoutMs: options.connectTimeoutMs,
   })
 
-  state.accountType = options.accountType
   state.nativeServiceInstanceToken = options.nativeServiceInstanceToken
-  if (options.accountType !== 'individual') {
-    consola.info(`Using ${options.accountType} plan GitHub account`)
-  }
+  if (options.exposeAccountIdentity)
+    process.env.COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY = '1'
+  if (options.exposeAccountModels)
+    process.env.COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS = '1'
 
   state.manualApprove = options.manual
   state.rateLimitSeconds = options.rateLimit
@@ -65,7 +67,18 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   }
 
   await ensurePaths()
-  await cacheVSCodeVersion()
+  const registry = loadAccountRegistry(options.accountType)
+  await cacheVSCodeVersion(registry.list())
+
+  if (registry.explicit) {
+    await registry.initializeExplicit(options)
+    consola.info(formatModelInventorySummary(registry.defaultAccount.models?.data.length ?? 0))
+    return
+  }
+
+  state.accountType = options.accountType
+  if (options.accountType !== 'individual')
+    consola.info(`Using ${options.accountType} plan GitHub account`)
 
   const githubToken = consumeGithubToken(options.githubToken, process.env, state.githubToken)
   if (githubToken) {
@@ -80,6 +93,8 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   await cacheModels()
   startCopilotTokenRefresh(copilotToken.refresh_in)
   startModelRefresh()
+  state.defaultAccount.identityState = 'unverified'
+  state.defaultAccount.availability = 'ready'
 
   consola.info(formatModelInventorySummary(state.models?.data.length ?? 0))
 }

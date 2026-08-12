@@ -1,12 +1,15 @@
 import type { Message, Peer, WSOptions } from 'crossws'
 import type WebSocket from 'ws'
-import type { CopilotRequestPermit } from '~/services/copilot/authenticated-fetch'
+import type { AccountContext } from '~/lib/account/types'
+import type { AuthenticatedCopilotFetchOptions, CopilotRequestPermit } from '~/services/copilot/authenticated-fetch'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 import type { CopilotResponsesWebSocketConnection } from '~/services/copilot/responses-websocket'
 
 import { Buffer } from 'node:buffer'
 import consola from 'consola'
 
+import { getAccountRegistry } from '~/lib/account/registry'
+import { selectAccount, selectUnmodeledAccount } from '~/lib/account/router'
 import { setApprovalRequestModel, withApprovalRequestContext } from '~/lib/approval'
 import { HTTPError, JSONResponseError, UpstreamTimeoutError } from '~/lib/error'
 import {
@@ -59,6 +62,7 @@ interface ResponsesWebSocketCreateEvent extends Record<string, unknown> {
 }
 
 interface ResponsesWebSocketContext extends Record<string, unknown> {
+  accountId?: string
   origin?: string
   path: string
   releaseConnectionReservation?: () => void
@@ -79,7 +83,9 @@ interface ActiveTurn {
 }
 
 export interface ResponsesWebSocketSessionDeps {
-  acquirePermit?: typeof acquireCopilotRequestPermit
+  acquirePermit?: (
+    options: Pick<AuthenticatedCopilotFetchOptions, 'endpoint' | 'model' | 'signal'>,
+  ) => Promise<CopilotRequestPermit>
   canPauseUpstream?: boolean
   connect?: typeof connectAuthenticatedCopilotResponsesWebSocket
   enforceApproval?: typeof enforceManualApproval
@@ -173,9 +179,26 @@ export const responsesWebSocketOptions: WSOptions = {
       }, { status: 429 })
     }
 
+    const rawRequestedAccount = request.headers.get('x-copilot-account')
+    let requestedAccount: string | undefined
+    if (rawRequestedAccount !== null) {
+      try {
+        requestedAccount = selectUnmodeledAccount({
+          registry: getAccountRegistry(),
+          headers: request.headers,
+        }).ctx.id
+      }
+      catch (error) {
+        if (error instanceof HTTPError)
+          return error.response
+        throw error
+      }
+    }
+
     const releaseConnectionReservation = reservePendingConnection()
     return {
       context: {
+        ...(requestedAccount && { accountId: requestedAccount }),
         origin: request.headers.get('origin') ?? undefined,
         path: url.pathname,
         releaseConnectionReservation,
@@ -267,6 +290,8 @@ export class ResponsesWebSocketSession {
   private lastUpstreamEventWasTerminal = false
   private readonly peer: Peer
   private pausedUpstream?: WebSocket
+  private pinnedAccount?: AccountContext
+  private pinnedAccountId?: string
   private pendingTurnAbortController?: AbortController
   private processingSetup = false
   private readonly queue: string[] = []
@@ -283,8 +308,13 @@ export class ResponsesWebSocketSession {
 
   constructor(peer: Peer, deps: ResponsesWebSocketSessionDeps = {}) {
     this.peer = peer
+    const context = peer.context as ResponsesWebSocketContext
+    if (context.accountId) {
+      this.pinnedAccountId = context.accountId
+      this.pinnedAccount = getAccountRegistry().get(context.accountId)
+    }
     this.deps = {
-      acquirePermit: deps.acquirePermit ?? acquireCopilotRequestPermit,
+      acquirePermit: deps.acquirePermit ?? (options => acquireCopilotRequestPermit(this.requirePinnedAccount(), options)),
       canPauseUpstream: deps.canPauseUpstream ?? typeof Bun === 'undefined',
       connect: deps.connect ?? connectAuthenticatedCopilotResponsesWebSocket,
       enforceApproval: deps.enforceApproval ?? enforceManualApproval,
@@ -468,8 +498,21 @@ export class ResponsesWebSocketSession {
       })
     }
 
-    const effectiveModel = normalizeAnthropicModelName(requestedModel)
-    const liveModel = state.models?.data.find(model => model.id === effectiveModel)
+    const context = this.peer.context as ResponsesWebSocketContext
+    const selectorHeaders = new Headers()
+    if (context.accountId)
+      selectorHeaders.set('x-copilot-account', context.accountId)
+    const selection = selectAccount({
+      registry: getAccountRegistry(),
+      requestedModel,
+      headers: selectorHeaders,
+      pinnedAccountId: this.pinnedAccountId,
+      normalizeModel: normalizeAnthropicModelName,
+    })
+    this.pinnedAccountId ??= selection.ctx.id
+    this.pinnedAccount ??= selection.ctx
+    const effectiveModel = selection.effectiveModel
+    const liveModel = selection.ctx.models?.data.find(model => model.id === effectiveModel)
     if (!modelSupportsResponsesWebSocket(liveModel)) {
       throw new JSONResponseError(`Model ${requestedModel} does not advertise Responses WebSocket support on the current Copilot upstream.`, 400, {
         error: {
@@ -524,6 +567,7 @@ export class ResponsesWebSocketSession {
 
       if (!this.upstream) {
         const connection = await this.ensureUpstream({
+          ctx: selection.ctx,
           hasVision: analysis.hasVision,
           initiator: analysis.initiator,
           model: effectiveModel,
@@ -759,6 +803,12 @@ export class ResponsesWebSocketSession {
       })
     }
     return await this.connectPromise
+  }
+
+  private requirePinnedAccount(): AccountContext {
+    if (!this.pinnedAccount)
+      throw new Error('Responses WebSocket account is not pinned yet')
+    return this.pinnedAccount
   }
 
   private installUpstreamListeners(socket: WebSocket): void {

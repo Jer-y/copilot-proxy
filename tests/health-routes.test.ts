@@ -12,6 +12,7 @@ import { fetchAuthenticatedCopilot, resetCopilotRecoveryStateForTests } from '~/
 describe('health routes', () => {
   const original = {
     accountType: state.accountType,
+    availability: state.defaultAccount.availability,
     concurrencyLimiter: state.concurrencyLimiter,
     copilotToken: state.copilotToken,
     modelCatalogLifecycle: state.modelCatalogLifecycle,
@@ -23,6 +24,7 @@ describe('health routes', () => {
     stopCopilotTokenRefresh()
     resetCopilotRecoveryStateForTests()
     state.accountType = 'individual'
+    state.defaultAccount.availability = 'initializing'
     state.concurrencyLimiter = undefined
     state.copilotToken = undefined
     state.modelCatalogLifecycle = undefined
@@ -34,6 +36,7 @@ describe('health routes', () => {
     stopCopilotTokenRefresh()
     resetCopilotRecoveryStateForTests()
     state.accountType = original.accountType
+    state.defaultAccount.availability = original.availability
     state.concurrencyLimiter = original.concurrencyLimiter
     state.copilotToken = original.copilotToken
     state.modelCatalogLifecycle = original.modelCatalogLifecycle
@@ -291,5 +294,6 @@ async function configureReadyState(expiresAt = Date.now() + 3_600_000): Promise<
     lastRefreshAttemptAt: 1_000,
     lastRefreshSuccessAt: 1_100,
   }
+  state.defaultAccount.availability = 'ready'
   startCopilotTokenRefresh(3_600)
 }

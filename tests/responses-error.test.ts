@@ -4,7 +4,7 @@ import consola from 'consola'
 import { ResponsesPayloadSchema } from '../src/lib/schemas'
 import { state } from '../src/lib/state'
 import { server } from '../src/server'
-import { normalizeCopilotResponsesEventStream, resetCopilotResponseIdAliasesForTests } from '../src/services/copilot/responses-id-normalizer'
+import { normalizeCopilotResponsesEventStream } from '../src/services/copilot/responses-id-normalizer'
 
 state.copilotToken = 'test-token'
 state.vsCodeVersion = '1.0.0'
@@ -37,7 +37,6 @@ beforeEach(() => {
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
   state.models = undefined
-  resetCopilotResponseIdAliasesForTests()
 })
 
 function createErroringSSE(
@@ -352,7 +351,7 @@ test('/v1/responses official subroutes are forwarded to the Copilot backend', as
   })))
 })
 
-test('/v1/responses ID subroutes resolve stable streamed IDs before forwarding', async () => {
+test('/v1/responses ID subroutes do not reuse prior HTTP stream lifecycle mappings', async () => {
   for await (const normalizedEvent of normalizeCopilotResponsesEventStream((async function* () {
     yield {
       event: 'response.created',
@@ -381,10 +380,10 @@ test('/v1/responses ID subroutes resolve stable streamed IDs before forwarding',
   }
 
   expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
-    'https://api.githubcopilot.com/responses/upstream-terminal',
-    'https://api.githubcopilot.com/responses/upstream-terminal/input_items',
-    'https://api.githubcopilot.com/responses/upstream-terminal/cancel',
-    'https://api.githubcopilot.com/responses/upstream-terminal',
+    'https://api.githubcopilot.com/responses/public-response',
+    'https://api.githubcopilot.com/responses/public-response/input_items',
+    'https://api.githubcopilot.com/responses/public-response/cancel',
+    'https://api.githubcopilot.com/responses/public-response',
   ])
 })
 
@@ -1164,6 +1163,29 @@ test('/v1/responses rejects stateful fields before Anthropic translation reaches
     expect(body.error.type).toBe('invalid_request_error')
   }
 
+  expect(fetchMock).toHaveBeenCalledTimes(0)
+})
+
+test('/v1/responses reports conversation as an unsupported field', async () => {
+  const response = await server.request('/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'hi',
+      conversation: { id: 'conv_1' },
+    }),
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'unsupported_value',
+      message: 'Responses conversation state is not supported by the current Copilot upstream. Send the complete conversation as input instead.',
+      param: 'conversation',
+      type: 'invalid_request_error',
+    },
+  })
   expect(fetchMock).toHaveBeenCalledTimes(0)
 })
 

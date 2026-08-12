@@ -6,6 +6,7 @@
  * native `/v1/messages` endpoint.
  */
 
+import type { AccountContext } from '~/lib/account/types'
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
@@ -32,6 +33,7 @@ export interface AnthropicCountTokensResponse {
 }
 
 interface AnthropicRequestOptions {
+  ctx?: AccountContext
   signal?: AbortSignal
   anthropicBeta?: string
 }
@@ -40,19 +42,20 @@ export async function createAnthropicMessages(
   payload: AnthropicMessagesPayload,
   options?: AnthropicRequestOptions,
 ) {
-  if (!state.copilotToken)
+  const ctx = options?.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
   const requestStartedAt = Date.now()
   const body = JSON.stringify(payload)
   const upstreamController = createUpstreamRequestController(options?.signal)
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/v1/messages',
     model: payload.model,
     signal: upstreamController.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/v1/messages`, {
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/v1/messages`, {
       method: 'POST',
-      headers: buildAnthropicRequestHeaders(payload, options),
+      headers: buildAnthropicRequestHeaders(ctx, payload, options),
       body,
       signal: upstreamController.signal,
     }),
@@ -103,17 +106,18 @@ export async function createAnthropicCountTokens(
   payload: AnthropicMessagesPayload,
   options?: AnthropicRequestOptions,
 ) {
-  if (!state.copilotToken)
+  const ctx = options?.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
   const requestStartedAt = Date.now()
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/v1/messages/count_tokens',
     model: payload.model,
     signal: options?.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/v1/messages/count_tokens`, {
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/v1/messages/count_tokens`, {
       method: 'POST',
-      headers: buildAnthropicRequestHeaders(payload, options),
+      headers: buildAnthropicRequestHeaders(ctx, payload, options),
       body: JSON.stringify(payload),
       signal: options?.signal,
     }),
@@ -143,6 +147,7 @@ export async function createAnthropicCountTokens(
 }
 
 function buildAnthropicRequestHeaders(
+  ctx: AccountContext,
   payload: AnthropicMessagesPayload,
   options?: AnthropicRequestOptions,
 ): Record<string, string> {
@@ -156,7 +161,7 @@ function buildAnthropicRequestHeaders(
   )
 
   return {
-    ...copilotHeaders(state, enableVision),
+    ...copilotHeaders(ctx, enableVision),
     'X-Initiator': isAgentCall ? 'agent' : 'user',
     ...(anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {}),
   }

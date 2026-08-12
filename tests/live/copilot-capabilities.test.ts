@@ -301,12 +301,12 @@ async function runProbe(
     try {
       const result = await withLiveCopilotState(config, async () => {
         const headers: Record<string, string> = {
-          ...copilotHeaders(state),
+          ...copilotHeaders(state.defaultAccount),
           'X-Initiator': 'user',
           ...(request.body ? { 'Content-Type': 'application/json' } : {}),
           ...(request.headers || {}),
         }
-        const response = await fetch(`${copilotBaseUrl(state)}${request.path}`, {
+        const response = await fetch(`${copilotBaseUrl(state.defaultAccount)}${request.path}`, {
           method: request.method,
           headers,
           ...(request.body ? { body: JSON.stringify(request.body) } : {}),
@@ -360,10 +360,10 @@ async function runProbe(
     try {
       const result = await withLiveCopilotState(config, async () => {
         const headers: Record<string, string> = {
-          ...copilotHeaders(state),
+          ...copilotHeaders(state.defaultAccount),
           ...(probeConfig.headers || {}),
         }
-        const response = await fetch(`${copilotBaseUrl(state)}/v1/files`, {
+        const response = await fetch(`${copilotBaseUrl(state.defaultAccount)}/v1/files`, {
           method: 'GET',
           headers,
         })
@@ -420,11 +420,11 @@ async function runProbe(
     try {
       const result = await withLiveCopilotState(config, async () => {
         const headers: Record<string, string> = {
-          ...copilotHeaders(state),
+          ...copilotHeaders(state.defaultAccount),
           'X-Initiator': 'user',
           ...(request.body ? { 'Content-Type': 'application/json' } : {}),
         }
-        const response = await fetch(`${copilotBaseUrl(state)}${request.path}`, {
+        const response = await fetch(`${copilotBaseUrl(state.defaultAccount)}${request.path}`, {
           method: request.method,
           headers,
           ...(request.body ? { body: JSON.stringify(request.body) } : {}),

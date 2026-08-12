@@ -1,3 +1,4 @@
+import type { AccountContext } from '~/lib/account/types'
 import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/translation/types'
 
 import consola from 'consola'
@@ -11,7 +12,7 @@ const INVALID_THINKING_SIGNATURE_PATTERN = /invalid [`'"]?signature[`'"]? in [`'
 
 export async function createAnthropicMessagesWithThinkingSignatureRetry(
   payload: AnthropicMessagesPayload,
-  options?: { signal?: AbortSignal, anthropicBeta?: string },
+  options?: { ctx?: AccountContext, signal?: AbortSignal, anthropicBeta?: string },
 ): ReturnType<typeof createAnthropicMessages> {
   try {
     return await createAnthropicMessages(payload, options)

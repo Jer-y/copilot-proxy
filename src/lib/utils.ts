@@ -1,3 +1,4 @@
+import type { AccountContext } from '~/lib/account/types'
 import type { ModelsResponse } from '~/services/copilot/get-models'
 
 import consola from 'consola'
@@ -10,12 +11,17 @@ import { state } from './state'
 export const DEFAULT_MODEL_REFRESH_INTERVAL_MS = 15 * 60 * 1000
 
 type ModelRefreshTimer = ReturnType<typeof setTimeout>
-let modelRefreshTimer: ModelRefreshTimer | undefined
-let modelRefreshGeneration = 0
+interface ModelRefreshRuntime {
+  generation: number
+  timer?: ModelRefreshTimer
+}
+const modelRefreshRuntimes = new WeakMap<AccountContext, ModelRefreshRuntime>()
 
 interface ModelCatalogFetchDependencies {
   now?: () => number
 }
+
+type ModelCatalogFetcher = () => Promise<ModelsResponse>
 
 export function sleep(ms: number) {
   return new Promise((resolve) => {
@@ -27,28 +33,58 @@ export function isNullish(value: unknown): value is null | undefined {
   return value === null || value === undefined
 }
 
+export function cacheModels(
+  fetchModels?: ModelCatalogFetcher,
+  dependencies?: ModelCatalogFetchDependencies,
+): Promise<void>
+export function cacheModels(
+  ctx: AccountContext,
+  fetchModels?: ModelCatalogFetcher,
+  dependencies?: ModelCatalogFetchDependencies,
+): Promise<void>
 export async function cacheModels(
-  fetchModels: typeof getModels = getModels,
-  dependencies: ModelCatalogFetchDependencies = {},
+  ctxOrFetchModels: AccountContext | ModelCatalogFetcher = state.defaultAccount,
+  fetchModelsOrDependencies: ModelCatalogFetcher | ModelCatalogFetchDependencies = {},
+  maybeDependencies: ModelCatalogFetchDependencies = {},
 ): Promise<void> {
+  const { ctx, dependencies, fetchModels } = resolveModelCatalogArguments(
+    ctxOrFetchModels,
+    fetchModelsOrDependencies,
+    maybeDependencies,
+  )
   const now = dependencies.now ?? Date.now
   const attemptAt = now()
   try {
     const models = await fetchModels()
     assertModelCatalogSnapshot(models)
-    state.models = models
-    recordModelCatalogRefreshSuccess(attemptAt, now())
+    ctx.models = models
+    recordModelCatalogRefreshSuccess(ctx, attemptAt, now())
   }
   catch (error) {
-    recordModelCatalogRefreshFailure(attemptAt, now())
+    recordModelCatalogRefreshFailure(ctx, attemptAt, now())
     throw error
   }
 }
 
+export function refreshModelsSafely(
+  fetchModels?: ModelCatalogFetcher,
+  dependencies?: ModelCatalogFetchDependencies,
+): Promise<boolean>
+export function refreshModelsSafely(
+  ctx: AccountContext,
+  fetchModels?: ModelCatalogFetcher,
+  dependencies?: ModelCatalogFetchDependencies,
+): Promise<boolean>
 export async function refreshModelsSafely(
-  fetchModels: typeof getModels = getModels,
-  dependencies: ModelCatalogFetchDependencies = {},
+  ctxOrFetchModels: AccountContext | ModelCatalogFetcher = state.defaultAccount,
+  fetchModelsOrDependencies: ModelCatalogFetcher | ModelCatalogFetchDependencies = {},
+  maybeDependencies: ModelCatalogFetchDependencies = {},
 ): Promise<boolean> {
+  const { ctx, dependencies, fetchModels } = resolveModelCatalogArguments(
+    ctxOrFetchModels,
+    fetchModelsOrDependencies,
+    maybeDependencies,
+  )
   const now = dependencies.now ?? Date.now
   const attemptAt = now()
   try {
@@ -56,13 +92,13 @@ export async function refreshModelsSafely(
     assertModelCatalogSnapshot(models)
     // Replace the complete snapshot atomically so requests already holding the
     // previous object keep a consistent view while new requests see the update.
-    state.models = models
-    recordModelCatalogRefreshSuccess(attemptAt, now())
+    ctx.models = models
+    recordModelCatalogRefreshSuccess(ctx, attemptAt, now())
     consola.info(`Refreshed Copilot model inventory (${models.data.length} models)`)
     return true
   }
   catch (error) {
-    recordModelCatalogRefreshFailure(attemptAt, now())
+    recordModelCatalogRefreshFailure(ctx, attemptAt, now())
     consola.warn('Failed to refresh Copilot model inventory; keeping the previous snapshot.', error)
     return false
   }
@@ -139,60 +175,123 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function recordModelCatalogRefreshSuccess(attemptAt: number, successAt: number): void {
-  state.modelCatalogLifecycle = {
+function recordModelCatalogRefreshSuccess(
+  ctx: AccountContext,
+  attemptAt: number,
+  successAt: number,
+): void {
+  ctx.modelCatalogLifecycle = {
     consecutiveRefreshFailures: 0,
     lastRefreshAttemptAt: attemptAt,
     lastRefreshSuccessAt: successAt,
-    ...(state.modelCatalogLifecycle?.lastRefreshFailureAt !== undefined && {
-      lastRefreshFailureAt: state.modelCatalogLifecycle.lastRefreshFailureAt,
+    ...(ctx.modelCatalogLifecycle?.lastRefreshFailureAt !== undefined && {
+      lastRefreshFailureAt: ctx.modelCatalogLifecycle.lastRefreshFailureAt,
     }),
   }
 }
 
-function recordModelCatalogRefreshFailure(attemptAt: number, failureAt: number): void {
-  state.modelCatalogLifecycle = {
-    consecutiveRefreshFailures: (state.modelCatalogLifecycle?.consecutiveRefreshFailures ?? 0) + 1,
+function recordModelCatalogRefreshFailure(
+  ctx: AccountContext,
+  attemptAt: number,
+  failureAt: number,
+): void {
+  ctx.modelCatalogLifecycle = {
+    consecutiveRefreshFailures: (ctx.modelCatalogLifecycle?.consecutiveRefreshFailures ?? 0) + 1,
     lastRefreshAttemptAt: attemptAt,
     lastRefreshFailureAt: failureAt,
-    ...(state.modelCatalogLifecycle?.lastRefreshSuccessAt !== undefined && {
-      lastRefreshSuccessAt: state.modelCatalogLifecycle.lastRefreshSuccessAt,
+    ...(ctx.modelCatalogLifecycle?.lastRefreshSuccessAt !== undefined && {
+      lastRefreshSuccessAt: ctx.modelCatalogLifecycle.lastRefreshSuccessAt,
     }),
   }
 }
 
 export function startModelRefresh(
-  intervalMs = DEFAULT_MODEL_REFRESH_INTERVAL_MS,
+  intervalMs?: number,
+): void
+export function startModelRefresh(
+  ctx: AccountContext,
+  intervalMs?: number,
+): void
+export function startModelRefresh(
+  ctxOrInterval: AccountContext | number = state.defaultAccount,
+  maybeInterval = DEFAULT_MODEL_REFRESH_INTERVAL_MS,
 ): void {
-  stopModelRefresh()
-  const generation = modelRefreshGeneration
+  const ctx = typeof ctxOrInterval === 'number' ? state.defaultAccount : ctxOrInterval
+  const intervalMs = typeof ctxOrInterval === 'number' ? ctxOrInterval : maybeInterval
+  stopModelRefresh(ctx)
+  const runtime = getModelRefreshRuntime(ctx)
+  const generation = runtime.generation
   const scheduleNext = () => {
-    if (generation !== modelRefreshGeneration)
+    if (generation !== runtime.generation)
       return
-    modelRefreshTimer = setTimeout(() => {
-      modelRefreshTimer = undefined
-      void refreshModelsSafely().finally(scheduleNext)
+    runtime.timer = setTimeout(() => {
+      runtime.timer = undefined
+      void refreshModelsSafely(ctx).finally(scheduleNext)
     }, intervalMs)
-    modelRefreshTimer.unref?.()
+    runtime.timer.unref?.()
   }
   scheduleNext()
 }
 
-export function stopModelRefresh(): void {
-  modelRefreshGeneration++
-  if (modelRefreshTimer !== undefined) {
-    clearTimeout(modelRefreshTimer)
-    modelRefreshTimer = undefined
+export function stopModelRefresh(ctx: AccountContext = state.defaultAccount): void {
+  const runtime = getModelRefreshRuntime(ctx)
+  runtime.generation++
+  if (runtime.timer !== undefined) {
+    clearTimeout(runtime.timer)
+    runtime.timer = undefined
   }
 }
 
-export function isModelRefreshScheduled(): boolean {
-  return modelRefreshTimer !== undefined
+export function isModelRefreshScheduled(ctx: AccountContext = state.defaultAccount): boolean {
+  return getModelRefreshRuntime(ctx).timer !== undefined
 }
 
-export async function cacheVSCodeVersion() {
+export async function cacheVSCodeVersion(
+  contexts: Iterable<AccountContext> = [state.defaultAccount],
+) {
   const response = await getVSCodeVersion()
   state.vsCodeVersion = response
+  for (const ctx of contexts)
+    ctx.vsCodeVersion = response
 
   consola.info(`Using VSCode version: ${response}`)
+}
+
+function getModelRefreshRuntime(ctx: AccountContext): ModelRefreshRuntime {
+  const existing = modelRefreshRuntimes.get(ctx)
+  if (existing)
+    return existing
+  const runtime: ModelRefreshRuntime = { generation: 0 }
+  modelRefreshRuntimes.set(ctx, runtime)
+  return runtime
+}
+
+function resolveModelCatalogArguments(
+  ctxOrFetchModels: AccountContext | ModelCatalogFetcher,
+  fetchModelsOrDependencies: ModelCatalogFetcher | ModelCatalogFetchDependencies,
+  maybeDependencies: ModelCatalogFetchDependencies,
+): {
+  ctx: AccountContext
+  dependencies: ModelCatalogFetchDependencies
+  fetchModels: ModelCatalogFetcher
+} {
+  if (typeof ctxOrFetchModels === 'function') {
+    return {
+      ctx: state.defaultAccount,
+      fetchModels: ctxOrFetchModels,
+      dependencies: typeof fetchModelsOrDependencies === 'function'
+        ? maybeDependencies
+        : fetchModelsOrDependencies,
+    }
+  }
+
+  return {
+    ctx: ctxOrFetchModels,
+    fetchModels: typeof fetchModelsOrDependencies === 'function'
+      ? fetchModelsOrDependencies
+      : () => getModels(ctxOrFetchModels),
+    dependencies: typeof fetchModelsOrDependencies === 'function'
+      ? maybeDependencies
+      : fetchModelsOrDependencies,
+  }
 }

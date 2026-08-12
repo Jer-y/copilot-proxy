@@ -1,6 +1,10 @@
+import type { Model } from '~/services/copilot/get-models'
+
+import process from 'node:process'
 import consola from 'consola'
 import { Hono } from 'hono'
 
+import { getAccountRegistry } from '~/lib/account/registry'
 import { forwardError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { cacheModels } from '~/lib/utils'
@@ -17,7 +21,8 @@ modelRoutes.get('/', async (c) => {
       await cacheModels()
     }
 
-    const modelsData = state.models?.data ?? []
+    const registry = getAccountRegistry()
+    const modelsData = buildBoundModelCatalog()
 
     const requestUrl = new URL(c.req.url)
     if (isCodexModelsRequest(requestUrl)) {
@@ -31,7 +36,17 @@ modelRoutes.get('/', async (c) => {
       return response
     }
 
-    const models = modelsData.map(model => ({
+    const exposedModels = isAccountModelExposureEnabled()
+      ? [
+          ...modelsData,
+          ...registry.list().flatMap(ctx => (ctx.models?.data ?? []).map(model => ({
+            ...model,
+            id: `${ctx.id}/${model.id}`,
+            name: `${ctx.id}/${model.name}`,
+          }))),
+        ]
+      : modelsData
+    const models = exposedModels.map(model => ({
       id: model.id,
       object: 'model',
       created: 0,
@@ -52,6 +67,31 @@ modelRoutes.get('/', async (c) => {
     return response
   }
 })
+
+export function buildBoundModelCatalog(): Model[] {
+  const registry = getAccountRegistry()
+  if (!registry.explicit)
+    return registry.defaultAccount.models?.data ?? []
+
+  const modelIds = new Set(
+    registry.list().flatMap(ctx => (ctx.models?.data ?? []).map(model => model.id)),
+  )
+  const models: Model[] = []
+  for (const modelId of modelIds) {
+    const accountId = registry.boundAccountIdForModel(modelId)
+    const ctx = registry.get(accountId)
+    if (!ctx || ctx.availability !== 'ready')
+      continue
+    const model = ctx.models?.data.find(candidate => candidate.id === modelId)
+    if (model)
+      models.push(model)
+  }
+  return models
+}
+
+function isAccountModelExposureEnabled(): boolean {
+  return process.env.COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS?.trim() === '1'
+}
 
 function logCodexCatalogResponse(clientVersion: string, status: number): void {
   // clientVersion has already passed the strict Codex version parser. Keep this

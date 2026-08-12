@@ -88,7 +88,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Exercise the native service adapter on its host OS
-        run: bun test ${{ matrix.adapter_test }} tests/daemon-enable.test.ts tests/service-install-state.test.ts tests/main-entrypoint.test.ts
+        run: bun test ${{ matrix.adapter_test }} tests/daemon-enable.test.ts tests/service-install-state.test.ts tests/main-entrypoint.test.ts tests/account-lock.test.ts tests/account-store.test.ts tests/account-operations.test.ts tests/start-shutdown.test.ts
 
       - name: Exercise the Windows development launcher on Windows
         if: runner.os == 'Windows'

@@ -2,11 +2,14 @@ import type { Context } from 'hono'
 
 import type { SSEMessage } from 'hono/streaming'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
+import type { AccountContext } from '~/lib/account/types'
 import type { AnthropicStreamEventData } from '~/lib/translation/types'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
+import { getAccountRegistry } from '~/lib/account/registry'
+import { selectAccount, selectUnmodeledAccount } from '~/lib/account/router'
 import { isAbortError, JSONResponseError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import {
@@ -53,18 +56,34 @@ export async function handleResponses(c: Context) {
 
   await enforceManualApproval(state)
 
+  if (payload.conversation != null) {
+    throwInvalidResponsesRequest(
+      'Responses conversation state is not supported by the current Copilot upstream. Send the complete conversation as input instead.',
+      { code: 'unsupported_value', param: 'conversation' },
+    )
+  }
+
+  const selection = selectAccount({
+    registry: getAccountRegistry(),
+    requestedModel: payload.model,
+    headers: c.req.raw.headers,
+    normalizeModel: normalizeAnthropicModelName,
+  })
   const requestedModel = payload.model
-  const effectiveModel = normalizeAnthropicModelName(requestedModel)
+  const effectiveModel = selection.effectiveModel
+  const selectedPayload = effectiveModel === payload.model
+    ? payload
+    : { ...payload, model: effectiveModel }
   const route = resolveRoute('responses', effectiveModel, throwInvalidResponsesRequest, {
-    models: state.models?.data,
+    models: selection.ctx.models?.data,
   })
 
   switch (route.backend) {
     case 'responses':
-      return await handleViaResponses(c, payload)
+      return await handleViaResponses(c, selectedPayload, selection.ctx)
     case 'anthropic-messages':
-      assertResponsesPayloadTranslatable(payload, throwInvalidResponsesRequest)
-      return await handleViaAnthropic(c, payload, effectiveModel, requestedModel)
+      assertResponsesPayloadTranslatable(selectedPayload, throwInvalidResponsesRequest)
+      return await handleViaAnthropic(c, selectedPayload, effectiveModel, requestedModel, selection.ctx)
     case 'chat-completions':
       // Unreachable: resolveRoute() never returns chat-completions for a Responses client.
       throwInvalidResponsesRequest(
@@ -77,13 +96,14 @@ export async function handleResponsesPassthrough(
   c: Context,
   path: string,
   method: 'GET' | 'POST' | 'DELETE',
+  options: { modelInBody?: boolean } = {},
 ) {
   await enforceRateLimit(state)
 
   await enforceManualApproval(state)
 
   const url = new URL(c.req.url)
-  const body = method === 'GET' ? undefined : await readJsonBodyText(c)
+  let body = method === 'GET' ? undefined : await readJsonBodyText(c)
   const requestHeaders: Record<string, string> = {}
   const contentType = c.req.header('content-type')
   if (contentType && body !== undefined) {
@@ -92,10 +112,23 @@ export async function handleResponsesPassthrough(
 
   let response: Response | undefined
   try {
+    const forwarding = options.modelInBody && body !== undefined
+      ? prepareModelRoutedPassthroughBody(body, c.req.raw.headers)
+      : {
+          body,
+          ctx: selectUnmodeledAccount({
+            registry: getAccountRegistry(),
+            headers: c.req.raw.headers,
+          }).ctx,
+          model: undefined,
+        }
+    body = forwarding.body
     response = await forwardResponsesEndpoint(`${path}${url.search}`, {
       method,
       body,
+      ctx: forwarding.ctx,
       headers: requestHeaders,
+      model: forwarding.model,
     })
 
     forwardUpstreamHeaders(c, response.headers)
@@ -117,10 +150,52 @@ export async function handleResponsesPassthrough(
   }
 }
 
+function prepareModelRoutedPassthroughBody(
+  body: string,
+  headers: Headers,
+): { body: string, ctx: AccountContext, model?: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  }
+  catch {
+    throwInvalidResponsesRequest('Invalid JSON body')
+  }
+
+  if (!isRecord(parsed) || typeof parsed.model !== 'string' || parsed.model.length === 0) {
+    return {
+      body,
+      ctx: selectUnmodeledAccount({
+        registry: getAccountRegistry(),
+        headers,
+      }).ctx,
+      model: undefined,
+    }
+  }
+
+  const selection = selectAccount({
+    registry: getAccountRegistry(),
+    requestedModel: parsed.model,
+    headers,
+    normalizeModel: normalizeAnthropicModelName,
+  })
+  return {
+    body: selection.effectiveModel === parsed.model
+      ? body
+      : JSON.stringify({ ...parsed, model: selection.effectiveModel }),
+    ctx: selection.ctx,
+    model: selection.effectiveModel,
+  }
+}
+
 /** Direct path: model supports responses API */
-async function handleViaResponses(c: Context, payload: ResponsesPayload) {
+async function handleViaResponses(
+  c: Context,
+  payload: ResponsesPayload,
+  ctx: AccountContext,
+) {
   const setupSignal = getSetupProbeSignal(c)
-  const result = await createResponses(payload, setupSignal ? { signal: setupSignal } : undefined)
+  const result = await createResponses(payload, { ctx, ...(setupSignal && { signal: setupSignal }) })
 
   if (!isResponsesStreamBody(result.body)) {
     if (consola.level >= 4) {
@@ -174,13 +249,22 @@ async function handleViaResponses(c: Context, payload: ResponsesPayload) {
   })
 }
 
-function throwInvalidResponsesRequest(message: string): never {
+function throwInvalidResponsesRequest(
+  message: string,
+  details: { code?: string, param?: string | null } = {},
+): never {
   throw new JSONResponseError(message, 400, {
     error: {
       message,
       type: 'invalid_request_error',
+      ...(details.code !== undefined && { code: details.code }),
+      ...(details.param !== undefined && { param: details.param }),
     },
   })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isResponsesStreamBody(
@@ -195,6 +279,7 @@ async function handleViaAnthropic(
   payload: ResponsesPayload,
   effectiveModel: string,
   requestedModel: string,
+  ctx: AccountContext,
 ) {
   const requestContext = {
     instructions: payload.instructions ?? null,
@@ -212,7 +297,7 @@ async function handleViaAnthropic(
   // Backfill max_output_tokens because Anthropic requires max_tokens. Preserve
   // explicit client limits verbatim: live model-catalog limits can lag the
   // request boundary accepted by the selected Copilot backend.
-  payload.max_output_tokens ??= findModelMaxOutputTokens(effectiveModel, state.models) ?? 16384
+  payload.max_output_tokens ??= findModelMaxOutputTokens(effectiveModel, ctx.models) ?? 16384
 
   const anthropicPayload = translateResponsesRequestToAnthropic(payload, { model: effectiveModel })
   if (consola.level >= 4) {
@@ -220,7 +305,10 @@ async function handleViaAnthropic(
   }
 
   const setupSignal = getSetupProbeSignal(c)
-  const result = await createAnthropicMessages(anthropicPayload, setupSignal ? { signal: setupSignal } : undefined)
+  const result = await createAnthropicMessages(anthropicPayload, {
+    ctx,
+    ...(setupSignal && { signal: setupSignal }),
+  })
 
   // Non-streaming
   if (!result.streaming) {

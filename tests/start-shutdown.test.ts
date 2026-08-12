@@ -1,12 +1,103 @@
 import type { ServerWithWSOptions } from 'crossws'
 import type { IncomingMessage } from 'node:http'
 import type { Server } from 'srvx'
+import type { AccountsConfiguration } from '~/lib/account/types'
+import type { Model } from '~/services/copilot/get-models'
 
+import fs from 'node:fs'
 import { get as httpGet } from 'node:http'
 import { describe, expect, mock, test } from 'bun:test'
 import WebSocket from 'ws'
 
-import { closeServerGracefully, createAppServer, getActiveHttpRequestCountForTests } from '~/start'
+import { inspectRuntimeLock } from '~/lib/account/lock'
+import { PATHS } from '~/lib/paths'
+import { closeServerGracefully, createAppServer, getActiveHttpRequestCountForTests, runServer, startProxyRequiredTargets } from '~/start'
+
+test('start proxy preflight uses every configured account type instead of the CLI fallback', () => {
+  const configuration: AccountsConfiguration = {
+    version: 1,
+    revision: 1,
+    defaultAccount: 'work',
+    requiredRoutes: [],
+    accounts: [{
+      id: 'work',
+      accountType: 'enterprise',
+      githubLogin: 'alice-work',
+      githubUserId: 2,
+    }],
+    routes: [],
+  }
+
+  expect(startProxyRequiredTargets('individual', configuration)).toEqual([
+    'https://api.github.com',
+    'https://api.enterprise.githubcopilot.com',
+    'https://update.code.visualstudio.com',
+    'https://raw.githubusercontent.com',
+  ])
+})
+
+describe('runServer lifecycle', () => {
+  test('closes a post-ready listener before releasing the runtime lock', async () => {
+    fs.rmSync(PATHS.RUNTIME_LOCK, { force: true, recursive: true })
+    const events: string[] = []
+    const close = mock(async () => {
+      expect(inspectRuntimeLock()).toMatchObject({ state: 'active' })
+      events.push('listener:closed')
+    })
+    const appServer = {
+      close,
+      ready: async () => {
+        events.push('listener:ready')
+      },
+    } as unknown as Server
+    const claudeModel: Model = {
+      id: 'claude-lifecycle-test',
+      name: 'Claude lifecycle test',
+      vendor: 'Anthropic',
+      version: '1',
+      object: 'model',
+      preview: false,
+      model_picker_enabled: true,
+      supported_endpoints: ['/v1/messages'],
+      capabilities: {
+        family: 'claude-lifecycle-test',
+        object: 'model_capabilities',
+        supports: {},
+        tokenizer: 'test',
+        type: 'chat',
+      },
+    }
+
+    await expect(runServer({
+      accountType: 'individual',
+      claudeCode: true,
+      host: '127.0.0.1',
+      manual: false,
+      port: 4399,
+      proxyEnv: false,
+      rateLimitWait: false,
+      showToken: false,
+      verbose: false,
+    }, {
+      createAppServer: () => appServer,
+      initialize: async () => {},
+      keepAlive: async () => {},
+      models: () => [claudeModel],
+      promptForClaudeCodeLaunchCommand: async () => {
+        events.push('post-ready:error')
+        throw new Error('prompt failed after ready')
+      },
+    })).rejects.toThrow('prompt failed after ready')
+
+    expect(events).toEqual([
+      'listener:ready',
+      'post-ready:error',
+      'listener:closed',
+    ])
+    expect(close).toHaveBeenCalledWith(false)
+    expect(inspectRuntimeLock()).toEqual({ state: 'absent' })
+  })
+})
 
 describe('createAppServer', () => {
   test('prepares WebSockets before registering them with the listener', () => {

@@ -1,5 +1,6 @@
-import { Buffer } from 'node:buffer'
+import type { AccountContext } from '~/lib/account/types'
 
+import { Buffer } from 'node:buffer'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
@@ -9,9 +10,10 @@ import { readValidatedJsonResponse } from './upstream-response'
 
 export async function createEmbeddings(
   payload: EmbeddingRequest,
-  options?: { signal?: AbortSignal },
+  options?: { ctx?: AccountContext, signal?: AbortSignal },
 ) {
-  if (!state.copilotToken)
+  const ctx = options?.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
   const normalizedPayload = {
@@ -20,13 +22,13 @@ export async function createEmbeddings(
     input: Array.isArray(payload.input) ? payload.input : [payload.input],
   }
 
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/embeddings',
     model: payload.model,
     signal: options?.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/embeddings`, {
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/embeddings`, {
       method: 'POST',
-      headers: copilotHeaders(state),
+      headers: copilotHeaders(ctx),
       body: JSON.stringify(normalizedPayload),
       signal: options?.signal,
     }),

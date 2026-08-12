@@ -44,6 +44,8 @@ const fetchMock = mock(async (
 describe('/diagnostics', () => {
   const original = {
     accountType: state.accountType,
+    availability: state.defaultAccount.availability,
+    identityState: state.defaultAccount.identityState,
     concurrencyLimiter: state.concurrencyLimiter,
     copilotToken: state.copilotToken,
     githubToken: state.githubToken,
@@ -61,6 +63,8 @@ describe('/diagnostics', () => {
     fetchMock.mockImplementation(async (): Promise<Response> => Response.json(usagePayload))
     globalThis.fetch = fetchMock as unknown as typeof fetch
     state.accountType = 'individual'
+    state.defaultAccount.availability = 'initializing'
+    state.defaultAccount.identityState = 'unverified'
     state.concurrencyLimiter = undefined
     state.copilotToken = undefined
     state.githubToken = 'must-not-appear-github-token'
@@ -76,6 +80,8 @@ describe('/diagnostics', () => {
     resetUsageCacheForTests()
     globalThis.fetch = originalFetch
     state.accountType = original.accountType
+    state.defaultAccount.availability = original.availability
+    state.defaultAccount.identityState = original.identityState
     state.concurrencyLimiter = original.concurrencyLimiter
     state.copilotToken = original.copilotToken
     state.githubToken = original.githubToken
@@ -264,10 +270,10 @@ describe('/diagnostics', () => {
     expect(diagnosticsBody).toMatchObject({
       status: 'degraded',
       readiness: {
-        modelCatalog: { status: 'unavailable' },
-        status: 'degraded',
-        modelsAvailable: 0,
-        reasons: expect.arrayContaining(['model_catalog_unavailable']),
+        modelCatalog: { status: 'fresh' },
+        status: 'ready',
+        modelsAvailable: 1,
+        reasons: [],
       },
       models: [],
     })
@@ -494,6 +500,8 @@ async function configureReadyState(): Promise<void> {
     lastRefreshAttemptAt: 1_000,
     lastRefreshSuccessAt: 1_100,
   }
+  state.defaultAccount.availability = 'ready'
+  state.defaultAccount.identityState = 'ok'
   startCopilotTokenRefresh(3_600)
 }
 

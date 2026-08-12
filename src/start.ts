@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import type { Server, ServerHandler } from 'srvx'
+import type { AccountsConfiguration } from '~/lib/account/types'
+import type { AccountType } from '~/lib/cli-validators'
 import type { Model } from '~/services/copilot/get-models'
 import fs from 'node:fs'
 import process from 'node:process'
@@ -9,6 +11,8 @@ import clipboard from 'clipboardy'
 import consola from 'consola'
 import { serve } from 'crossws/server'
 
+import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
+import { readAccountsConfiguration, resolveConfiguredAccountTypes } from './lib/account/store'
 import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
 import { buildClaudeLaunchCommand } from './lib/client-setup'
 import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
@@ -19,7 +23,10 @@ import { gatewayPresetEnvironmentError, isRunPresetName, resolveRunPreset, RUN_P
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { state } from './lib/state'
+import { stopCopilotTokenRefresh } from './lib/token'
+import { stopModelRefresh } from './lib/utils'
 import { toClaudeCodeModelName } from './routes/messages/model-normalization'
+import { buildBoundModelCatalog } from './routes/models/route'
 import {
   closeResponsesWebSocketsGracefully,
   forceCloseResponsesWebSockets,
@@ -49,6 +56,8 @@ export interface RunServerOptions {
   exitOnPortInUse?: boolean
   nativeService?: boolean
   nativeServiceInstanceToken?: string
+  exposeAccountIdentity?: boolean
+  exposeAccountModels?: boolean
 }
 
 interface AppServerDependencies {
@@ -62,6 +71,14 @@ interface WebSocketShutdownDependencies {
   forceCloseResponsesWebSockets: () => void
 }
 
+export interface RunServerDependencies {
+  createAppServer: typeof createAppServer
+  initialize: typeof initializeServer
+  keepAlive: () => Promise<void>
+  models: () => Model[]
+  promptForClaudeCodeLaunchCommand: typeof promptForClaudeCodeLaunchCommand
+}
+
 const defaultAppServerDependencies: AppServerDependencies = {
   prepareResponsesWebSocketServer,
   responsesWebSocketOptions,
@@ -73,7 +90,31 @@ const defaultWebSocketShutdownDependencies: WebSocketShutdownDependencies = {
   forceCloseResponsesWebSockets,
 }
 
+const defaultRunServerDependencies: RunServerDependencies = {
+  createAppServer,
+  initialize: initializeServer,
+  keepAlive: async () => await new Promise(() => {}),
+  models: buildBoundModelCatalog,
+  promptForClaudeCodeLaunchCommand,
+}
+
 const HOSTED_DIAGNOSTICS_DASHBOARD_URL = 'https://jer-y.github.io/copilot-proxy'
+
+export function startProxyRequiredTargets(
+  fallbackAccountType: AccountType,
+  configuration: AccountsConfiguration | undefined = readAccountsConfiguration(),
+): string[] {
+  const copilotOrigins = resolveConfiguredAccountTypes(fallbackAccountType, configuration)
+    .map(accountType => accountType === 'individual'
+      ? 'https://api.githubcopilot.com'
+      : `https://api.${accountType}.githubcopilot.com`)
+  return [
+    'https://api.github.com',
+    ...copilotOrigins,
+    'https://update.code.visualstudio.com',
+    'https://raw.githubusercontent.com',
+  ]
+}
 
 const httpRequestDrainTrackers = new WeakMap<object, HttpRequestDrainTracker>()
 
@@ -242,20 +283,41 @@ export function selectClaudeCodeModelIds(models: Model[]): string[] {
   })
 }
 
-export async function runServer(options: RunServerOptions): Promise<void> {
-  await initializeServer(options)
-
-  const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
-  const dashboardUrl = buildDiagnosticsDashboardUrl(serverUrl)
-  const claudeCodeModelIds = options.claudeCode
-    ? selectClaudeCodeModelIds(state.models?.data ?? [])
-    : []
-
+export async function runServer(
+  options: RunServerOptions,
+  dependencies: RunServerDependencies = defaultRunServerDependencies,
+): Promise<void> {
+  const runtimeLock = await acquireRuntimeLock({
+    host: options.host,
+    port: options.port,
+    nativeService: options.nativeService === true,
+    purpose: 'server',
+  })
+  let appServer: Server | undefined
+  let uninstallShutdownHandlers: (() => void) | undefined
   try {
-    const appServer = createAppServer(options)
+    const accountStateLock = await acquireAccountStateLock()
+    try {
+      await dependencies.initialize(options)
+    }
+    finally {
+      accountStateLock.release()
+    }
+
+    const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
+    const dashboardUrl = buildDiagnosticsDashboardUrl(serverUrl)
+    const claudeCodeModelIds = options.claudeCode
+      ? selectClaudeCodeModelIds(dependencies.models())
+      : []
+
+    appServer = dependencies.createAppServer(options)
 
     await appServer.ready()
-    installShutdownHandlers(appServer, {
+    uninstallShutdownHandlers = installShutdownHandlers(appServer, {
+      cleanup: () => {
+        cleanupRuntimeSchedules()
+        runtimeLock.release()
+      },
       watchStopFile: process.platform === 'win32' && options.nativeService === true,
     })
 
@@ -269,7 +331,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     )
 
     if (options.claudeCode) {
-      const command = await promptForClaudeCodeLaunchCommand(
+      const command = await dependencies.promptForClaudeCodeLaunchCommand(
         serverUrl,
         claudeCodeModelIds,
       )
@@ -287,6 +349,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     }
   }
   catch (error) {
+    uninstallShutdownHandlers?.()
+    const listenerClosed = appServer
+      ? await closeServerAfterStartupFailure(appServer)
+      : true
+    if (listenerClosed) {
+      cleanupRuntimeSchedules()
+      runtimeLock.release()
+    }
     if (isPortInUseError(error) && (options.exitOnPortInUse ?? true)) {
       exitWithPortInUse(options.port)
     }
@@ -296,7 +366,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Keep the process alive — serve() is non-blocking.
   // This promise never resolves, which is correct for a long-running server.
   // The process exits via SIGTERM/SIGINT signal handlers.
-  await new Promise(() => {})
+  await dependencies.keepAlive()
 }
 
 export function createAppServer(
@@ -444,8 +514,8 @@ async function waitForBunPendingRequestsToDrain(
 
 function installShutdownHandlers(
   appServer: Server,
-  options: { watchStopFile: boolean },
-): void {
+  options: { cleanup?: () => void, watchStopFile: boolean },
+): () => void {
   let shuttingDown = false
   let stopPoll: ReturnType<typeof setInterval> | undefined
 
@@ -457,33 +527,42 @@ function installShutdownHandlers(
     if (stopPoll)
       clearInterval(stopPoll)
     consola.info(`Received ${signal}, shutting down...`)
+    let listenerClosed = false
     try {
       const result = await closeServerGracefully(appServer)
       if (result === 'forced')
         consola.warn('Graceful shutdown timed out; active connections were forcibly closed')
+      listenerClosed = true
     }
     catch (error) {
       consola.warn('Failed to close server cleanly:', error)
     }
+    if (listenerClosed)
+      options.cleanup?.()
     if (options.watchStopFile) {
       try {
         fs.rmSync(PATHS.DAEMON_STOP, { force: true })
       }
       catch {}
     }
-    process.exit(0)
+    // If the listener could not be closed, retain the runtime claim until the
+    // process exit hook runs. That prevents a replacement from starting while
+    // this process may still accept traffic.
+    process.exit(listenerClosed ? 0 : 1)
   }
 
   // Keep the listeners installed while draining. A Bun bootstrap parent and
   // service managers may both deliver the same signal; a once-listener would
   // disappear after the first delivery and let the duplicate take the default
   // hard-exit path.
-  process.on('SIGTERM', () => {
+  const onSigterm = () => {
     void shutdown('SIGTERM')
-  })
-  process.on('SIGINT', () => {
+  }
+  const onSigint = () => {
     void shutdown('SIGINT')
-  })
+  }
+  process.on('SIGTERM', onSigterm)
+  process.on('SIGINT', onSigint)
 
   if (options.watchStopFile) {
     stopPoll = setInterval(() => {
@@ -492,6 +571,37 @@ function installShutdownHandlers(
     }, 250)
     stopPoll.unref?.()
   }
+
+  return () => {
+    process.removeListener('SIGTERM', onSigterm)
+    process.removeListener('SIGINT', onSigint)
+    if (stopPoll)
+      clearInterval(stopPoll)
+  }
+}
+
+async function closeServerAfterStartupFailure(appServer: Server): Promise<boolean> {
+  try {
+    await closeServerGracefully(appServer)
+    return true
+  }
+  catch (gracefulError) {
+    consola.warn('Failed to close a listener after startup failed; forcing it closed:', gracefulError)
+    try {
+      await appServer.close(true)
+      return true
+    }
+    catch (forceError) {
+      consola.error('Failed to force-close the listener after startup failed; retaining the runtime lock:', forceError)
+      return false
+    }
+  }
+}
+
+function cleanupRuntimeSchedules(): void {
+  state.accounts?.stopRefreshes()
+  stopCopilotTokenRefresh()
+  stopModelRefresh()
 }
 
 export const start = defineCommand({
@@ -588,6 +698,16 @@ export const start = defineCommand({
       type: 'boolean',
       default: false,
       description: 'Show GitHub and Copilot tokens on fetch and refresh',
+    },
+    'expose-account-identity': {
+      type: 'boolean',
+      default: false,
+      description: 'Expose configured GitHub account identities in health diagnostics',
+    },
+    'expose-account-models': {
+      type: 'boolean',
+      default: false,
+      description: 'Expose <account>/<model> aliases to non-Codex model-list clients',
     },
     'proxy-env': {
       type: 'boolean',
@@ -745,15 +865,10 @@ export const start = defineCommand({
 
     if (args['proxy-env']) {
       const { assertProxyEndpointAvailable } = await import('~/daemon/service-env')
-      const copilotOrigin = args['account-type'] === 'individual'
-        ? 'https://api.githubcopilot.com'
-        : `https://api.${args['account-type']}.githubcopilot.com`
-      assertProxyEndpointAvailable(process.env, [
-        'https://api.github.com',
-        copilotOrigin,
-        'https://update.code.visualstudio.com',
-        'https://raw.githubusercontent.com',
-      ])
+      assertProxyEndpointAvailable(
+        process.env,
+        startProxyRequiredTargets(args['account-type']),
+      )
     }
 
     return runServer({
@@ -776,6 +891,8 @@ export const start = defineCommand({
       proxyEnv: args['proxy-env'],
       nativeService: args._service,
       nativeServiceInstanceToken,
+      exposeAccountIdentity: args['expose-account-identity'],
+      exposeAccountModels: args['expose-account-models'],
     })
   },
 })

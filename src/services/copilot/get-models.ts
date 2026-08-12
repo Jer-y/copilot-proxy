@@ -1,3 +1,5 @@
+import type { AccountContext } from '~/lib/account/types'
+
 import consola from 'consola'
 
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
@@ -6,12 +8,12 @@ import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { fetchAuthenticatedCopilot } from './authenticated-fetch'
 
-export async function getModels() {
+export async function getModels(ctx: AccountContext = state.defaultAccount) {
   // Primary: standard vscode-chat auth (consistent with all other API calls)
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/models',
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/models`, {
-      headers: copilotHeaders(state),
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/models`, {
+      headers: copilotHeaders(ctx),
     }),
   })
 
@@ -22,12 +24,12 @@ export async function getModels() {
   const primaryFailureResponse = await consumeAndRebuildResponse(response)
 
   // Fallback: copilot-developer-cli for extended model list
-  if (state.githubToken) {
+  if (ctx.githubToken) {
     try {
-      const cliHeaders = copilotHeaders(state)
-      cliHeaders.Authorization = `Bearer ${state.githubToken}`
+      const cliHeaders = copilotHeaders(ctx)
+      cliHeaders.Authorization = `Bearer ${ctx.githubToken}`
       cliHeaders['copilot-integration-id'] = 'copilot-developer-cli'
-      const cliResponse = await fetchCopilot(`${copilotBaseUrl(state)}/models`, {
+      const cliResponse = await fetchCopilot(`${copilotBaseUrl(ctx)}/models`, {
         headers: cliHeaders,
       })
       if (cliResponse.ok) {

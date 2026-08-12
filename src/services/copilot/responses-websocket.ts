@@ -1,4 +1,6 @@
 import type { IncomingMessage } from 'node:http'
+import type { AuthenticatedCopilotFetchOptions } from './authenticated-fetch'
+import type { AccountContext } from '~/lib/account/types'
 
 import { Buffer } from 'node:buffer'
 import consola from 'consola'
@@ -33,6 +35,7 @@ interface OpenWebSocketFailure {
 type OpenWebSocketResult = OpenWebSocketFailure | OpenWebSocketSuccess
 
 export interface ConnectCopilotResponsesWebSocketOptions {
+  ctx?: AccountContext
   hasVision: boolean
   initiator: 'agent' | 'user'
   model: string
@@ -46,7 +49,9 @@ export interface CopilotResponsesWebSocketConnection {
 }
 
 export interface ConnectCopilotResponsesWebSocketDeps {
-  fetchAuthenticated?: typeof fetchAuthenticatedCopilot
+  fetchAuthenticated?: (
+    options: AuthenticatedCopilotFetchOptions,
+  ) => Promise<Response>
   openAttempt?: (
     url: string,
     headers: Record<string, string>,
@@ -58,7 +63,8 @@ export async function connectAuthenticatedCopilotResponsesWebSocket(
   options: ConnectCopilotResponsesWebSocketOptions,
   deps: ConnectCopilotResponsesWebSocketDeps = {},
 ): Promise<CopilotResponsesWebSocketConnection> {
-  if (!state.copilotToken)
+  const ctx = options.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
   // Bun's native WebSocket client does not expose the non-101 handshake
@@ -68,11 +74,12 @@ export async function connectAuthenticatedCopilotResponsesWebSocket(
   // opaque handshake failure is then treated conservatively as transport or
   // endpoint rejection and is never refreshed blindly.
   if (typeof Bun !== 'undefined' && deps.openAttempt === undefined)
-    await preflightCopilotResponsesWebSocketAuth(options)
+    await preflightCopilotResponsesWebSocketAuth(ctx, options)
 
-  const url = `${copilotBaseUrl(state).replace(/^http/, 'ws')}/responses`
+  const url = `${copilotBaseUrl(ctx).replace(/^http/, 'ws')}/responses`
   const openAttempt = deps.openAttempt ?? openCopilotResponsesWebSocketAttempt
-  const fetchAuthenticated = deps.fetchAuthenticated ?? fetchAuthenticatedCopilot
+  const fetchAuthenticated = deps.fetchAuthenticated
+    ?? (requestOptions => fetchAuthenticatedCopilot(ctx, requestOptions))
   let connectedSocket: WebSocket | undefined
   let handoff: (() => Error | undefined) | undefined
 
@@ -82,7 +89,7 @@ export async function connectAuthenticatedCopilotResponsesWebSocket(
     signal: options.signal,
     request: async () => {
       const result = await openAttempt(url, {
-        ...copilotHeaders(state, options.hasVision),
+        ...copilotHeaders(ctx, options.hasVision),
         'X-Initiator': options.initiator,
       }, options.signal)
 
@@ -130,14 +137,15 @@ export async function connectAuthenticatedCopilotResponsesWebSocket(
 }
 
 async function preflightCopilotResponsesWebSocketAuth(
+  ctx: AccountContext,
   options: ConnectCopilotResponsesWebSocketOptions,
 ): Promise<void> {
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: 'ws:/responses',
     model: options.model,
     signal: options.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/models`, {
-      headers: copilotHeaders(state),
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/models`, {
+      headers: copilotHeaders(ctx),
       signal: options.signal,
     }),
   })

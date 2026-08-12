@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 
 import { forwardError } from '~/lib/error'
-import { resolveCopilotResponseIdAlias } from '~/services/copilot/responses-id-normalizer'
 
 import { handleResponses, handleResponsesPassthrough } from './handler'
 
@@ -18,7 +17,7 @@ responsesRoutes.post('/', async (c) => {
 
 responsesRoutes.post('/input_tokens', async (c) => {
   try {
-    return await handleResponsesPassthrough(c, '/responses/input_tokens', 'POST')
+    return await handleResponsesPassthrough(c, '/responses/input_tokens', 'POST', { modelInBody: true })
   }
   catch (error) {
     return await forwardError(c, error)
@@ -27,7 +26,7 @@ responsesRoutes.post('/input_tokens', async (c) => {
 
 responsesRoutes.post('/compact', async (c) => {
   try {
-    return await handleResponsesPassthrough(c, '/responses/compact', 'POST')
+    return await handleResponsesPassthrough(c, '/responses/compact', 'POST', { modelInBody: true })
   }
   catch (error) {
     return await forwardError(c, error)
@@ -36,7 +35,7 @@ responsesRoutes.post('/compact', async (c) => {
 
 responsesRoutes.post('/:responseId/cancel', async (c) => {
   try {
-    const responseId = encodeURIComponent(resolveCopilotResponseIdAlias(c.req.param('responseId')))
+    const responseId = encodeURIComponent(c.req.param('responseId'))
     return await handleResponsesPassthrough(c, `/responses/${responseId}/cancel`, 'POST')
   }
   catch (error) {
@@ -46,7 +45,7 @@ responsesRoutes.post('/:responseId/cancel', async (c) => {
 
 responsesRoutes.get('/:responseId/input_items', async (c) => {
   try {
-    const responseId = encodeURIComponent(resolveCopilotResponseIdAlias(c.req.param('responseId')))
+    const responseId = encodeURIComponent(c.req.param('responseId'))
     return await handleResponsesPassthrough(c, `/responses/${responseId}/input_items`, 'GET')
   }
   catch (error) {
@@ -56,7 +55,7 @@ responsesRoutes.get('/:responseId/input_items', async (c) => {
 
 responsesRoutes.get('/:responseId', async (c) => {
   try {
-    const responseId = encodeURIComponent(resolveCopilotResponseIdAlias(c.req.param('responseId')))
+    const responseId = encodeURIComponent(c.req.param('responseId'))
     return await handleResponsesPassthrough(c, `/responses/${responseId}`, 'GET')
   }
   catch (error) {
@@ -66,7 +65,7 @@ responsesRoutes.get('/:responseId', async (c) => {
 
 responsesRoutes.delete('/:responseId', async (c) => {
   try {
-    const responseId = encodeURIComponent(resolveCopilotResponseIdAlias(c.req.param('responseId')))
+    const responseId = encodeURIComponent(c.req.param('responseId'))
     return await handleResponsesPassthrough(c, `/responses/${responseId}`, 'DELETE')
   }
   catch (error) {

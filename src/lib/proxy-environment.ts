@@ -40,8 +40,13 @@ export const PROXY_ENDPOINT_ENV_KEYS = [
 export const NETWORK_BOOTSTRAPPED_ENV = 'COPILOT_PROXY_NETWORK_BOOTSTRAPPED'
 
 const NETWORK_COMMAND_STRING_OPTIONS: Record<string, readonly CittyStringOptionDefinition[]> = {
+  'accounts': [
+    { name: 'account-type', shortName: 'a' },
+  ],
   'auth': AUTH_CITTY_STRING_OPTIONS,
-  'check-usage': [],
+  'check-usage': [
+    { name: 'account' },
+  ],
   'doctor': [
     { name: 'endpoint' },
     { name: 'client' },
@@ -49,6 +54,7 @@ const NETWORK_COMMAND_STRING_OPTIONS: Record<string, readonly CittyStringOptionD
   ],
   'models': [
     { name: 'account-type', shortName: 'a' },
+    { name: 'account' },
     { name: 'client' },
   ],
   'setup': [
@@ -147,6 +153,7 @@ export function shouldRestartWithSanitizedNetworkEnvironment(
   const command = findCittyRootCommand(args)
   const commandName = command?.command
   const usesNetwork = commandName === 'start'
+    || commandName === 'accounts'
     || commandName === 'auth'
     || commandName === 'check-usage'
     || commandName === 'setup'

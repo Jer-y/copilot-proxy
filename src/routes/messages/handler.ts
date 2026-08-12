@@ -1,9 +1,12 @@
 import type { Context } from 'hono'
 
+import type { AccountContext } from '~/lib/account/types'
 import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/translation/types'
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
+import { getAccountRegistry } from '~/lib/account/registry'
+import { selectAccount } from '~/lib/account/router'
 import { isAbortError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
@@ -57,10 +60,19 @@ export async function handleCompletion(c: Context) {
   await enforceManualApproval(state)
 
   const requestedModel = anthropicPayload.model
+  const selection = selectAccount({
+    registry: getAccountRegistry(),
+    requestedModel,
+    headers: c.req.raw.headers,
+    normalizeModel: normalizeAnthropicModelName,
+  })
   // Normalize historical Anthropic model aliases while preserving the client's
   // requested model name in responses.
-  const effectiveModel = normalizeAnthropicModelName(requestedModel)
-  const modelMaxOutputTokens = findModelMaxOutputTokens(effectiveModel, state.models)
+  const effectiveModel = selection.effectiveModel
+  anthropicPayload = effectiveModel === anthropicPayload.model
+    ? anthropicPayload
+    : { ...anthropicPayload, model: effectiveModel }
+  const modelMaxOutputTokens = findModelMaxOutputTokens(effectiveModel, selection.ctx.models)
 
   if (isNullish(anthropicPayload.max_tokens)) {
     anthropicPayload = {
@@ -75,7 +87,7 @@ export async function handleCompletion(c: Context) {
   assertNoUnsupportedAdvisorToolsForCopilot(anthropicPayload)
 
   const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
-    models: state.models?.data,
+    models: selection.ctx.models?.data,
   })
 
   switch (route.backend) {
@@ -87,11 +99,14 @@ export async function handleCompletion(c: Context) {
         anthropicBeta,
         effectiveModel,
         requestedModel,
+        selection.ctx,
       )
     case 'responses':
-      assertMessagesPayloadTranslatable(anthropicPayload, throwAnthropicInvalidRequestError)
+      assertMessagesPayloadTranslatable(anthropicPayload, throwAnthropicInvalidRequestError, {
+        models: selection.ctx.models?.data,
+      })
       await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
-      return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel)
+      return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, selection.ctx)
     case 'chat-completions':
       // Unreachable: resolveRoute() never returns chat-completions for an Anthropic client.
       throwAnthropicInvalidRequestError(
@@ -106,14 +121,21 @@ async function handleViaResponses(
   anthropicPayload: AnthropicMessagesPayload,
   effectiveModel: string,
   requestedModel: string,
+  ctx: AccountContext,
 ) {
-  const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, { model: effectiveModel })
+  const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, {
+    model: effectiveModel,
+    models: ctx.models?.data,
+  })
   if (consola.level >= 4) {
     consola.debug('Translated Anthropic→Responses payload summary:', summarizeResponsesPayload(responsesPayload))
   }
 
   const setupSignal = getSetupProbeSignal(c)
-  const result = await createResponses(responsesPayload, setupSignal ? { signal: setupSignal } : undefined)
+  const result = await createResponses(responsesPayload, {
+    ctx,
+    ...(setupSignal && { signal: setupSignal }),
+  })
 
   if (!isResponsesStreamBody(result.body)) {
     if (!isResponsesResponseBody(result.body)) {
@@ -256,6 +278,7 @@ async function handleViaNativeAnthropic(
   anthropicBeta: string | undefined,
   effectiveModel: string,
   requestedModel: string,
+  ctx: AccountContext,
 ) {
   // Forward the normalized upstream model while preserving the requested model
   // name in client-visible responses.
@@ -276,6 +299,7 @@ async function handleViaNativeAnthropic(
     payload,
     {
       anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),
+      ctx,
       ...(setupSignal && { signal: setupSignal }),
     },
   )

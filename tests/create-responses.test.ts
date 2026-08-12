@@ -11,7 +11,6 @@ import {
 } from '../src/services/copilot/create-responses'
 import {
   normalizeCopilotResponsesEventStream,
-  resetCopilotResponseIdAliasesForTests,
 } from '../src/services/copilot/responses-id-normalizer'
 
 state.copilotToken = 'test-token'
@@ -55,10 +54,9 @@ function richCustomToolOutputPayload(): ResponsesPayload {
 
 afterEach(() => {
   fetchMock.mockClear()
-  resetCopilotResponseIdAliasesForTests()
 })
 
-test('maps a stable streamed response ID back to the Copilot terminal ID', async () => {
+test('does not reuse a prior HTTP stream lifecycle ID mapping across requests', async () => {
   for await (const normalizedEvent of normalizeCopilotResponsesEventStream((async function* () {
     yield {
       event: 'response.created',
@@ -69,7 +67,8 @@ test('maps a stable streamed response ID back to the Copilot terminal ID', async
       data: '{"type":"response.completed","sequence_number":1,"response":{"id":"upstream-terminal"}}',
     }
   })())) {
-    // Exhaust the normalizer so it commits the public-to-terminal alias.
+    // Exhaust the prior stream. Its response-local lifecycle normalization must
+    // not affect a later HTTP request.
     void normalizedEvent
   }
 
@@ -95,7 +94,7 @@ test('maps a stable streamed response ID back to the Copilot terminal ID', async
   const body = JSON.parse(
     (fetchMock.mock.calls[0][1] as unknown as { body: string }).body,
   ) as Record<string, unknown>
-  expect(body.previous_response_id).toBe('upstream-terminal')
+  expect(body.previous_response_id).toBe('public-created')
   expect((result.body as { previous_response_id?: string }).previous_response_id).toBe('public-created')
 })
 

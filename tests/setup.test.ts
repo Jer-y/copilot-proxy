@@ -1,3 +1,4 @@
+import type { AccountsConfiguration } from '~/lib/account/types'
 import type { CodexClientCatalog } from '~/lib/client-setup'
 import type { Model } from '~/services/copilot/get-models'
 import type { SetupOptions, SetupProbeOutcome, SetupWebSocketSemanticValidation } from '~/setup'
@@ -9,12 +10,46 @@ import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, mock, spyOn, test } from 'bun:test'
 import { WebSocketServer } from 'ws'
 
+import { assertProxyEndpointAvailable } from '~/daemon/service-env'
+import { inspectRuntimeLock } from '~/lib/account/lock'
+import { AccountRegistry } from '~/lib/account/registry'
+import { PATHS } from '~/lib/paths'
 import { resolveRunPreset } from '~/lib/run-presets'
 import { state } from '~/lib/state'
-import { buildSetupStartCommand, fetchDirectSetupProbe, fetchDirectSetupWebSocketProbe, findExistingClientConfigs, runDisposableSetupProbe, runSetup, setupProxyRequiredTargets } from '~/setup'
+import { buildSetupStartCommand, cleanupSetupRuntime, fetchDirectSetupProbe, fetchDirectSetupWebSocketProbe, findExistingClientConfigs, runDisposableSetupProbe, runSetup, setupProxyRequiredTargets } from '~/setup'
+
+test('setup cleanup stops and cancels refresh work for every explicit account', async () => {
+  const originalAccounts = state.accounts
+  const configuration: AccountsConfiguration = {
+    version: 1,
+    revision: 1,
+    defaultAccount: 'personal',
+    requiredRoutes: [],
+    accounts: [
+      { id: 'personal', accountType: 'individual', githubLogin: 'alice', githubUserId: 1 },
+      { id: 'work', accountType: 'enterprise', githubLogin: 'alice-work', githubUserId: 2 },
+    ],
+    routes: [],
+  }
+  const registry = new AccountRegistry(configuration)
+  state.accounts = registry
+  const stopSpies = registry.list().map(ctx => spyOn(ctx.tokens, 'stopRefresh'))
+  const cancelSpies = registry.list().map(ctx => spyOn(ctx.tokens, 'cancelInFlight').mockResolvedValue())
+  try {
+    const reason = new Error('setup test cleanup')
+    await cleanupSetupRuntime(reason)
+    expect(stopSpies.every(spy => spy.mock.calls.length === 1)).toBe(true)
+    expect(cancelSpies.every(spy => spy.mock.calls[0]?.[0] === reason)).toBe(true)
+  }
+  finally {
+    state.accounts = originalAccounts
+    stopSpies.forEach(spy => spy.mockRestore())
+    cancelSpies.forEach(spy => spy.mockRestore())
+  }
+})
 
 function model(id: string, endpoints: string[]): Model {
   return {
@@ -92,6 +127,37 @@ function options(overrides: Partial<SetupOptions> = {}): SetupOptions {
 }
 
 describe('runSetup', () => {
+  test('holds the setup runtime lock through probing and cleanup', async () => {
+    fs.rmSync(PATHS.RUNTIME_LOCK, { force: true, recursive: true })
+    const observed: string[] = []
+    const assertSetupOwner = (phase: string) => {
+      expect(inspectRuntimeLock()).toMatchObject({
+        state: 'active',
+        metadata: { purpose: 'setup' },
+      })
+      observed.push(phase)
+    }
+
+    await runSetup(options(), {
+      chooseModel: async () => 'gpt-setup',
+      cleanup: async () => assertSetupOwner('cleanup'),
+      copy: () => {},
+      initialize: async () => assertSetupOwner('initialize'),
+      inspectCodexClient,
+      isInteractive: () => false,
+      models: () => MODELS,
+      probe: async () => {
+        assertSetupOwner('probe')
+        return probeOutcome('/v1/responses')
+      },
+      writeJson: () => {},
+      writeLine: () => {},
+    })
+
+    expect(observed).toEqual(['initialize', 'probe', 'cleanup'])
+    expect(inspectRuntimeLock()).toEqual({ state: 'absent' })
+  })
+
   test('uses a direct local transport when global fetch is fail-closed', async () => {
     const received: { body?: unknown, contentType?: string, method?: string } = {}
     const server = createServer((request, response) => {
@@ -1127,6 +1193,27 @@ describe('runSetup', () => {
       'https://raw.githubusercontent.com',
     ])
     expect(setupProxyRequiredTargets('enterprise')).toContain('https://api.enterprise.githubcopilot.com')
+
+    const enterpriseOnly: AccountsConfiguration = {
+      version: 1,
+      revision: 1,
+      defaultAccount: 'work',
+      requiredRoutes: [],
+      accounts: [{
+        id: 'work',
+        accountType: 'enterprise',
+        githubLogin: 'alice-work',
+        githubUserId: 2,
+      }],
+      routes: [],
+    }
+    const configuredTargets = setupProxyRequiredTargets('individual', enterpriseOnly)
+    expect(configuredTargets).toContain('https://api.enterprise.githubcopilot.com')
+    expect(configuredTargets).not.toContain('https://api.githubcopilot.com')
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'http://secure-proxy.invalid:8080',
+      NO_PROXY: 'api.githubcopilot.com',
+    }, configuredTargets)).not.toThrow()
   })
 
   test('prompts for primary and small Claude models in interactive mode', async () => {

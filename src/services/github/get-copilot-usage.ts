@@ -1,11 +1,15 @@
+import type { AccountContext } from '~/lib/account/types'
+
 import { GITHUB_API_BASE_URL, githubHeaders } from '~/lib/api-config'
 import { HTTPError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchGitHub } from '~/lib/upstream-fetch'
 
-export async function getCopilotUsage(): Promise<CopilotUsageResponse> {
+export async function getCopilotUsage(
+  ctx: AccountContext = state.defaultAccount,
+): Promise<CopilotUsageResponse> {
   const response = await fetchGitHub(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
-    headers: githubHeaders(state),
+    headers: githubHeaders(ctx),
   })
 
   if (!response.ok) {
@@ -44,7 +48,7 @@ interface QuotaSnapshots {
   premium_interactions: QuotaDetail
 }
 
-interface CopilotUsageResponse {
+export interface CopilotUsageResponse {
   copilot_plan: string
   quota_reset_date: string
   quota_snapshots: QuotaSnapshots

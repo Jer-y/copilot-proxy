@@ -1,8 +1,11 @@
 import type { Peer } from 'crossws'
 import type { ServerRequest } from 'srvx'
+import type { AccountsConfiguration } from '~/lib/account/types'
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+import { AccountRegistry } from '~/lib/account/registry'
+import { state } from '~/lib/state'
 import {
   closeResponsesWebSocketsGracefully,
   prepareResponsesWebSocketServer,
@@ -55,6 +58,33 @@ describe('Responses WebSocket upgrade policy', () => {
     })
   })
 
+  test('rejects an explicitly selected unavailable account before the 101 upgrade', async () => {
+    const originalAccounts = state.accounts
+    const registry = createAccountRegistry()
+    state.accounts = registry
+    try {
+      const unavailable = await upgrade(request('/v1/responses', {
+        'x-copilot-account': 'work',
+      }))
+      expect(unavailable).toBeInstanceOf(Response)
+      expect((unavailable as Response).status).toBe(503)
+      expect(await (unavailable as Response).json()).toMatchObject({
+        error: { code: 'copilot_account_unavailable' },
+      })
+
+      const available = await upgrade(request('/v1/responses', {
+        'x-copilot-account': 'personal',
+      })) as { context: Record<string, unknown> }
+      expect(available.context.accountId).toBe('personal')
+      const releaseReservation = available.context.releaseConnectionReservation
+      if (typeof releaseReservation === 'function')
+        releaseReservation()
+    }
+    finally {
+      state.accounts = originalAccounts
+    }
+  })
+
   test('rejects new upgrades after graceful shutdown begins', async () => {
     await closeResponsesWebSocketsGracefully()
     const result = await upgrade(request('/v1/responses'))
@@ -90,4 +120,23 @@ function request(path: string, headers: Record<string, string> = {}): ServerRequ
       ...headers,
     },
   }) as ServerRequest
+}
+
+function createAccountRegistry(): AccountRegistry {
+  const configuration: AccountsConfiguration = {
+    version: 1,
+    revision: 1,
+    defaultAccount: 'personal',
+    requiredRoutes: [],
+    accounts: [
+      { id: 'personal', accountType: 'individual', githubLogin: 'alice', githubUserId: 1 },
+      { id: 'work', accountType: 'enterprise', githubLogin: 'alice-work', githubUserId: 2 },
+    ],
+    routes: [],
+  }
+  const registry = new AccountRegistry(configuration)
+  registry.get('personal')!.availability = 'ready'
+  registry.get('work')!.availability = 'unavailable'
+  registry.get('work')!.unavailableReason = 'token_failed'
+  return registry
 }

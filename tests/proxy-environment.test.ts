@@ -121,7 +121,7 @@ describe('Bun proxy environment bootstrap', () => {
   })
 
   test('sanitizes ambient Bun proxy settings for every network command unless explicitly enabled', () => {
-    for (const command of ['auth', 'check-usage', 'setup', 'models', 'doctor']) {
+    for (const command of ['accounts', 'auth', 'check-usage', 'setup', 'models', 'doctor']) {
       expect(shouldRestartWithSanitizedNetworkEnvironment(
         [command],
         { HTTPS_PROXY: 'http://ambient.invalid:8080' },
@@ -145,14 +145,22 @@ describe('Bun proxy environment bootstrap', () => {
     }
   })
 
+  test('recognizes accounts proxy opt-in before or after its subcommand', () => {
+    expect(cliEnablesProxyEnvironment(['accounts', '--proxy-env', 'add', 'personal'])).toBe(true)
+    expect(cliEnablesProxyEnvironment(['accounts', 'add', 'personal', '--proxy-env'])).toBe(true)
+  })
+
   test('does not treat proxy-looking string option values as flags', () => {
     for (const args of [
       ['start', '--port', '--proxy-env'],
       ['auth', '--github-token', '--proxy-env'],
       ['auth', '--_data-dir', '--proxy-env'],
       ['--_data-dir', '--proxy-env', 'auth'],
+      ['accounts', 'add', 'personal', '--account-type', '--proxy-env'],
       ['setup', 'codex', '--model', '--proxy-env'],
       ['models', '--client', '--proxy-env'],
+      ['models', '--account', '--proxy-env'],
+      ['check-usage', '--account', '--proxy-env'],
       ['doctor', '--endpoint', '--proxy-env'],
     ]) {
       expect(cliEnablesProxyEnvironment(args)).toBe(false)

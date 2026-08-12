@@ -1,12 +1,13 @@
+import type { AccountContext } from '~/lib/account/types'
 import consola from 'consola'
-import { events } from 'fetch-event-stream'
 
+import { events } from 'fetch-event-stream'
 import { copilotBaseUrl, copilotHeaders } from '~/lib/api-config'
 import { HTTPError, JSONResponseError } from '~/lib/error'
 import { state } from '~/lib/state'
 import { fetchCopilot } from '~/lib/upstream-fetch'
 import { fetchAuthenticatedCopilot } from './authenticated-fetch'
-import { normalizeCopilotResponsesEventStream, resolveCopilotResponseIdAlias } from './responses-id-normalizer'
+import { normalizeCopilotResponsesEventStream } from './responses-id-normalizer'
 import { instrumentCopilotEventStream, logUpstreamHeadersReceived, logUpstreamRequestCompleted } from './stream-metrics'
 import { createUpstreamRequestController } from './upstream-cancel'
 import { assertEventStreamResponse, readValidatedJsonResponse } from './upstream-response'
@@ -71,16 +72,16 @@ const VISION_TYPES = new Set([
 
 export async function createResponses(
   payload: ResponsesPayload,
-  options?: { signal?: AbortSignal },
+  options?: { ctx?: AccountContext, signal?: AbortSignal },
 ) {
-  if (!state.copilotToken)
+  const ctx = options?.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
   const clientPreviousResponseId = typeof payload.previous_response_id === 'string'
     ? payload.previous_response_id
     : undefined
-  const resolvedPayload = resolveResponsesIdAliases(payload)
-  const prepared = prepareResponsesPayloadForCopilot(resolvedPayload)
+  const prepared = prepareResponsesPayloadForCopilot(payload)
   const { hasVision, initiator, payload: upstreamPayload } = prepared
   const payloadSummary = summarizeResponsesPayload(upstreamPayload)
 
@@ -92,14 +93,14 @@ export async function createResponses(
 
   const requestStartedAt = Date.now()
   const upstreamController = createUpstreamRequestController(options?.signal)
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/responses',
     model: upstreamPayload.model,
     signal: upstreamController.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}/responses`, {
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/responses`, {
       method: 'POST',
       headers: {
-        ...copilotHeaders(state, hasVision),
+        ...copilotHeaders(ctx, hasVision),
         'X-Initiator': initiator,
       },
       body,
@@ -187,20 +188,6 @@ function restoreClientPreviousResponseId(
   }
 }
 
-function resolveResponsesIdAliases(payload: ResponsesPayload): ResponsesPayload {
-  if (typeof payload.previous_response_id !== 'string')
-    return payload
-
-  const upstreamPreviousResponseId = resolveCopilotResponseIdAlias(payload.previous_response_id)
-  if (upstreamPreviousResponseId === payload.previous_response_id)
-    return payload
-
-  return {
-    ...payload,
-    previous_response_id: upstreamPreviousResponseId,
-  }
-}
-
 function isResponsesResponse(value: unknown): value is ResponsesResponse {
   if (!value || typeof value !== 'object') {
     return false
@@ -278,19 +265,23 @@ export async function forwardResponsesEndpoint(
     method: 'GET' | 'POST' | 'DELETE'
     body?: string
     headers?: Record<string, string>
+    ctx?: AccountContext
+    model?: string
     signal?: AbortSignal
   },
 ) {
-  if (!state.copilotToken)
+  const ctx = options.ctx ?? state.defaultAccount
+  if (!ctx.copilotToken)
     throw new Error('Copilot token not found')
 
-  const response = await fetchAuthenticatedCopilot({
+  const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: path,
+    model: options.model,
     signal: options.signal,
-    request: () => fetchCopilot(`${copilotBaseUrl(state)}${path}`, {
+    request: () => fetchCopilot(`${copilotBaseUrl(ctx)}${path}`, {
       method: options.method,
       headers: {
-        ...copilotHeaders(state),
+        ...copilotHeaders(ctx),
         'X-Initiator': 'user',
         ...options.headers,
       },

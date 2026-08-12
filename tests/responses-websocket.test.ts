@@ -1,5 +1,6 @@
 import type { Message, Peer } from 'crossws'
 import type WebSocket from 'ws'
+import type { AccountsConfiguration } from '~/lib/account/types'
 import type { ResponsesWebSocketSessionDeps } from '~/routes/responses/websocket'
 import type { Model, ModelsResponse } from '~/services/copilot/get-models'
 
@@ -7,6 +8,7 @@ import { Buffer } from 'node:buffer'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+import { AccountRegistry } from '~/lib/account/registry'
 import { state } from '~/lib/state'
 import { configureCopilotFetchTimeouts } from '~/lib/upstream-fetch'
 import { ResponsesWebSocketRequestBufferBudget, ResponsesWebSocketSession } from '~/routes/responses/websocket'
@@ -475,6 +477,32 @@ describe('ResponsesWebSocketSession', () => {
     expect(JSON.parse(normalizedAnthropic.upstream.sent[0]!)).toMatchObject({
       model: 'claude-opus-4.6',
     })
+  })
+
+  test('matches static account routes after normalizing a historical Claude alias', async () => {
+    const originalAccounts = state.accounts
+    const registry = createMultiAccountRegistry()
+    state.accounts = registry
+    try {
+      const harness = createHarness()
+      harness.session.receive(textMessage({
+        type: 'response.create',
+        model: 'claude-opus-4-8-20250514',
+        input: 'route the canonical model',
+      }))
+
+      await waitFor(() => harness.upstream.sent.length === 1)
+      expect(harness.connect.mock.calls[0]?.[0]).toMatchObject({
+        ctx: { id: 'work' },
+        model: 'claude-opus-4.8',
+      })
+      expect(JSON.parse(harness.upstream.sent[0]!)).toMatchObject({
+        model: 'claude-opus-4.8',
+      })
+    }
+    finally {
+      state.accounts = originalAccounts
+    }
   })
 
   test('returns protocol errors for malformed and unknown events without connecting', async () => {
@@ -1448,4 +1476,32 @@ function makeModel(id: string, supportedEndpoints?: string[]): Model {
     vendor: 'github-copilot',
     version: '1',
   }
+}
+
+function createMultiAccountRegistry(): AccountRegistry {
+  const configuration: AccountsConfiguration = {
+    version: 1,
+    revision: 1,
+    defaultAccount: 'personal',
+    requiredRoutes: [],
+    accounts: [
+      { id: 'personal', accountType: 'individual', githubLogin: 'alice', githubUserId: 1 },
+      { id: 'work', accountType: 'enterprise', githubLogin: 'alice-work', githubUserId: 2 },
+    ],
+    routes: [
+      { match: 'claude-opus-4.8', account: 'work' },
+      { match: '*', account: 'personal' },
+    ],
+  }
+  const registry = new AccountRegistry(configuration)
+  const personal = registry.get('personal')!
+  personal.availability = 'ready'
+  personal.models = { object: 'list', data: [] }
+  const work = registry.get('work')!
+  work.availability = 'ready'
+  work.models = {
+    object: 'list',
+    data: [makeModel('claude-opus-4.8', ['/responses', 'ws:/responses'])],
+  }
+  return registry
 }

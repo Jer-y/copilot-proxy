@@ -3,6 +3,7 @@
 import type { BootstrapArgumentAnalysis } from './daemon/github-token-argv'
 
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
@@ -128,6 +129,10 @@ async function persistGithubTokenArgumentIfNeeded(
     import('./daemon/atomic-file'),
     import('./lib/paths'),
   ])
+  if (fs.existsSync(PATHS.ACCOUNTS_CONFIG)) {
+    process.stderr.write('--github-token is unavailable with accounts.json; use `copilot-proxy accounts auth <id>` and optionally --token-stdin.\n')
+    return 1
+  }
   writeOwnerOnlyFileAtomically(PATHS.GITHUB_TOKEN_PATH, token)
 
   // A child can replace or scrub only its own argv. Package runners such as
@@ -187,6 +192,7 @@ async function run(): Promise<void> {
     { defineCommand, renderUsage, runMain },
     { stripAnsi },
     { auth },
+    { accounts },
     { checkUsage },
     { disable },
     { enable },
@@ -203,6 +209,7 @@ async function run(): Promise<void> {
     import('citty'),
     import('consola/utils'),
     import('./auth'),
+    import('./accounts'),
     import('./check-usage'),
     import('./daemon/disable'),
     import('./daemon/enable'),
@@ -229,6 +236,7 @@ async function run(): Promise<void> {
       models,
       doctor,
       auth,
+      accounts,
       'check-usage': checkUsage,
       debug,
       stop,

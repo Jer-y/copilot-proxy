@@ -377,6 +377,26 @@ describe('authenticated Copilot Responses WebSocket connection', () => {
     expect(released).toBe(1)
   })
 
+  test('uses the account-scoped authenticated wrapper when no fetch dependency is injected', async () => {
+    const socket = fakeSocket()
+    const openAttempt: NonNullable<ConnectCopilotResponsesWebSocketDeps['openAttempt']> = mock(async () => ({
+      headers: new Headers({ 'x-request-id': 'default-wrapper' }),
+      ok: true as const,
+      socket,
+    }))
+
+    const connection = await connectAuthenticatedCopilotResponsesWebSocket({
+      ctx: state.defaultAccount,
+      hasVision: false,
+      initiator: 'user',
+      model: 'gpt-test',
+    }, { openAttempt })
+
+    expect(connection.socket).toBe(socket)
+    expect(openAttempt).toHaveBeenCalledTimes(1)
+    await connection.releaseInitialTurn()
+  })
+
   test('turns a rejected handshake into an HTTPError with a reusable body', async () => {
     const openAttempt: NonNullable<ConnectCopilotResponsesWebSocketDeps['openAttempt']> = mock(async () => ({
       ok: false as const,

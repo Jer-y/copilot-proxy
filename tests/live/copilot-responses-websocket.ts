@@ -164,11 +164,11 @@ export async function runDirectCopilotResponsesWebSocketProbe(
 
   const abortController = new AbortController()
   const handshakeTimer = setTimeout(() => abortController.abort(), timeoutMs)
-  const url = `${copilotBaseUrl(state).replace(/^http/, 'ws')}/responses`
+  const url = `${copilotBaseUrl(state.defaultAccount).replace(/^http/, 'ws')}/responses`
 
   try {
     const attempt = await openCopilotResponsesWebSocketAttempt(url, {
-      ...copilotHeaders(state, options.hasVision ?? false),
+      ...copilotHeaders(state.defaultAccount, options.hasVision ?? false),
       'X-Initiator': options.initiator ?? 'user',
     }, abortController.signal)
 

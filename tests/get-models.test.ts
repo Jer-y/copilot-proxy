@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+import { createAccountContext } from '~/lib/account/context'
 import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { state } from '~/lib/state'
 import { getModels } from '~/services/copilot/get-models'
@@ -50,5 +51,29 @@ describe('Copilot model inventory', () => {
       totalAcquired: 1,
       totalReleased: 1,
     })
+  })
+
+  test('uses the supplied account context for host, token, and recovery scope', async () => {
+    const defaultAttemptsBefore = state.defaultAccount.recovery.metrics.upstreamAttempts
+    const account = createAccountContext({ id: 'work', accountType: 'enterprise' })
+    account.copilotToken = 'work-copilot-token'
+    account.githubToken = 'work-github-token'
+    account.vsCodeVersion = '1.0.0'
+    const requests: Array<{ authorization: string | null, url: string }> = []
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      requests.push({
+        authorization: new Headers(init?.headers).get('authorization'),
+        url: String(url),
+      })
+      return Response.json({ object: 'list', data: [] })
+    }) as unknown as typeof fetch
+
+    expect(await getModels(account)).toEqual({ object: 'list', data: [] })
+    expect(requests).toEqual([{
+      authorization: 'Bearer work-copilot-token',
+      url: 'https://api.enterprise.githubcopilot.com/models',
+    }])
+    expect(account.recovery.metrics.upstreamAttempts).toBe(1)
+    expect(state.defaultAccount.recovery.metrics.upstreamAttempts).toBe(defaultAttemptsBefore)
   })
 })

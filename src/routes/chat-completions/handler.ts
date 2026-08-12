@@ -2,9 +2,12 @@ import type { Context } from 'hono'
 
 import type { SSEMessage } from 'hono/streaming'
 import type { ChatCompletionResponse, ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
+import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
+import { getAccountRegistry } from '~/lib/account/registry'
+import { selectAccount } from '~/lib/account/router'
 import { isAbortError } from '~/lib/error'
 import { getModelConfig } from '~/lib/model-config'
 import { findModelWithFallback } from '~/lib/model-utils'
@@ -39,8 +42,17 @@ export async function handleCompletion(c: Context) {
     throwOpenAIInvalidRequestError(OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE)
   }
 
+  const selection = selectAccount({
+    registry: getAccountRegistry(),
+    requestedModel: payload.model,
+    headers: c.req.raw.headers,
+  })
+  payload = selection.effectiveModel === payload.model
+    ? payload
+    : { ...payload, model: selection.effectiveModel }
+
   // Find the selected model
-  const selectedModel = findModelWithFallback(payload.model, state.models?.data)
+  const selectedModel = findModelWithFallback(payload.model, selection.ctx.models?.data)
 
   // Calculate and display token count
   try {
@@ -61,10 +73,11 @@ export async function handleCompletion(c: Context) {
   payload = normalizeChatCompletionTokenLimit(
     payload,
     selectedModel?.capabilities.limits?.max_output_tokens,
+    selection.ctx.models?.data,
   )
 
   const route = resolveRoute('chat-completions', payload.model, throwOpenAIInvalidRequestError, {
-    models: state.models?.data,
+    models: selection.ctx.models?.data,
   })
   // chat-completions clients only ever route to chat-completions backend.
   // resolveRoute() throws 4xx if the model does not list chat-completions in its supportedApis.
@@ -74,13 +87,20 @@ export async function handleCompletion(c: Context) {
     )
   }
 
-  return await handleViaChatCompletions(c, payload)
+  return await handleViaChatCompletions(c, payload, selection.ctx)
 }
 
 /** Direct path: model supports chat-completions */
-async function handleViaChatCompletions(c: Context, payload: ChatCompletionsPayload) {
+async function handleViaChatCompletions(
+  c: Context,
+  payload: ChatCompletionsPayload,
+  ctx: import('~/lib/account/types').AccountContext,
+) {
   const setupSignal = getSetupProbeSignal(c)
-  const result = await createChatCompletions(payload, setupSignal ? { signal: setupSignal } : undefined)
+  const result = await createChatCompletions(payload, {
+    ctx,
+    ...(setupSignal && { signal: setupSignal }),
+  })
 
   if (isCCNonStreaming(result.body)) {
     if (consola.level >= 4) {
@@ -138,8 +158,9 @@ function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>
 export function normalizeChatCompletionTokenLimit(
   payload: ChatCompletionsPayload,
   modelMaxOutputTokens?: number,
+  models?: Model[],
 ): ChatCompletionsPayload {
-  const tokenParameter = getModelConfig(payload.model).chatCompletionTokenParameter ?? 'max_tokens'
+  const tokenParameter = getModelConfig(payload.model, models).chatCompletionTokenParameter ?? 'max_tokens'
 
   if (tokenParameter === 'max_completion_tokens') {
     const maxCompletionTokens = payload.max_completion_tokens
