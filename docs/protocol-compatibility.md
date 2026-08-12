@@ -47,6 +47,8 @@ HTTP/SSE and WebSocket are separate transports but must preserve the same featur
 
 Codex currently selects the Responses transport at model-provider scope rather than per model. The `client_version` model-picker catalog therefore exposes as selectable only current live models that advertise both `/responses` and `ws:/responses`; incompatible bundled entries are explicitly hidden so Codex cannot merge them back into the picker. The generated profile uses non-secret command-backed auth because current Codex releases refresh custom-provider catalogs only for that auth path; a hand-written `env_key` provider retains the bundled catalog and must not rely on this filtering. Transport-exclusive models remain visible through `copilot-proxy models --client codex`, but are not offered as freely switchable picker entries. This prevents a provider configured for one transport from misrouting a model that requires the other.
 
+The proxy catalog also sets `use_responses_lite=false` on exposed models. The generated provider serves the full Responses contract; retaining first-party bundled Lite metadata would make Codex omit hosted Responses tools such as `web_search` even when the live Copilot model supports them.
+
 ## Anthropic Messages
 
 `POST /v1/messages` uses native Messages when the selected model advertises that endpoint. Otherwise, a Responses-backed model may use the bounded Messages-to-Responses translation path.

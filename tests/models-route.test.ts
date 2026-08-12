@@ -530,6 +530,48 @@ describe('/v1/models', () => {
     expect(body.models[0]?.supports_search_tool).toBe(true)
   })
 
+  test('disables bundled Responses Lite metadata for the full Codex Responses provider', async () => {
+    state.models = {
+      object: 'list',
+      data: [
+        makeModel('gpt-5.6-sol', {
+          supported_endpoints: ['/responses', 'ws:/responses'],
+          capabilities: {
+            supports: {
+              parallel_tool_calls: true,
+              vision: true,
+              web_search: true,
+            },
+          },
+        }),
+      ],
+    }
+    fetchMock.mockImplementationOnce(async () => {
+      return Response.json({
+        models: [
+          makeBundledCodexModel('gpt-5.6-sol', {
+            tool_mode: 'code_mode_only',
+            use_responses_lite: true,
+          }),
+        ],
+      })
+    })
+
+    const response = await server.request('/v1/models?client_version=0.147.0')
+    const body = await response.json() as {
+      models: Array<{
+        tool_mode?: string
+        use_responses_lite?: boolean
+      }>
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.models[0]).toMatchObject({
+      tool_mode: 'code_mode_only',
+      use_responses_lite: false,
+    })
+  })
+
   test('honors explicit Copilot capability false values', async () => {
     state.models = {
       object: 'list',

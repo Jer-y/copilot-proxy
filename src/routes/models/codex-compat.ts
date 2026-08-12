@@ -15,6 +15,7 @@ interface CodexModelInfo extends Record<string, unknown> {
   input_modalities?: Array<CodexInputModality>
   visibility?: CodexModelVisibility
   supported_in_api?: boolean
+  use_responses_lite?: boolean
   supports_search_tool?: boolean
   supports_image_detail_original?: boolean
   prefer_websockets?: boolean
@@ -107,6 +108,11 @@ function toCodexModelInfo(model: Model, bundledModel: CodexModelInfo): CodexMode
   const patchedModel: CodexModelInfo = {
     ...bundledModel,
     supported_in_api: true,
+    // Bundled first-party metadata may select Responses Lite, which moves
+    // client tools into input items and prevents Codex from declaring hosted
+    // Responses tools such as web_search. copilot-proxy exposes the full
+    // Responses contract, so keep the custom-provider catalog on that path.
+    use_responses_lite: false,
     supports_parallel_tool_calls: getSupportsParallelToolCalls(model),
     supports_image_detail_original: getSupportsImageDetailOriginal(),
     supports_search_tool: getSupportsSearchTool(model, bundledModel),

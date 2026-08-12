@@ -47,6 +47,8 @@ HTTP/SSE 与 WebSocket 是不同传输方式，但必须保持相同功能语义
 
 Codex 目前在模型提供商级别选择 Responses 传输，而不是按模型选择。因此，带 `client_version` 的模型选择目录只把当前实时目录中同时声明 `/responses` 与 `ws:/responses` 的模型暴露为可选项；不兼容的内置条目会被显式隐藏，防止 Codex 合并时重新放回选择器。生成的 profile 使用非秘密命令式认证，因为当前 Codex 版本只会通过该认证路径刷新自定义提供商目录；手写的 `env_key` 提供商会保留内置目录，不能依赖此过滤。传输方式单一的模型仍可通过 `copilot-proxy models --client codex` 查看，但不会作为可自由切换的选择项提供。这样可避免为一种传输配置的提供商把需要另一种传输的模型路由错误。
 
+代理返回的 Codex 目录还会对已暴露模型设置 `use_responses_lite=false`。生成的提供商实际提供完整 Responses 契约；如果保留第一方内置的 Lite 元数据，即使实时 Copilot 模型支持，Codex 也会省略 `web_search` 等 hosted Responses 工具。
+
 ## Anthropic Messages
 
 所选模型声明 Messages 端点时，`POST /v1/messages` 使用原生 Messages。否则，Responses 后端模型可使用有界的 Messages 到 Responses 翻译路径。
