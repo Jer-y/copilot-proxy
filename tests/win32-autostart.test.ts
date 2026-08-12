@@ -430,7 +430,7 @@ describe('Windows owner-only ACL hardening', () => {
       }
       expect(Date.now() - startedAt).toBeLessThan(5_000)
 
-      assertCurrentUserAcls([
+      assertOwnerOnlyAcls([
         { path: directoryPath, directory: true, inherited: false, protected: true },
         { path: existingFilePath, directory: false, inherited: false, protected: true },
         { path: inheritedFilePath, directory: false, inherited: true, protected: false },
@@ -450,7 +450,7 @@ describe('Windows owner-only ACL hardening', () => {
       grantEveryoneRead(temporaryRoot, true)
       grantEveryoneRead(filePath, false)
       writeOwnerOnlyFileAtomically(filePath, 'replacement')
-      assertCurrentUserAcls([
+      assertOwnerOnlyAcls([
         { path: temporaryRoot, hasEveryoneRead: true },
         { path: filePath, directory: false, inherited: false, protected: true },
       ])
@@ -481,8 +481,11 @@ interface ExpectedWindowsAcl {
   protected?: boolean
 }
 
-function assertCurrentUserAcls(targets: ExpectedWindowsAcl[]): void {
+function assertOwnerOnlyAcls(targets: ExpectedWindowsAcl[]): void {
   const targetsEnv = 'COPILOT_PROXY_TEST_ACL_TARGETS'
+  // Elevated Windows tokens can use BUILTIN\Administrators as the default
+  // object owner. The owner-only contract here is the exact DACL, matching
+  // the access semantics of Unix 0600/0700 without changing object ownership.
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 $payload = [Environment]::GetEnvironmentVariable('${targetsEnv}', 'Process') | ConvertFrom-Json
@@ -494,8 +497,6 @@ foreach ($entry in @($payload.targets)) {
   } else {
     [System.IO.FileInfo]::new($targetPath).GetAccessControl()
   }
-  $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-  if ($ownerSid -ne $currentSid) { throw "Unexpected owner SID for $($entry.path): $ownerSid" }
   if ($null -ne $entry.protected -and $acl.AreAccessRulesProtected -ne [bool]$entry.protected) {
     throw "Unexpected DACL protection for $($entry.path): $($acl.AreAccessRulesProtected)"
   }
