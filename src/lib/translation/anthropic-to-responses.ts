@@ -35,6 +35,7 @@ import type {
   ResponsesTool,
   ResponsesToolChoice,
 } from '~/services/copilot/create-responses'
+import type { Model } from '~/services/copilot/get-models'
 import { randomUUID } from 'node:crypto'
 import { isTranslatableAnthropicCustomTool } from '~/lib/anthropic-tools'
 import { getModelConfig } from '~/lib/model-config'
@@ -60,6 +61,7 @@ function nowUnixSeconds(): number {
 
 export interface TranslateAnthropicToResponsesOptions {
   model?: string
+  models?: Model[]
 }
 
 export function translateAnthropicRequestToResponses(
@@ -67,7 +69,7 @@ export function translateAnthropicRequestToResponses(
   options?: TranslateAnthropicToResponsesOptions,
 ): ResponsesPayload {
   const model = options?.model ?? payload.model
-  const modelConfig = getModelConfig(model)
+  const modelConfig = getModelConfig(model, options?.models)
 
   if (payload.top_k !== undefined) {
     logIgnoredAnthropicParameter(

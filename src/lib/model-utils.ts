@@ -1,6 +1,6 @@
 import type { Model, ModelsResponse } from '~/services/copilot/get-models'
 
-import { getModelConfig } from './model-config'
+import { getBundledModelConfig } from './model-config'
 
 /**
  * Find a model by ID, with fallback suffix stripping for future model variants.
@@ -32,7 +32,7 @@ export function findModelWithFallback(modelId: string, models: Array<Model> | un
 export function findModelMaxOutputTokens(modelId: string, models: ModelsResponse | undefined): number | undefined {
   const model = findModelWithFallback(modelId, models?.data)
   const advertisedLimit = model?.capabilities?.limits?.max_output_tokens
-  const verifiedLimit = getModelConfig(modelId).verifiedMaxOutputTokens
+  const verifiedLimit = getBundledModelConfig(modelId).verifiedMaxOutputTokens
 
   if (advertisedLimit === undefined) {
     return verifiedLimit

@@ -1,3 +1,4 @@
+import type { Model } from '~/services/copilot/get-models'
 import { state } from './state'
 
 export type BackendApiType = 'chat-completions' | 'responses' | 'anthropic-messages'
@@ -253,8 +254,11 @@ const DEFAULT_CONFIG: ModelConfig = {
  * Returns the config for an exact match, or for the base model name (without version suffix).
  * Falls back to a default config if no match is found.
  */
-export function getModelConfig(modelId: string): ModelConfig {
-  return withLiveModelCapabilities(modelId, getBundledModelConfig(modelId))
+export function getModelConfig(
+  modelId: string,
+  models: Model[] | undefined = state.models?.data,
+): ModelConfig {
+  return withLiveModelCapabilities(modelId, getBundledModelConfig(modelId), models)
 }
 
 /**
@@ -292,8 +296,11 @@ export function getBundledModelConfig(modelId: string): ModelConfig {
   return DEFAULT_CONFIG
 }
 
-function withLiveModelCapabilities(modelId: string, config: ModelConfig): ModelConfig {
-  const models = state.models?.data
+function withLiveModelCapabilities(
+  modelId: string,
+  config: ModelConfig,
+  models: Model[] | undefined,
+): ModelConfig {
   if (!models) {
     return config
   }

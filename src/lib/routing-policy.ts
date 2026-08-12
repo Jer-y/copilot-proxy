@@ -124,7 +124,7 @@ function getSupportedApisForRouting(
     )
   }
 
-  return new Set(getModelConfig(model).supportedApis)
+  return new Set(getModelConfig(model, models).supportedApis)
 }
 
 function endpointToBackendApi(endpoint: string): BackendApiType | undefined {
@@ -260,6 +260,7 @@ export function assertResponsesPayloadTranslatable(
 export function assertMessagesPayloadTranslatable(
   payload: AnthropicMessagesPayload,
   onLocalError: (message: string) => never,
+  options?: { models?: Model[] },
 ): void {
   if (payloadHasAnthropicServerTools(payload)) {
     onLocalError(ANTHROPIC_SERVER_TOOL_REJECTION_MESSAGE)
@@ -306,7 +307,7 @@ export function assertMessagesPayloadTranslatable(
     onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.fallback_history)
   }
 
-  const modelConfig = getModelConfig(payload.model)
+  const modelConfig = getModelConfig(payload.model, options?.models)
   if (payload.tool_choice !== undefined && modelConfig.supportsToolChoice !== true) {
     onLocalError(ANTHROPIC_TRANSLATION_REJECTIONS.tool_choice)
   }
