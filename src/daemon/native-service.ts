@@ -79,8 +79,14 @@ export async function probeCopilotProxyServer(
   port: number,
   expectedInstanceToken?: string,
   requestHost: string = 'localhost',
+  options: {
+    maxBodyBytes?: number
+    path?: string
+    validate?: (statusCode: number, body: string, headers: http.IncomingHttpHeaders) => boolean
+  } = {},
 ): Promise<boolean> {
   const hostname = readinessProbeHostname(host)
+  const maxBodyBytes = options.maxBodyBytes ?? 64
   return await new Promise<boolean>((resolve) => {
     let settled = false
     const finish = (ready: boolean) => {
@@ -93,7 +99,7 @@ export async function probeCopilotProxyServer(
     const request = http.get({
       hostname,
       port,
-      path: '/',
+      path: options.path ?? '/',
       headers: { Host: readinessProbeHostHeader(requestHost, port) },
       timeout: 1_500,
     }, (response) => {
@@ -101,7 +107,7 @@ export async function probeCopilotProxyServer(
       response.setEncoding('utf8')
       response.on('data', (chunk: string) => {
         body += chunk
-        if (body.length > 64) {
+        if (body.length > maxBodyBytes) {
           request.destroy()
           finish(false)
         }
@@ -109,7 +115,10 @@ export async function probeCopilotProxyServer(
       response.once('end', () => {
         const instanceMatches = expectedInstanceToken === undefined
           || response.headers[NATIVE_SERVICE_INSTANCE_HEADER] === expectedInstanceToken
-        finish(response.statusCode === 200 && body.trim() === 'Server running' && instanceMatches)
+        const validResponse = options.validate
+          ? options.validate(response.statusCode ?? 0, body, response.headers)
+          : response.statusCode === 200 && body.trim() === 'Server running'
+        finish(validResponse && instanceMatches)
       })
       response.once('error', () => finish(false))
     })
