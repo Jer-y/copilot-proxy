@@ -530,6 +530,34 @@ function buildConcurrencyCheck(value: unknown): DoctorCheck {
   if (!concurrency) {
     return check('concurrency', 'Concurrency', 'warn', 'Concurrency information is unavailable.')
   }
+
+  if (Object.hasOwn(concurrency, 'global') || Object.hasOwn(concurrency, 'perAccount')) {
+    const global = parseConcurrencyLimiter(concurrency.global)
+    const perAccount = summarizeAccountConcurrency(concurrency.perAccount)
+    if (!global || !perAccount) {
+      return check('concurrency', 'Concurrency', 'warn', 'Concurrency information is invalid.')
+    }
+
+    const accountSummary = `${perAccount.enabled}/${perAccount.total} account-specific limiter(s) enabled`
+    if (!global.enabled) {
+      return check(
+        'concurrency',
+        'Concurrency',
+        'warn',
+        perAccount.enabled > 0
+          ? `The global upstream concurrency limiter is disabled; ${accountSummary}.`
+          : `The global upstream concurrency limiter is disabled; no account-specific limiters are enabled across ${perAccount.total} account(s).`,
+      )
+    }
+
+    return check(
+      'concurrency',
+      'Concurrency',
+      'pass',
+      `The global upstream concurrency limiter is ${global.active}/${global.maxConcurrency} active; ${global.queued}/${global.maxQueue} queued; ${accountSummary}.`,
+    )
+  }
+
   if (concurrency.enabled !== undefined && typeof concurrency.enabled !== 'boolean') {
     return check('concurrency', 'Concurrency', 'warn', 'Concurrency information is invalid.')
   }
@@ -560,6 +588,55 @@ function buildConcurrencyCheck(value: unknown): DoctorCheck {
     'pass',
     `The upstream concurrency limiter is ${active}/${maxConcurrency} active; ${queued}/${maxQueue} queued.`,
   )
+}
+
+function parseConcurrencyLimiter(value: unknown): {
+  active?: number
+  enabled: boolean
+  maxConcurrency?: number
+  maxQueue?: number
+  queued?: number
+} | undefined {
+  if (!isRecord(value) || typeof value.enabled !== 'boolean')
+    return undefined
+  if (!value.enabled)
+    return { enabled: false }
+
+  const maxConcurrency = safeNonNegativeInteger(value.maxConcurrency)
+  const maxQueue = safeNonNegativeInteger(value.maxQueue)
+  const active = safeNonNegativeInteger(value.active)
+  const queued = safeNonNegativeInteger(value.queued)
+  if (
+    maxConcurrency === undefined
+    || maxConcurrency === 0
+    || maxQueue === undefined
+    || active === undefined
+    || queued === undefined
+    || active > maxConcurrency
+    || queued > maxQueue
+  ) {
+    return undefined
+  }
+  return { active, enabled: true, maxConcurrency, maxQueue, queued }
+}
+
+function summarizeAccountConcurrency(value: unknown): {
+  enabled: number
+  total: number
+} | undefined {
+  if (!isRecord(value))
+    return undefined
+
+  let enabled = 0
+  const entries = Object.values(value)
+  for (const entry of entries) {
+    const limiter = parseConcurrencyLimiter(entry)
+    if (!limiter)
+      return undefined
+    if (limiter.enabled)
+      enabled++
+  }
+  return { enabled, total: entries.length }
 }
 
 function buildClientChecks(

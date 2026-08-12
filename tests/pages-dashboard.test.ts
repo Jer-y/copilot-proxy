@@ -111,6 +111,35 @@ describe('hosted diagnostics dashboard behavior', () => {
     }
   })
 
+  test('shows account-specific limiter coverage when the global limiter is disabled', async () => {
+    const diagnostics = createDiagnostics('model-a', 80)
+    ;(diagnostics.readiness as { concurrency: Record<string, unknown> }).concurrency = {
+      enabled: false,
+      global: { enabled: false },
+      perAccount: {
+        personal: { enabled: false },
+        work: {
+          enabled: true,
+          maxConcurrency: 2,
+          maxQueue: 50,
+          active: 1,
+          queued: 0,
+        },
+      },
+    }
+    const dashboard = await createDashboard(
+      async () => Response.json(diagnostics),
+      'http://proxy.example/diagnostics',
+    )
+
+    await waitFor(() => dashboard.element('status-label').textContent === 'Proxy is ready')
+
+    expect(dashboard.element('concurrency-status').textContent).toBe('1 / 2 accounts limited')
+    expect(dashboard.element('concurrency-detail').textContent).toBe(
+      'Global limit disabled · account-specific limits remain active',
+    )
+  })
+
   test('only fetches exact diagnostics or legacy usage endpoints without credentials or redirects', async () => {
     const calls: Array<{ init?: RequestInit, url: string }> = []
     const dashboard = await createDashboard(

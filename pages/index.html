@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-zb8lzkNuW5nHVnyvGtja6wNnA3G6CzTU9Yxjjs/utz8='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-htrbgkdKti1yA6bQ6CEHkvcdw1W111OdUj+6tr/DJtA='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     />
     <meta name="color-scheme" content="dark" />
     <meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />
@@ -1082,6 +1082,15 @@
         const scopes = isRecord(recovery.scopes) ? recovery.scopes : {};
         const metrics = isRecord(recovery.metrics) ? recovery.metrics : {};
         const concurrency = isRecord(readiness.concurrency) ? readiness.concurrency : {};
+        const globalConcurrency = isRecord(concurrency.global) ? concurrency.global : concurrency;
+        const perAccountConcurrency = isRecord(concurrency.perAccount) ? concurrency.perAccount : null;
+        const accountLimiters = perAccountConcurrency
+          ? Object.values(perAccountConcurrency).filter(isRecord)
+          : [];
+        const limitedAccounts = accountLimiters.filter((limiter) => limiter.enabled === true).length;
+        const accountLimitSummary = perAccountConcurrency
+          ? `${limitedAccounts} / ${accountLimiters.length} accounts limited`
+          : "";
 
         setText(elements.accountType, valueText(readiness.accountType, "Unknown account"));
         const modelCount = integerText(modelsAvailable);
@@ -1117,18 +1126,33 @@
           `${integerText(scopes.open)} open scopes · ${integerText(metrics.replayAttempts)} replay attempts`,
         );
 
-        if (concurrency.enabled === false) {
-          setText(elements.concurrencyStatus, "Limit disabled");
-          setText(elements.concurrencyDetail, "Requests are not locally bounded");
-        } else if (concurrency.enabled === true) {
-          setText(elements.concurrencyStatus, `${integerText(concurrency.active)} / ${integerText(concurrency.maxConcurrency)} active`);
+        if (globalConcurrency.enabled === false) {
+          setText(
+            elements.concurrencyStatus,
+            perAccountConcurrency ? accountLimitSummary : "Limit disabled",
+          );
           setText(
             elements.concurrencyDetail,
-            `${integerText(concurrency.queued)} queued · ${integerText(concurrency.available)} slots available`,
+            limitedAccounts > 0
+              ? "Global limit disabled · account-specific limits remain active"
+              : perAccountConcurrency
+                ? "Global and account-specific limits are disabled"
+                : "Requests are not locally bounded",
+          );
+        } else if (globalConcurrency.enabled === true) {
+          setText(elements.concurrencyStatus, `${integerText(globalConcurrency.active)} / ${integerText(globalConcurrency.maxConcurrency)} global active`);
+          setText(
+            elements.concurrencyDetail,
+            `${integerText(globalConcurrency.queued)} global queued · ${integerText(globalConcurrency.available)} global slots available${perAccountConcurrency ? ` · ${accountLimitSummary}` : ""}`,
           );
         } else {
-          setText(elements.concurrencyStatus, "Limit state unknown");
-          setText(elements.concurrencyDetail, "Concurrency diagnostics unavailable");
+          setText(elements.concurrencyStatus, perAccountConcurrency ? accountLimitSummary : "Limit state unknown");
+          setText(
+            elements.concurrencyDetail,
+            perAccountConcurrency
+              ? "Global limit state unknown"
+              : "Concurrency diagnostics unavailable",
+          );
         }
       }
 

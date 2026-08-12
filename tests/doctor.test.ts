@@ -337,6 +337,77 @@ describe('doctor command', () => {
     expect(result.exitCodes).toEqual([0])
   })
 
+  test('reports account-specific limits when the global limiter is disabled', async () => {
+    const diagnostics = successDiagnostics()
+    diagnostics.readiness.concurrency = {
+      enabled: false,
+      global: { enabled: false },
+      perAccount: {
+        personal: { enabled: false },
+        work: {
+          enabled: true,
+          maxConcurrency: 2,
+          maxQueue: 50,
+          active: 1,
+          queued: 0,
+        },
+      },
+    }
+
+    const result = await executeDoctor({
+      client: 'all',
+      fetch: async () => Response.json(diagnostics),
+    })
+
+    expect(findCheck(result, 'concurrency')).toEqual({
+      id: 'concurrency',
+      label: 'Concurrency',
+      status: 'warn',
+      message: 'The global upstream concurrency limiter is disabled; 1/2 account-specific limiter(s) enabled.',
+    })
+    expect(result.output).not.toContain('no account-specific limiters')
+  })
+
+  test('reports global usage and the number of account-specific limits together', async () => {
+    const diagnostics = successDiagnostics()
+    diagnostics.readiness.concurrency = {
+      enabled: true,
+      maxConcurrency: 4,
+      maxQueue: 8,
+      active: 1,
+      queued: 2,
+      global: {
+        enabled: true,
+        maxConcurrency: 4,
+        maxQueue: 8,
+        active: 1,
+        queued: 2,
+      },
+      perAccount: {
+        personal: { enabled: false },
+        work: {
+          enabled: true,
+          maxConcurrency: 2,
+          maxQueue: 50,
+          active: 1,
+          queued: 0,
+        },
+      },
+    }
+
+    const result = await executeDoctor({
+      client: 'all',
+      fetch: async () => Response.json(diagnostics),
+    })
+
+    expect(findCheck(result, 'concurrency')).toEqual({
+      id: 'concurrency',
+      label: 'Concurrency',
+      status: 'pass',
+      message: 'The global upstream concurrency limiter is 1/4 active; 2/8 queued; 1/2 account-specific limiter(s) enabled.',
+    })
+  })
+
   test('keeps recovery passing when global and scoped circuits are closed', async () => {
     const result = await executeDoctor({
       client: 'all',
