@@ -1,9 +1,17 @@
 import type { ModelsCommandDependencies } from '~/models'
 import type { Model, ModelsResponse } from '~/services/copilot/get-models'
-import { describe, expect, test } from 'bun:test'
+import fs from 'node:fs'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
 
+import { assertProxyEndpointAvailable } from '~/daemon/service-env'
+import { createAccountContext } from '~/lib/account/context'
+import { AccountRegistry } from '~/lib/account/registry'
+import { writeAccountsConfiguration, writeAccountToken } from '~/lib/account/store'
 import { compatibleModelsForClient } from '~/lib/client-setup'
-import { runModels } from '~/models'
+import { PATHS } from '~/lib/paths'
+import { modelsProxyRequiredTargets, runModels } from '~/models'
+
+const originalFetch = globalThis.fetch
 
 describe('models command', () => {
   test('authenticates, fetches the live inventory, and emits complete JSON profiles', async () => {
@@ -17,10 +25,10 @@ describe('models command', () => {
     }, makeDependencies(events, output))
 
     expect(events).toEqual([
+      'select-account:business:default',
+      'ensure-paths',
       'validate-proxy:business:true',
       'initialize-http:true',
-      'account:business',
-      'ensure-paths',
       'load-vscode-version',
       'authenticate',
       'fetch-models',
@@ -28,6 +36,7 @@ describe('models command', () => {
     expect(profiles.map(profile => profile.id)).toEqual(['gpt-live-responses', 'claude-live'])
 
     const body = JSON.parse(output.join('')) as {
+      account: string
       account_type: string
       client: string
       data: Array<{
@@ -39,6 +48,7 @@ describe('models command', () => {
     }
     expect(body).toMatchObject({
       object: 'copilot_proxy.model_capability_profiles',
+      account: 'default',
       account_type: 'business',
       client: 'codex',
       documentation: 'docs/protocol-compatibility.md',
@@ -96,6 +106,25 @@ describe('models command', () => {
     expect(events).toEqual([])
   })
 
+  test('rejects an explicitly empty account and only requires device-flow routing for legacy mode', async () => {
+    cleanAccountState()
+    await expect(runModels({
+      account: '',
+      accountType: 'individual',
+      client: 'all',
+      json: true,
+      proxyEnv: false,
+    })).rejects.toThrow('--account must contain an account id')
+
+    const explicitTargets = modelsProxyRequiredTargets({ accountType: 'enterprise', explicit: true })
+    expect(explicitTargets).not.toContain('https://github.com')
+    expect(modelsProxyRequiredTargets({ accountType: 'enterprise', explicit: false })).toContain('https://github.com')
+    expect(() => assertProxyEndpointAvailable({
+      HTTPS_PROXY: 'http://secure-proxy.invalid:8080',
+      NO_PROXY: 'github.com',
+    }, explicitTargets)).not.toThrow()
+  })
+
   test('rejects malformed live model fields before rendering profiles', async () => {
     const dependencies = makeDependencies([], [])
     dependencies.fetchModels = async () => {
@@ -114,15 +143,107 @@ describe('models command', () => {
       proxyEnv: false,
     }, dependencies)).rejects.toThrow('boolean model_picker_enabled')
   })
+
+  test('uses the explicit default enterprise account and never the coexisting legacy token', async () => {
+    cleanAccountState()
+    writeAccountsConfiguration({
+      version: 1,
+      revision: 1,
+      defaultAccount: 'work',
+      requiredRoutes: [],
+      accounts: [
+        { id: 'personal', accountType: 'individual', githubLogin: 'alice', githubUserId: 1 },
+        { id: 'work', accountType: 'enterprise', githubLogin: 'alice-work', githubUserId: 2 },
+      ],
+      routes: [{ match: 'gpt-*', account: 'personal' }],
+    })
+    writeAccountToken('personal', 'token_personal')
+    writeAccountToken('work', 'token_work')
+    fs.writeFileSync(PATHS.GITHUB_TOKEN_PATH, 'token_legacy', { mode: 0o600 })
+
+    const requests: Array<{ authorization: string | null, target: string }> = []
+    const output: string[] = []
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const target = String(input)
+      const headers = new Headers(input instanceof Request ? input.headers : undefined)
+      new Headers(init?.headers).forEach((value, key) => headers.set(key, value))
+      const authorization = headers.get('authorization')
+      requests.push({ authorization, target })
+      if (target.includes('update.code.visualstudio.com'))
+        return Response.json(['1.111.0'])
+      if (target === 'https://api.github.com/user') {
+        return authorization === 'token token_work'
+          ? Response.json({ id: 2, login: 'alice-work' })
+          : new Response('wrong GitHub identity token', { status: 401 })
+      }
+      if (target.endsWith('/copilot_internal/v2/token')) {
+        return authorization === 'token token_work'
+          ? Response.json({ expires_at: 2_000_000_000, refresh_in: 3600, token: 'copilot_work' })
+          : new Response('wrong GitHub token', { status: 401 })
+      }
+      if (target === 'https://api.enterprise.githubcopilot.com/models') {
+        return authorization === 'Bearer copilot_work'
+          ? Response.json({
+              object: 'list',
+              data: [
+                makeModel('claude-work', ['/v1/messages']),
+                makeModel('gpt-work', ['/responses']),
+              ],
+            })
+          : new Response('wrong Copilot token', { status: 401 })
+      }
+      return new Response('unexpected request', { status: 500 })
+    }) as unknown as typeof fetch
+
+    try {
+      const profiles = await runModels({
+        accountType: 'individual',
+        client: 'all',
+        json: true,
+        proxyEnv: false,
+      }, {
+        writeOutput(value) {
+          output.push(value)
+        },
+      })
+
+      expect(profiles.map(profile => profile.id)).toEqual(['claude-work', 'gpt-work'])
+      expect(JSON.parse(output.join(''))).toMatchObject({
+        account: 'work',
+        account_type: 'enterprise',
+        data: [{ id: 'claude-work' }, { id: 'gpt-work' }],
+      })
+      expect(requests).toContainEqual({
+        authorization: 'token token_work',
+        target: 'https://api.github.com/user',
+      })
+      expect(requests).toContainEqual({
+        authorization: 'token token_work',
+        target: 'https://api.github.com/copilot_internal/v2/token',
+      })
+      expect(requests).toContainEqual({
+        authorization: 'Bearer copilot_work',
+        target: 'https://api.enterprise.githubcopilot.com/models',
+      })
+      expect(JSON.stringify(requests)).not.toContain('token_legacy')
+      expect(requests.some(request => request.target.includes('/login/device/code'))).toBe(false)
+    }
+    finally {
+      globalThis.fetch = originalFetch
+      cleanAccountState()
+    }
+  })
+})
+
+afterEach(() => {
+  globalThis.fetch = originalFetch
+  cleanAccountState()
 })
 
 function makeDependencies(events: Array<string>, output: Array<string>): ModelsCommandDependencies {
   return {
     initializeHttpClient(proxyEnv) {
       events.push(`initialize-http:${proxyEnv}`)
-    },
-    setAccountType(accountType) {
-      events.push(`account:${accountType}`)
     },
     async ensurePaths() {
       events.push('ensure-paths')
@@ -137,11 +258,23 @@ function makeDependencies(events: Array<string>, output: Array<string>): ModelsC
       events.push('fetch-models')
       return makeModelsResponse()
     },
+    selectAccount(accountType, accountId) {
+      const context = createAccountContext({ accountType, id: accountId ?? 'default' })
+      const registry = new AccountRegistry(undefined, context)
+      events.push(`select-account:${accountType}:${accountId ?? 'default'}`)
+      return {
+        accountId: accountId ?? 'default',
+        accountType,
+        context,
+        explicit: false,
+        registry,
+      }
+    },
     writeOutput(value) {
       output.push(value)
     },
-    validateProxyEnvironment(accountType, proxyEnv) {
-      events.push(`validate-proxy:${accountType}:${proxyEnv}`)
+    validateProxyEnvironment(selection, proxyEnv) {
+      events.push(`validate-proxy:${selection.accountType}:${proxyEnv}`)
     },
   }
 }
@@ -185,4 +318,10 @@ function makeModel(id: string, supportedEndpoints: Array<string>, options: Parti
     version: '1',
     ...options,
   }
+}
+
+function cleanAccountState(): void {
+  fs.rmSync(PATHS.ACCOUNTS_CONFIG, { force: true })
+  fs.rmSync(PATHS.TOKENS_DIR, { force: true, recursive: true })
+  fs.rmSync(PATHS.GITHUB_TOKEN_PATH, { force: true })
 }

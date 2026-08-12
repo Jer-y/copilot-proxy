@@ -1,3 +1,4 @@
+import type { CommandAccountSelection } from './lib/account/command-selection'
 import type { AccountType } from './lib/cli-validators'
 import type { ModelCapabilityProfile, ProductClientRoute } from './lib/product-capabilities'
 import type { ModelsResponse } from './services/copilot/get-models'
@@ -6,11 +7,12 @@ import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { assertProxyEndpointAvailable } from './daemon/service-env'
+import { selectCommandAccount, verifyCommandAccountIdentity } from './lib/account/command-selection'
+import { buildAccountNetworkTargets } from './lib/account/proxy-targets'
 import { validateAccountType } from './lib/cli-validators'
 import { ensurePaths } from './lib/paths'
 import { buildModelCapabilityProfiles } from './lib/product-capabilities'
 import { initializeNodeHttpClient } from './lib/proxy'
-import { state } from './lib/state'
 import { setupCopilotToken, setupGitHubToken } from './lib/token'
 import { assertModelCatalogSnapshot, cacheVSCodeVersion } from './lib/utils'
 import { getModels } from './services/copilot/get-models'
@@ -18,6 +20,7 @@ import { getModels } from './services/copilot/get-models'
 export type ModelsClient = 'all' | 'claude' | 'codex' | 'openai-sdk'
 
 export interface RunModelsOptions {
+  account?: string
   accountType: string
   client: string
   json: boolean
@@ -25,17 +28,18 @@ export interface RunModelsOptions {
 }
 
 export interface ModelsCommandDependencies {
-  authenticate: () => Promise<void>
+  authenticate: (selection: CommandAccountSelection) => Promise<void>
   ensurePaths: () => Promise<void>
-  fetchModels: () => Promise<ModelsResponse>
+  fetchModels: (selection: CommandAccountSelection) => Promise<ModelsResponse>
   initializeHttpClient: (proxyEnv: boolean) => void
-  loadVSCodeVersion: () => Promise<void>
-  setAccountType: (accountType: AccountType) => void
+  loadVSCodeVersion: (selection: CommandAccountSelection) => Promise<void>
+  selectAccount: (accountType: AccountType, accountId?: string) => CommandAccountSelection
   writeOutput: (output: string) => void
-  validateProxyEnvironment: (accountType: AccountType, proxyEnv: boolean) => void
+  validateProxyEnvironment: (selection: CommandAccountSelection, proxyEnv: boolean) => void
 }
 
 export interface ModelsCommandJsonOutput {
+  account: string
   account_type: AccountType
   client: ModelsClient
   data: Array<ModelCapabilityProfile>
@@ -48,31 +52,40 @@ const DEFAULT_DEPENDENCIES: ModelsCommandDependencies = {
     initializeNodeHttpClient({ proxyEnv })
   },
   ensurePaths,
-  loadVSCodeVersion: cacheVSCodeVersion,
-  setAccountType(accountType) {
-    state.accountType = accountType
+  async loadVSCodeVersion(selection) {
+    await cacheVSCodeVersion([selection.context])
   },
-  async authenticate() {
+  selectAccount: selectCommandAccount,
+  async authenticate(selection) {
+    if (selection.explicit) {
+      await verifyCommandAccountIdentity(selection)
+      await selection.context.tokens.setup({ scheduleRefresh: false })
+      return
+    }
     await setupGitHubToken()
     await setupCopilotToken({ scheduleRefresh: false })
   },
-  fetchModels: getModels,
+  async fetchModels(selection) {
+    return await getModels(selection.context)
+  },
   writeOutput(output) {
     process.stdout.write(`${output}\n`)
   },
-  validateProxyEnvironment(accountType, proxyEnv) {
+  validateProxyEnvironment(selection, proxyEnv) {
     if (!proxyEnv)
       return
-    const copilotOrigin = accountType === 'individual'
-      ? 'https://api.githubcopilot.com'
-      : `https://api.${accountType}.githubcopilot.com`
-    assertProxyEndpointAvailable(process.env, [
-      'https://github.com',
-      'https://api.github.com',
-      copilotOrigin,
-      'https://update.code.visualstudio.com',
-    ])
+    assertProxyEndpointAvailable(process.env, modelsProxyRequiredTargets(selection))
   },
+}
+
+export function modelsProxyRequiredTargets(
+  selection: Pick<CommandAccountSelection, 'accountType' | 'explicit'>,
+): string[] {
+  return buildAccountNetworkTargets({
+    accountTypes: [selection.accountType],
+    deviceFlow: !selection.explicit,
+    vsCode: true,
+  })
 }
 
 export async function runModels(
@@ -92,14 +105,16 @@ export async function runModels(
     : undefined
 
   let models: ModelsResponse
+  let selection: CommandAccountSelection
   try {
-    deps.validateProxyEnvironment(options.accountType, options.proxyEnv)
+    selection = deps.selectAccount(options.accountType, options.account)
+    if (!selection.explicit)
+      await deps.ensurePaths()
+    deps.validateProxyEnvironment(selection, options.proxyEnv)
     deps.initializeHttpClient(options.proxyEnv)
-    deps.setAccountType(options.accountType)
-    await deps.ensurePaths()
-    await deps.loadVSCodeVersion()
-    await deps.authenticate()
-    models = await deps.fetchModels()
+    await deps.loadVSCodeVersion(selection)
+    await deps.authenticate(selection)
+    models = await deps.fetchModels(selection)
     assertModelCatalogSnapshot(models)
   }
   finally {
@@ -114,7 +129,8 @@ export async function runModels(
   if (options.json) {
     const output: ModelsCommandJsonOutput = {
       object: 'copilot_proxy.model_capability_profiles',
-      account_type: options.accountType,
+      account: selection.accountId,
+      account_type: selection.accountType,
       client: options.client,
       documentation: 'docs/protocol-compatibility.md',
       data: profiles,
@@ -122,7 +138,12 @@ export async function runModels(
     deps.writeOutput(JSON.stringify(output, null, 2))
   }
   else {
-    deps.writeOutput(formatModelsTable(profiles, options.accountType, options.client))
+    deps.writeOutput(formatModelsTable(
+      profiles,
+      selection.accountType,
+      options.client,
+      selection.explicit ? selection.accountId : undefined,
+    ))
   }
 
   return profiles
@@ -145,8 +166,10 @@ export function formatModelsTable(
   profiles: Array<ModelCapabilityProfile>,
   accountType: AccountType,
   client: ModelsClient,
+  accountId?: string,
 ): string {
-  const lines = [`Copilot model compatibility (account: ${accountType}, client: ${client})`]
+  const account = accountId ? `${accountId}/${accountType}` : accountType
+  const lines = [`Copilot model compatibility (account: ${account}, client: ${client})`]
 
   if (profiles.length === 0) {
     lines.push('', `No compatible models found for client "${client}".`)
@@ -194,6 +217,10 @@ export const models = defineCommand({
       default: 'individual',
       description: 'Account type to use (individual, business, enterprise)',
     },
+    'account': {
+      type: 'string',
+      description: 'Configured accounts.json account id (defaults to defaultAccount)',
+    },
     'client': {
       type: 'string',
       default: 'all',
@@ -212,6 +239,7 @@ export const models = defineCommand({
   },
   run({ args }) {
     return runModels({
+      account: args.account,
       accountType: args['account-type'],
       client: args.client,
       json: args.json,

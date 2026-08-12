@@ -28,6 +28,31 @@ function packagedCliEntrypoint(): string {
 }
 
 describe('CLI entrypoint', () => {
+  test('does not silently exit when the interactive accounts root receives --proxy-env', () => {
+    for (const entrypoint of [
+      { path: path.resolve('src/main.ts'), runtime: process.execPath },
+      { path: packagedCliEntrypoint(), runtime: 'node' },
+    ]) {
+      const result = spawnSync(
+        entrypoint.runtime,
+        [entrypoint.path, 'accounts', '--proxy-env'],
+        {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            HTTPS_PROXY: 'http://127.0.0.1:9',
+            NO_PROXY: '',
+          },
+          timeout: 10_000,
+        },
+      )
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(1)
+      expect(`${result.stdout}\n${result.stderr}`).toContain('Missing required arguments in non-interactive mode')
+    }
+  })
+
   test('loads the guarded entrypoint and exposes core commands', () => {
     const result = spawnSync(
       process.execPath,
@@ -48,6 +73,26 @@ describe('CLI entrypoint', () => {
     expect(result.stdout).toContain('setup')
     expect(result.stdout).toContain('models')
     expect(result.stdout).toContain('doctor')
+  })
+
+  test('exposes explicit account selection for models and check-usage', () => {
+    for (const command of ['models', 'check-usage']) {
+      const result = spawnSync(
+        process.execPath,
+        [path.resolve('src/main.ts'), command, '--help'],
+        {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 10_000,
+        },
+      )
+
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('--account')
+      expect(result.stdout).toContain('defaultAccount')
+    }
   })
 
   test('documents the Codex-only setup preflight and model gates', () => {
@@ -208,6 +253,144 @@ describe('CLI entrypoint', () => {
       finally {
         fs.rmSync(testHome, { force: true, recursive: true })
         fs.rmSync(dataDir, { force: true, recursive: true })
+      }
+    }
+  }, 60_000)
+
+  test('defaults account commands to the installed data dir without overriding explicit selections', () => {
+    const entrypoints = [
+      { name: 'source', path: path.resolve('src/main.ts'), runtime: process.execPath },
+      { name: 'packaged', path: packagedCliEntrypoint(), runtime: 'node' },
+    ] as const
+
+    for (const entrypoint of entrypoints) {
+      const testHome = fs.mkdtempSync(path.join(os.tmpdir(), `copilot-proxy-main-${entrypoint.name}-account-data-home-`))
+      const installedDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `copilot-proxy-main-${entrypoint.name}-installed-account-data-`))
+      const explicitDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `copilot-proxy-main-${entrypoint.name}-explicit-account-data-`))
+      const bootstrapDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `copilot-proxy-main-${entrypoint.name}-bootstrap-account-data-`))
+      try {
+        writeAccountsFixture(installedDataDir, 'installed', 101)
+        writeAccountsFixture(explicitDataDir, 'explicit', 202)
+        fs.writeFileSync(
+          path.join(testHome, '.copilot-proxy-native-service.json'),
+          JSON.stringify({ dataDir: installedDataDir }),
+          { mode: 0o600 },
+        )
+
+        const defaultEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          COPILOT_PROXY_TEST_HOME: testHome,
+        }
+        delete defaultEnv.COPILOT_PROXY_DATA_DIR
+        const defaultResult = spawnSync(
+          entrypoint.runtime,
+          [entrypoint.path, 'accounts', 'list', '--json'],
+          {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: defaultEnv,
+            timeout: 10_000,
+          },
+        )
+        expect(defaultResult.error).toBeUndefined()
+        expect(defaultResult.status).toBe(0)
+        expect(JSON.parse(defaultResult.stdout)).toMatchObject({ defaultAccount: 'installed' })
+
+        for (const command of [
+          ['models', '--account', 'installed', '--json'],
+          ['check-usage', '--account', 'installed'],
+        ]) {
+          const inspectionResult = spawnSync(
+            entrypoint.runtime,
+            [entrypoint.path, ...command],
+            {
+              cwd: path.resolve('.'),
+              encoding: 'utf8',
+              env: defaultEnv,
+              timeout: 10_000,
+            },
+          )
+          expect(inspectionResult.error).toBeUndefined()
+          expect(inspectionResult.status).toBe(1)
+          const inspectionOutput = `${inspectionResult.stdout}\n${inspectionResult.stderr}`
+          expect(inspectionOutput).toContain('Account installed has no persisted token')
+          expect(inspectionOutput).not.toContain('requires accounts.json')
+        }
+
+        const explicitResult = spawnSync(
+          entrypoint.runtime,
+          [entrypoint.path, 'accounts', 'list', '--json'],
+          {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: {
+              ...defaultEnv,
+              COPILOT_PROXY_DATA_DIR: explicitDataDir,
+            },
+            timeout: 10_000,
+          },
+        )
+        expect(explicitResult.error).toBeUndefined()
+        expect(explicitResult.status).toBe(0)
+        expect(JSON.parse(explicitResult.stdout)).toMatchObject({ defaultAccount: 'explicit' })
+
+        fs.writeFileSync(
+          path.join(testHome, '.copilot-proxy-native-service.json'),
+          '{invalid global control state',
+          { mode: 0o600 },
+        )
+        const explicitMutation = spawnSync(
+          entrypoint.runtime,
+          [
+            entrypoint.path,
+            'accounts',
+            'concurrency',
+            'set',
+            'explicit',
+            '3',
+            '--yes',
+          ],
+          {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: {
+              ...defaultEnv,
+              COPILOT_PROXY_DATA_DIR: explicitDataDir,
+            },
+            timeout: 10_000,
+          },
+        )
+        expect(explicitMutation.error).toBeUndefined()
+        expect(explicitMutation.status).toBe(0)
+        expect(JSON.parse(fs.readFileSync(path.join(explicitDataDir, 'accounts.json'), 'utf8')))
+          .toMatchObject({ accounts: [{ id: 'explicit', maxConcurrency: 3 }] })
+
+        const bootstrapToken = `ghu_bootstrap_override_${entrypoint.name}`
+        const bootstrapResult = spawnSync(
+          entrypoint.runtime,
+          [
+            entrypoint.path,
+            'auth',
+            '--_data-dir',
+            bootstrapDataDir,
+            '--github-token',
+            bootstrapToken,
+          ],
+          {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: defaultEnv,
+            timeout: 10_000,
+          },
+        )
+        expect(bootstrapResult.error).toBeUndefined()
+        expect(bootstrapResult.status).toBe(0)
+        expect(fs.readFileSync(path.join(bootstrapDataDir, 'github_token'), 'utf8')).toBe(bootstrapToken)
+        expect(fs.existsSync(path.join(installedDataDir, 'github_token'))).toBe(false)
+      }
+      finally {
+        for (const directory of [testHome, installedDataDir, explicitDataDir, bootstrapDataDir])
+          fs.rmSync(directory, { force: true, recursive: true })
       }
     }
   }, 60_000)
@@ -1717,3 +1900,19 @@ else {
     }
   })
 })
+
+function writeAccountsFixture(dataDir: string, accountId: string, githubUserId: number): void {
+  fs.writeFileSync(path.join(dataDir, 'accounts.json'), JSON.stringify({
+    version: 1,
+    revision: 1,
+    defaultAccount: accountId,
+    requiredRoutes: [],
+    accounts: [{
+      id: accountId,
+      accountType: 'individual',
+      githubLogin: `${accountId}-login`,
+      githubUserId,
+    }],
+    routes: [],
+  }), { mode: 0o600 })
+}
