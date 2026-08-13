@@ -16,7 +16,7 @@ import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 
 import { state } from '~/lib/state'
 import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
-import { assertCopilotCompatibleAnthropicRequest, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
+import { throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
@@ -92,7 +92,6 @@ export async function handleCompletion(c: Context) {
 
   switch (route.backend) {
     case 'anthropic-messages':
-      assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
       return await handleViaNativeAnthropic(
         c,
         anthropicPayload,
@@ -267,7 +266,7 @@ function extractUnexpectedResponsesBodyMessage(
  *
  * The Copilot backend natively supports the Anthropic Messages API format.
  * Request preparation stays narrow: normalize known Copilot incompatibilities
- * and expand only text-like documents that the native backend rejects.
+ * and enforce the generation-specific Claude Code document boundary.
  *
  * For streaming, upstream SSE events are already in Anthropic format,
  * so we pipe them directly with keep-alive pings.

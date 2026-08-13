@@ -4,7 +4,6 @@ import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventD
 import consola from 'consola'
 import { HTTPError } from '~/lib/error'
 import { assertCopilotCompatibleAnthropicRequest, logLossyAnthropicCompatibility, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
-import { expandCopilotUnsupportedTextDocumentBlocks, expandDocumentBlocks, normalizeLegacyDocumentTextSources } from '~/lib/translation/anthropic-documents'
 import { isRecord } from '~/lib/type-guards'
 import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 
@@ -71,7 +70,6 @@ export async function createAnthropicMessagesWithThinkingSignatureRetry(
  */
 export function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): void {
   assertNoUnsupportedAdvisorToolsForCopilot(payload)
-  normalizeLegacyDocumentTextSources(payload)
 
   const format = payload.output_config?.format
   if (!format || typeof format !== 'object' || format.type !== 'json_schema') {
@@ -120,11 +118,11 @@ export function sanitizeForCopilotBackend(payload: AnthropicMessagesPayload): vo
   }
 }
 
-export async function prepareAnthropicPayloadForNativeCopilotBackend(
+export function prepareAnthropicPayloadForNativeCopilotBackend(
   payload: AnthropicMessagesPayload,
-): Promise<void> {
+): void {
   sanitizeForCopilotBackend(payload)
-  await expandCopilotUnsupportedTextDocumentBlocks(payload)
+  assertCopilotCompatibleAnthropicRequest(payload, { documentMode: 'messages-base64-pdf-only' })
 }
 
 export function assertNoUnsupportedAdvisorToolsForCopilot(payload: AnthropicMessagesPayload): void {
@@ -161,11 +159,9 @@ export function normalizeAdaptiveThinkingForCopilot(
   }
 }
 
-export async function prepareAnthropicPayloadForTranslatedBackends(
+export function prepareAnthropicPayloadForTranslatedBackends(
   payload: AnthropicMessagesPayload,
-): Promise<void> {
-  normalizeLegacyDocumentTextSources(payload)
-  await expandDocumentBlocks(payload)
+): void {
   assertCopilotCompatibleAnthropicRequest(payload)
 }
 

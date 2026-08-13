@@ -27,7 +27,7 @@ export function throwAnthropicInvalidRequestError(message: string): never {
 export function assertCopilotCompatibleAnthropicRequest(
   payload: AnthropicMessagesPayload,
   options?: {
-    allowDocuments?: boolean
+    documentMode?: 'messages-base64-pdf-only' | 'reject'
   },
 ): void {
   for (const message of payload.messages) {
@@ -76,7 +76,7 @@ export function logLossyAnthropicCompatibility(
 function assertSupportedUserContentBlock(
   block: AnthropicUserContentBlock,
   options?: {
-    allowDocuments?: boolean
+    documentMode?: 'messages-base64-pdf-only' | 'reject'
   },
 ): void {
   if (isExternalImageUrl(block)) {
@@ -85,17 +85,8 @@ function assertSupportedUserContentBlock(
     )
   }
 
-  if (isFileDocument(block)) {
-    throwAnthropicInvalidRequestError(
-      'Files API (source.type=\'file\') is not supported by GitHub Copilot upstream. Upload document content directly using base64, text, or url source types instead.',
-    )
-  }
-
-  if (isDocumentBlock(block) && options?.allowDocuments !== true) {
-    throwAnthropicInvalidRequestError(
-      'Unexpanded document block reached assertion layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
-    )
-  }
+  if (isDocumentBlock(block))
+    assertSupportedDocumentBlock(block, options?.documentMode ?? 'reject')
 
   if (block.type === 'tool_result') {
     assertSupportedToolResultContent(block, options)
@@ -105,7 +96,7 @@ function assertSupportedUserContentBlock(
 function assertSupportedToolResultContent(
   block: AnthropicToolResultBlock,
   options?: {
-    allowDocuments?: boolean
+    documentMode?: 'messages-base64-pdf-only' | 'reject'
   },
 ): void {
   if (!Array.isArray(block.content)) {
@@ -119,18 +110,32 @@ function assertSupportedToolResultContent(
       )
     }
 
-    if (isFileDocument(contentBlock)) {
-      throwAnthropicInvalidRequestError(
-        'Files API (source.type=\'file\') is not supported by GitHub Copilot upstream. Upload document content directly using base64, text, or url source types instead.',
-      )
-    }
-
-    if (isDocumentBlock(contentBlock) && options?.allowDocuments !== true) {
-      throwAnthropicInvalidRequestError(
-        'Unexpanded document block inside tool_result reached assertion layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
-      )
-    }
+    if (isDocumentBlock(contentBlock))
+      assertSupportedDocumentBlock(contentBlock, options?.documentMode ?? 'reject')
   }
+}
+
+function assertSupportedDocumentBlock(
+  block: AnthropicDocumentBlock,
+  mode: 'messages-base64-pdf-only' | 'reject',
+): void {
+  if (mode === 'reject') {
+    throwAnthropicInvalidRequestError(
+      'Anthropic document blocks cannot be translated faithfully to the selected Responses backend. Use a native Claude model, or provide the content as ordinary text or image blocks.',
+    )
+  }
+
+  if (block.source.type === 'base64'
+    && block.source.media_type.trim().toLowerCase() === 'application/pdf') {
+    return
+  }
+
+  const sourceDescription = block.source.type === 'base64'
+    ? `base64 ${block.source.media_type}`
+    : block.source.type
+  throwAnthropicInvalidRequestError(
+    `Claude Code document compatibility supports only base64 application/pdf blocks; received ${sourceDescription}. Claude Code reads local text files into text or tool_result blocks, so the proxy does not implement text, content, URL, or Files API document adaptation.`,
+  )
 }
 
 function isExternalImageUrl(
@@ -143,10 +148,4 @@ function isDocumentBlock(
   block: AnthropicUserContentBlock | AnthropicTextBlock | AnthropicDocumentBlock,
 ): block is AnthropicDocumentBlock {
   return block.type === 'document'
-}
-
-function isFileDocument(
-  block: AnthropicUserContentBlock | AnthropicTextBlock | AnthropicDocumentBlock,
-): boolean {
-  return block.type === 'document' && block.source.type === 'file'
 }

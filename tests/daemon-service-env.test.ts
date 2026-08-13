@@ -34,7 +34,6 @@ describe('native service environment', () => {
         COPILOT_PROXY_CORS_ORIGINS: 'https://viewer.internal',
         COPILOT_PROXY_EXPOSE_TOKEN: '1',
         COPILOT_PROXY_MAX_JSON_BODY_BYTES: '1048576',
-        COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH: '1',
         NODE_EXTRA_CA_CERTS: '/etc/company-ca.pem',
         HTTP_PROXY: 'http://secret@proxy:8080',
         GH_TOKEN: 'gho_must_not_be_persisted',
@@ -53,7 +52,6 @@ describe('native service environment', () => {
     expect(raw).toContain('COPILOT_PROXY_CORS_ORIGINS')
     expect(raw).toContain('COPILOT_PROXY_EXPOSE_TOKEN')
     expect(raw).toContain('COPILOT_PROXY_MAX_JSON_BODY_BYTES')
-    expect(raw).toContain('COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH')
     expect(raw).toContain('NODE_EXTRA_CA_CERTS')
     expect(raw).not.toContain('HTTP_PROXY')
     expect(raw).not.toContain('GH_TOKEN')
@@ -172,6 +170,21 @@ describe('native service environment', () => {
     }))
 
     expect(() => readNativeServiceEnvironment(filePath)).toThrow('unsupported entries: GITHUB_TOKEN')
+  })
+
+  test('drops the removed document URL fetch setting from versioned snapshots', () => {
+    const filePath = makeFilePath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: NATIVE_SERVICE_ENV_SCHEMA_VERSION,
+      environment: {
+        COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal',
+        COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH: '1',
+      },
+    }))
+
+    expect(readNativeServiceEnvironment(filePath)).toEqual({
+      COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal',
+    })
   })
 
   test('removes persisted service settings on disable', () => {

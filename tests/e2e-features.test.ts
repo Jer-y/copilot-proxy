@@ -345,9 +345,9 @@ describeE2E('Configured Claude models', () => {
 describeE2E('Feature probes', () => {
   const model = PRIMARY_CLAUDE_MODEL
 
-  describe('Official Anthropic contract validation', () => {
-    // Tests here MUST have expect() assertions proving official API correctness
-    // across the native Claude route and its explicit compatibility adaptations.
+  describe('Supported Claude Code and native Anthropic boundary', () => {
+    // Tests here MUST have expect() assertions proving the supported Claude Code
+    // wire boundary and the explicitly retained native Anthropic features.
 
     test('thinking adaptive + budget_tokens → rejected (budget_tokens only for enabled)', async () => {
       // Official Claude docs/SDK split adaptive vs enabled thinking.
@@ -423,7 +423,7 @@ describeE2E('Feature probes', () => {
       expect(typeof parsed.answer).toBe('string')
     }, TIMEOUT)
 
-    test('document source text → 200', async () => {
+    test('document source text → rejected outside the Claude Code wire surface', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 128,
@@ -438,10 +438,13 @@ describeE2E('Feature probes', () => {
           ],
         }],
       })
-      expect(res.status).toBe(200)
+      expect(res.status).toBe(400)
+      const body = await parseResponse(res)
+      const message = (body.error as Record<string, unknown> | undefined)?.message
+      expect(String(message)).toContain('supports only base64 application/pdf blocks; received text')
     }, TIMEOUT)
 
-    test('document source content → 200', async () => {
+    test('document source content → rejected outside the Claude Code wire surface', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 128,
@@ -459,10 +462,13 @@ describeE2E('Feature probes', () => {
           ],
         }],
       })
-      expect(res.status).toBe(200)
+      expect(res.status).toBe(400)
+      const body = await parseResponse(res)
+      const message = (body.error as Record<string, unknown> | undefined)?.message
+      expect(String(message)).toContain('supports only base64 application/pdf blocks; received content')
     }, TIMEOUT)
 
-    test('document source URL with real PDF → supported or clean upstream rejection', async () => {
+    test('document source URL with real PDF → rejected without proxy-side fetching', async () => {
       const res = await sendRequest({
         model,
         max_tokens: 128,
@@ -477,13 +483,10 @@ describeE2E('Feature probes', () => {
           ],
         }],
       })
-      if (res.status === 200)
-        return
-
       expect(res.status).toBe(400)
       const body = await parseResponse(res)
       const message = (body.error as Record<string, unknown> | undefined)?.message
-      expect(String(message)).toMatch(/document|pdf|url|external/i)
+      expect(String(message)).toContain('supports only base64 application/pdf blocks; received url')
     }, TIMEOUT)
 
     test('text document citations → rejected instead of silently dropped', async () => {
@@ -505,7 +508,7 @@ describeE2E('Feature probes', () => {
       expect(res.status).toBe(400)
       const body = await parseResponse(res)
       const message = (body.error as Record<string, unknown> | undefined)?.message
-      expect(message).toContain('Document citations cannot be preserved')
+      expect(message).toContain('supports only base64 application/pdf blocks; received text')
     }, TIMEOUT)
 
     test('base64 PDF citations → 200 with citations in response', async () => {
@@ -700,9 +703,28 @@ describeE2E('Feature probes', () => {
       expect((body.input_tokens as number)).toBeGreaterThan(1)
     }, TIMEOUT)
 
-    test('count_tokens with document source data → returns positive input_tokens', async () => {
+    test('count_tokens preserves endpoint-specific document and request fields', async () => {
+      const schema = {
+        type: 'object',
+        properties: { ok: { type: 'boolean' } },
+        required: ['ok'],
+        additionalProperties: false,
+      }
       const res = await sendCountTokensRequest({
         model,
+        thinking: {
+          type: 'adaptive',
+          budget_tokens: 4096,
+          budget_tokens_max: 8192,
+        },
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema,
+            name: 'count_shape',
+            strict: true,
+          },
+        },
         messages: [{
           role: 'user',
           content: [
@@ -717,6 +739,25 @@ describeE2E('Feature probes', () => {
             { type: 'text', text: 'What is the capital?' },
           ],
         }],
+      })
+
+      expect(res.status).toBe(200)
+      const body = await parseResponse(res)
+      expect(typeof body.input_tokens).toBe('number')
+      expect((body.input_tokens as number)).toBeGreaterThan(1)
+    }, TIMEOUT)
+
+    test('count_tokens strips the unsupported advisor beta but preserves the tool', async () => {
+      const res = await sendCountTokensRequest({
+        model,
+        tools: [{
+          type: 'advisor_20260301',
+          name: 'advisor',
+          model,
+        }],
+        messages: [{ role: 'user', content: 'Count this input.' }],
+      }, {
+        'anthropic-beta': 'claude-code-2025-01-01, advisor-tool-2026-03-01',
       })
 
       expect(res.status).toBe(200)

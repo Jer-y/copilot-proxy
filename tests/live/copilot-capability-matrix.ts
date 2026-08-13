@@ -107,6 +107,10 @@ const TINY_PNG_DATA_URL
 
 function buildUnsupportedMatcher(fieldTerms: Array<string>) {
   return (details: ProbeErrorDetails): boolean => {
+    if (details.status < 400 || details.status >= 500) {
+      return false
+    }
+
     const haystack = [
       details.code,
       details.message,
@@ -2409,14 +2413,152 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     }),
   },
   {
+    id: 'native-anthropic-count-tokens-inline-documents',
+    title: 'Native Anthropic count_tokens accepts inline document shapes',
+    tier: 'baseline',
+    endpoint: 'anthropic-raw',
+    expectation: 'must_support',
+    candidateFix: 'Keep /v1/messages/count_tokens payload handling independent from generation document validation.',
+    candidateMapping: 'Anthropic inline document shapes -> Copilot /v1/messages/count_tokens unchanged',
+    rationale: 'Copilot token counting accepts inline document shapes that native generation rejects.',
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/v1/messages/count_tokens',
+      body: {
+        model: config.claudeModel,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'Plain text document.' } },
+            { type: 'document', source: { type: 'content', content: [{ type: 'text', text: 'Content document.' }] } },
+            { type: 'document', source: { type: 'base64', media_type: 'text/markdown', data: 'IyBNYXJrZG93bg==' } },
+            { type: 'document', source: { type: 'base64', media_type: 'text/html', data: 'PGgxPkhUTUw8L2gxPg==' } },
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: MINIMAL_PDF_BASE64 } },
+            { type: 'text', text: 'Count these inputs.' },
+          ],
+        }],
+      },
+      expectedBody: 'input_tokens',
+      model: config.claudeModel,
+    }),
+  },
+  {
+    id: 'native-anthropic-count-tokens-url-document',
+    title: 'Native Anthropic count_tokens URL document reference',
+    tier: 'optional',
+    endpoint: 'anthropic-raw',
+    expectation: 'support_or_clean_unsupported',
+    candidateFix: 'Forward URL document references unchanged on /v1/messages/count_tokens and preserve any clean upstream rejection.',
+    candidateMapping: 'Anthropic URL document reference -> Copilot /v1/messages/count_tokens unchanged',
+    rationale: 'Acceptance here proves only token-count request-shape support, not that the URL was fetched.',
+    isUnsupported: buildUnsupportedMatcher([
+      'document',
+      'url',
+      'source',
+    ]),
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/v1/messages/count_tokens',
+      body: {
+        model: config.claudeModel,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'url', url: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf' } },
+            { type: 'text', text: 'Count this reference.' },
+          ],
+        }],
+      },
+      expectedBody: 'input_tokens',
+      model: config.claudeModel,
+    }),
+  },
+  {
+    id: 'native-anthropic-count-tokens-file-document',
+    title: 'Native Anthropic count_tokens file document reference',
+    tier: 'optional',
+    endpoint: 'anthropic-raw',
+    expectation: 'support_or_clean_unsupported',
+    candidateFix: 'Forward file document references unchanged on /v1/messages/count_tokens and preserve any clean upstream rejection.',
+    candidateMapping: 'Anthropic file document reference -> Copilot /v1/messages/count_tokens unchanged',
+    rationale: 'Acceptance here proves only token-count request-shape support, not that the file exists or is readable.',
+    isUnsupported: buildNotFoundOrUnsupportedMatcher([
+      'document',
+      'file',
+      'source',
+    ]),
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/v1/messages/count_tokens',
+      body: {
+        model: config.claudeModel,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'file', file_id: 'file_live_probe_missing' } },
+            { type: 'text', text: 'Count this reference.' },
+          ],
+        }],
+      },
+      expectedBody: 'input_tokens',
+      model: config.claudeModel,
+    }),
+  },
+  {
+    id: 'native-anthropic-count-tokens-generation-specific-fields',
+    title: 'Native Anthropic count_tokens accepts fields rejected by generation',
+    tier: 'baseline',
+    endpoint: 'anthropic-raw',
+    expectation: 'must_support',
+    candidateFix: 'Do not apply generation-only thinking or output_config sanitization to /v1/messages/count_tokens.',
+    candidateMapping: 'Anthropic count_tokens request fields -> Copilot /v1/messages/count_tokens unchanged',
+    rationale: 'Copilot token counting has broader validation rules than native message generation.',
+    buildRequest: config => ({
+      method: 'POST',
+      path: '/v1/messages/count_tokens',
+      body: {
+        model: config.claudeModel,
+        thinking: {
+          type: 'adaptive',
+          budget_tokens: 4096,
+          budget_tokens_max: 8192,
+        },
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema: {
+              type: 'object',
+              properties: { ok: { type: 'boolean' } },
+              required: ['ok'],
+              additionalProperties: false,
+            },
+            json_schema: {
+              schema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: false,
+              },
+            },
+            name: 'count_shape',
+            strict: true,
+          },
+        },
+        messages: [{ role: 'user', content: 'Count this input.' }],
+      },
+      expectedBody: 'input_tokens',
+      model: config.claudeModel,
+    }),
+  },
+  {
     id: 'native-anthropic-document-text',
     title: 'Native Anthropic document source=data',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Expand inline text document sources into text blocks before native passthrough when Copilot rejects them.',
-    candidateMapping: 'Anthropic document source=text -> Copilot /v1/messages document source=text, or local document expansion when unsupported',
-    rationale: 'Official inline plain-text document source uses source.type=text with a data field, but Copilot native support is model-dependent.',
+    candidateFix: 'Reject this generic Anthropic API shape on the Claude Code proxy surface; Claude Code sends local text files as text or tool_result blocks.',
+    candidateMapping: 'No local document adaptation; only Claude Code base64 PDF document blocks are forwarded natively',
+    rationale: 'This probe records raw Copilot behavior, but document.source=text is outside the supported Claude Code client wire surface.',
     isUnsupported: buildUnsupportedMatcher([
       'document',
       'source type',
@@ -2441,9 +2583,9 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Use native passthrough when Copilot accepts URL-backed documents; otherwise fetch/extract locally or surface the clean upstream unsupported error.',
-    candidateMapping: 'Anthropic document source=url -> Copilot /v1/messages document source=url, or local fetch/extract fallback when unsupported',
-    rationale: 'Copilot native document URL support is model-dependent; this probe records whether the selected upstream model accepts or cleanly rejects URL-backed documents.',
+    candidateFix: 'Reject URL-backed documents locally; the proxy does not fetch remote documents for Claude Code.',
+    candidateMapping: 'No mapping; Claude Code local file workflows use text, tool_result, image, or base64 PDF blocks',
+    rationale: 'This probe records raw Copilot behavior only. URL-backed document fetching is outside the supported Claude Code proxy surface.',
     isUnsupported: buildUnsupportedMatcher([
       'url sources',
       'url',

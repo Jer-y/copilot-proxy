@@ -498,7 +498,7 @@ function translateUserBlockToResponsesContent(
       return { type: 'input_text' as const, text: block.text }
     case 'document':
       return throwAnthropicInvalidRequestError(
-        'Unexpanded document block reached Responses translation layer (safety net). This is a bug — document blocks should have been expanded to text blocks before this point.',
+        'Anthropic document blocks cannot be represented faithfully on the Responses translation path.',
       )
     case 'search_result':
     case 'tool_reference':

@@ -12,7 +12,6 @@ export const SERVICE_SECURITY_ENV_KEYS = [
   'COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY',
   'COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS',
   'COPILOT_PROXY_MAX_JSON_BODY_BYTES',
-  'COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH',
 ] as const
 
 export const SERVICE_TLS_ENV_KEYS = [
@@ -30,6 +29,9 @@ export const MANAGED_SERVICE_ENV_KEYS = [
 export const NATIVE_SERVICE_ENV_SCHEMA_VERSION = 1 as const
 
 const MANAGED_SERVICE_ENV_KEY_SET = new Set<string>(MANAGED_SERVICE_ENV_KEYS)
+const DEPRECATED_SERVICE_ENV_KEY_SET = new Set([
+  'COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH',
+])
 
 const SERVICE_BOOTSTRAP_PASSTHROUGH_ENV_KEYS = [
   // Runtime lookup and user-home state. The service definition itself pins the
@@ -185,14 +187,14 @@ export function readNativeServiceEnvironment(
 
   if (isNativeServiceEnvironmentSnapshot(parsed)) {
     const unknownKeys = Object.keys(parsed.environment)
-      .filter(key => !MANAGED_SERVICE_ENV_KEY_SET.has(key))
+      .filter(key => !MANAGED_SERVICE_ENV_KEY_SET.has(key) && !DEPRECATED_SERVICE_ENV_KEY_SET.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(
         `Native service environment file contains unsupported entries: ${unknownKeys.join(', ')}`,
       )
     }
 
-    return { ...parsed.environment }
+    return pickManagedEnvironment(parsed.environment)
   }
 
   // Compatibility with v0.8-v0.9 snapshots, which were a flat string record.

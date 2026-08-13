@@ -134,8 +134,8 @@ export interface AnthropicDocumentBlock {
 export interface AnthropicTextDocumentSource {
   type: 'text'
   media_type: string
-  // Official Anthropic SDKs use `data`; keep legacy `text` for compatibility
-  // and normalize it before native passthrough.
+  // Official Anthropic SDKs use `data`; keep legacy `text` for schema-level
+  // compatibility even though native generation may reject this source shape.
   data?: string
   text?: string
 }

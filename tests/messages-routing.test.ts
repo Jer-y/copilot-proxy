@@ -1278,7 +1278,7 @@ describe('messages route upstream adaptation', () => {
     }])
   })
 
-  test('document blocks with invalid PDF data return extraction error', async () => {
+  test('Responses-backed document blocks are rejected without local PDF parsing', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1317,7 +1317,7 @@ describe('messages route upstream adaptation', () => {
 
     expect(body.type).toBe('error')
     expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('Failed to extract text from PDF document')
+    expect(body.error?.message).toContain('document blocks cannot be translated faithfully')
   })
 
   test('Claude document blocks are forwarded natively without local expansion', async () => {
@@ -1376,7 +1376,7 @@ describe('messages route upstream adaptation', () => {
     ])
   })
 
-  test('Claude native passthrough expands official text-source documents with source.data', async () => {
+  test('Claude native passthrough rejects official text-source documents locally', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1401,20 +1401,11 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
-
-    const forwardedPayload = JSON.parse(String(init?.body)) as {
-      messages?: Array<{ content?: Array<Record<string, unknown>> }>
-    }
-
-    expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
-      type: 'text',
-      text: 'Hello from source.data',
-    })
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received text')
   })
 
   test('Claude native passthrough rejects citations on text documents before upstream', async () => {
@@ -1448,7 +1439,7 @@ describe('messages route upstream adaptation', () => {
     }
     expect(body.type).toBe('error')
     expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('Document citations cannot be preserved')
+    expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received text')
   })
 
   test('Claude native passthrough rejects inner content cache breakpoints before upstream', async () => {
@@ -1479,7 +1470,7 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     const body = await res.json() as { error?: { type?: string, message?: string } }
     expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('document.source.content cache_control cannot be preserved')
+    expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received content')
   })
 
   test('Responses-backed document translation rejects citations before upstream', async () => {
@@ -1508,10 +1499,10 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     const body = await res.json() as { error?: { type?: string, message?: string } }
     expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('Document citations cannot be preserved')
+    expect(body.error?.message).toContain('document blocks cannot be translated faithfully')
   })
 
-  test('Claude native passthrough expands legacy source.text documents', async () => {
+  test('Claude native passthrough rejects legacy source.text documents', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1536,20 +1527,11 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
-
-    const forwardedPayload = JSON.parse(String(init?.body)) as {
-      messages?: Array<{ content?: Array<Record<string, unknown>> }>
-    }
-
-    expect(forwardedPayload.messages?.[0]?.content?.[0]).toEqual({
-      type: 'text',
-      text: 'Hello from legacy source.text',
-    })
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received text')
   })
 
   test('Claude with file source type is rejected with 400', async () => {
@@ -1601,23 +1583,7 @@ describe('messages route upstream adaptation', () => {
     expect(forwardedPayload.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
   })
 
-  test('Claude document URL requests are forwarded natively (proxy no longer expands them locally)', async () => {
-    // Native /v1/messages will reject URL-backed documents itself; the proxy
-    // simply forwards. We mock the upstream returning a 4xx and assert the
-    // proxy did not pre-fetch the URL or fall back to chat-completions.
-    fetchMock.mockImplementationOnce(async (url: string) => {
-      if (!url.endsWith('/v1/messages')) {
-        throw new Error(`Unexpected upstream URL: ${url}`)
-      }
-      return new Response(JSON.stringify({
-        type: 'error',
-        error: {
-          type: 'invalid_request_error',
-          message: 'document.source.type=url is not supported',
-        },
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } })
-    })
-
+  test('Claude document URL requests are rejected locally outside the Claude Code surface', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1638,9 +1604,10 @@ describe('messages route upstream adaptation', () => {
     })
 
     expect(res.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/v1/messages')
+    expect(fetchMock).not.toHaveBeenCalled()
+    const body = await res.json() as { error?: { type?: string, message?: string } }
+    expect(body.error?.type).toBe('invalid_request_error')
+    expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received url')
   })
 
   test('/v1/responses Claude json_object requests are rejected before lossy Anthropic translation', async () => {
@@ -1706,14 +1673,33 @@ describe('messages route upstream adaptation', () => {
     }
   })
 
-  test('native count_tokens applies the same adaptive-thinking normalization as generation', async () => {
+  test('native count_tokens preserves endpoint-specific fields without generation sanitization', async () => {
+    const schema = {
+      type: 'object',
+      properties: { ok: { type: 'boolean' } },
+      required: ['ok'],
+      additionalProperties: false,
+    }
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4.6',
         max_tokens: 64,
-        thinking: { type: 'adaptive', budget_tokens_max: 4096 },
+        thinking: {
+          type: 'adaptive',
+          budget_tokens: 4096,
+          budget_tokens_max: 8192,
+        },
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema,
+            json_schema: { schema },
+            name: 'count_shape',
+            strict: true,
+          },
+        },
         messages: [{ role: 'user', content: 'Count this.' }],
       }),
     })
@@ -1722,8 +1708,22 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
-    const forwarded = JSON.parse(String(init.body)) as { thinking?: Record<string, unknown> }
-    expect(forwarded.thinking).toEqual({ type: 'adaptive' })
+    const forwarded = JSON.parse(String(init.body)) as {
+      thinking?: Record<string, unknown>
+      output_config?: { format?: Record<string, unknown> }
+    }
+    expect(forwarded.thinking).toEqual({
+      type: 'adaptive',
+      budget_tokens: 4096,
+      budget_tokens_max: 8192,
+    })
+    expect(forwarded.output_config?.format).toEqual({
+      type: 'json_schema',
+      schema,
+      json_schema: { schema },
+      name: 'count_shape',
+      strict: true,
+    })
   })
 
   test('count_tokens rejects Responses-backed models instead of counting a different wire request', async () => {
@@ -1748,7 +1748,54 @@ describe('messages route upstream adaptation', () => {
     })
   })
 
-  test('count_tokens expands text documents exactly like the native messages route', async () => {
+  test('count_tokens forwards count-token-accepted document shapes unchanged', async () => {
+    const documents = [
+      {
+        type: 'document',
+        source: {
+          type: 'text',
+          media_type: 'text/markdown',
+          data: '# Revenue\n\nUp 10%.',
+        },
+      },
+      {
+        type: 'document',
+        source: {
+          type: 'content',
+          content: [{ type: 'text', text: 'Content document.' }],
+        },
+      },
+      {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'text/html',
+          data: 'PGgxPlJldmVudWU8L2gxPg==',
+        },
+      },
+      {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: 'JVBERi0xLjQK',
+        },
+      },
+      {
+        type: 'document',
+        source: {
+          type: 'url',
+          url: 'https://example.com/report.pdf',
+        },
+      },
+      {
+        type: 'document',
+        source: {
+          type: 'file',
+          file_id: 'file_count_tokens_probe',
+        },
+      },
+    ]
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1757,38 +1804,24 @@ describe('messages route upstream adaptation', () => {
         messages: [
           {
             role: 'user',
-            content: [
-              {
-                type: 'document',
-                title: 'report.md',
-                context: 'Quarterly report',
-                source: {
-                  type: 'text',
-                  media_type: 'text/markdown',
-                  data: '# Revenue\n\nUp 10%.',
-                },
-              },
-            ],
+            content: documents,
           },
         ],
       }),
     })
 
     expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ input_tokens: 26 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
-    const forwardedPayload = JSON.parse(String(init.body)) as { messages: Array<{ content: Array<{ type: string, text?: string }> }> }
-    expect(forwardedPayload.messages[0].content[0]).toEqual({
-      type: 'text',
-      text: '[Document: report.md]\nContext: Quarterly report\n\n# Revenue\n\nUp 10%.',
-    })
-
-    const body = await res.json() as { input_tokens?: number }
-    expect(body.input_tokens).toBe(26)
+    const forwarded = JSON.parse(String(init.body)) as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>
+    }
+    expect(forwarded.messages[0].content).toEqual(documents)
   })
 
-  test('count_tokens rejects advisor tools instead of counting a different request', async () => {
+  test('count_tokens strips the unsupported advisor beta while preserving the tool', async () => {
     const res = await server.request('/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
@@ -1808,12 +1841,24 @@ describe('messages route upstream adaptation', () => {
       }),
     })
 
-    expect(res.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
-    const body = await res.json() as { type?: string, error?: { type?: string, message?: string } }
-    expect(body.type).toBe('error')
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('advisor_20260301 tools are not supported')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ input_tokens: 26 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.githubcopilot.com/v1/messages/count_tokens')
+    const headers = new Headers(init?.headers)
+    expect(headers.get('anthropic-beta')?.split(',').map(value => value.trim())).toEqual([
+      'claude-code-2025-01-01',
+      'fast-mode-2026-02-01',
+    ])
+    const forwarded = JSON.parse(String(init?.body)) as {
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(forwarded.tools?.[0]).toEqual({
+      type: 'advisor_20260301',
+      name: 'advisor',
+      model: 'claude-opus-4-7',
+    })
   })
 })
 

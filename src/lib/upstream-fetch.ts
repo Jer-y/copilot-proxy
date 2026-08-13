@@ -41,10 +41,6 @@ export function configureCopilotFetchTimeouts(config: CopilotFetchTimeoutConfig)
     : undefined
 }
 
-export function isRuntimeProxyEnvironmentEnabled(): boolean {
-  return copilotFetchTimeoutConfig.proxyEnv === true
-}
-
 export function getCopilotWebSocketHandshakeTimeoutMs(): number {
   const candidates = [
     copilotFetchTimeoutConfig.connectTimeoutMs ?? DEFAULT_COPILOT_CONNECT_TIMEOUT_MS,

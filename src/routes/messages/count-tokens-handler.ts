@@ -8,17 +8,12 @@ import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
-import { assertCopilotCompatibleAnthropicRequest, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
+import { throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { validateBody } from '~/lib/validate'
 import { createAnthropicCountTokens } from '~/services/copilot/create-anthropic-messages'
 
 import { normalizeAnthropicModelName, sanitizeAnthropicBetaHeader } from './model-normalization'
-import {
-  assertNoUnsupportedAdvisorToolsForCopilot,
-  normalizeAdaptiveThinkingForCopilot,
-  prepareAnthropicPayloadForNativeCopilotBackend,
-} from './request-adaptation'
 
 /**
  * Handles token counting for Anthropic messages
@@ -44,9 +39,6 @@ export async function handleCountTokens(c: Context) {
     }
   }
 
-  normalizeAdaptiveThinkingForCopilot(anthropicPayload)
-  assertNoUnsupportedAdvisorToolsForCopilot(anthropicPayload)
-
   const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
     models: selection.ctx.models?.data,
   })
@@ -62,11 +54,11 @@ export async function handleCountTokens(c: Context) {
     )
   }
 
-  // Count the exact request shape used by the native /v1/messages path.
-  // In particular, Copilot-unsupported text documents must be expanded in
-  // both endpoints or count_tokens can disagree with the actual request.
-  assertCopilotCompatibleAnthropicRequest(anthropicPayload, { allowDocuments: true })
-  await prepareAnthropicPayloadForNativeCopilotBackend(anthropicPayload)
+  // Copilot's token-counting endpoint accepts request shapes that native
+  // generation rejects. Keep this path endpoint-specific and forward the
+  // validated payload without generation-only sanitization or document gates.
+  // The advisor beta header has no token-count semantics and is stripped
+  // separately because Copilot rejects the header while accepting the tool.
 
   await enforceManualApproval(state)
 

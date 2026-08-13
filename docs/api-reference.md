@@ -29,6 +29,10 @@ OpenAI routes also accept the corresponding unprefixed path. Anthropic Messages 
 
 Availability is model- and upstream-dependent. See [Protocol compatibility](protocol-compatibility.md) and run the relevant [capability validation](copilot-capability-validation.md) before claiming support for an upstream-gated route.
 
+### Claude Code document boundary
+
+The supported Claude setup uses a model with a direct `/v1/messages` route. Claude Code reads local text and Markdown files into ordinary text or `tool_result` blocks. PDF input is forwarded only when the client emits a base64 `application/pdf` document block; Claude Code may instead render PDF pages as base64 images. The generation path does not implement generic Anthropic document adaptation: `document.source` values using `text`, `content`, `url`, `file`, or non-PDF base64 media types return an Anthropic `400 invalid_request_error`. Document blocks are also rejected on Anthropic-to-Responses translated generation routes rather than being fetched, parsed, or flattened locally. `/v1/messages/count_tokens` is intentionally endpoint-specific and does not apply generation-only sanitization or document gates because Copilot token counting accepts shapes that generation rejects. A successful URL or `file_id` token count proves only that the request shape was accepted; it does not prove that the URL was fetched or the file exists or is readable.
+
 In multi-account mode, generation routes accept `x-copilot-account: <id>`. Model-bearing requests may instead use `<account-id>/<model-id>`. Conflicting selectors return `409`; an unavailable selected account returns `503` without failover. `/usage?account=<id>` and `/readyz?account=<id>` inspect one account.
 
 When authentication recovery opens a scoped or global circuit, protected upstream routes fail locally with `503`, `Retry-After`, error code `copilot_upstream_circuit_open`, and `X-Copilot-Proxy-Recovery-State`. While the global circuit is open, `/readyz` also returns `503` with `Retry-After`. Clients and gateways should honor that delay instead of starting their own restart or retry loop.
@@ -40,7 +44,6 @@ When authentication recovery opens a scoped or global circuit, protected upstrea
 | `COPILOT_PROXY_ALLOWED_HOSTS` | Exact non-loopback Host allowlist |
 | `COPILOT_PROXY_CORS_ORIGINS` | Additional exact browser origins |
 | `COPILOT_PROXY_MAX_JSON_BODY_BYTES` | Positive JSON request-body limit; default 32 MiB |
-| `COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH=1` | Enables translated document URL fetching; private, loopback, metadata, reserved, and redirect targets remain blocked |
 | `COPILOT_PROXY_EXPOSE_TOKEN=1` | Enables `/token` under its loopback and same-origin restrictions until the variable is removed; a native-service environment can persist it across restarts |
 | `COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY=1` | Includes GitHub login and numeric user ID in account health data; disabled by default |
 | `COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS=1` | Adds `<account>/<model>` aliases to non-Codex `/models` responses |
