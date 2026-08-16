@@ -375,7 +375,15 @@ export const ChatCompletionsPayloadSchema = z.object({
   model: z.string(),
   messages: z.array(z.object({
     role: z.string(),
-    content: z.union([z.string(), z.array(z.unknown()), z.null()]),
+    // A single content-part object (e.g. { type: 'text', text: '...' }) is
+    // accepted for compatibility with clients that emit it; it is normalized to
+    // a string/array by normalizeChatCompletionContent() before forwarding.
+    content: z.union([
+      z.string(),
+      z.array(z.unknown()),
+      z.record(z.string(), z.unknown()),
+      z.null(),
+    ]),
   }).passthrough()),
   stream: z.boolean().nullable().optional(),
   temperature: z.number().nullable().optional(),
