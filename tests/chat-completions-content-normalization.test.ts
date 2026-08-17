@@ -27,6 +27,20 @@ test('schema still accepts string, array, and null content', () => {
   expect(result.success).toBe(true)
 })
 
+test('schema accepts an assistant message with tool_calls and NO content field', () => {
+  const result = ChatCompletionsPayloadSchema.safeParse(textPayload([
+    { role: 'user', content: 'hi' },
+    {
+      role: 'assistant',
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'add', arguments: '{}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'c1', content: '4' },
+  ]))
+  expect(result.success).toBe(true)
+})
+
 test('normalizer converts a text object to a plain string', () => {
   const out = normalizeChatCompletionContent({
     model: 'gpt-test',
@@ -59,6 +73,21 @@ test('normalizer leaves string, array, and null content unchanged', () => {
   expect(out.messages[0]!.content).toBe('plain')
   expect(out.messages[1]!.content).toBe(arrayContent)
   expect(out.messages[2]!.content).toBeNull()
+})
+
+test('normalizer turns absent content into null (assistant tool-call turn)', () => {
+  const out = normalizeChatCompletionContent({
+    model: 'gpt-test',
+    messages: [
+      {
+        role: 'assistant',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'add', arguments: '{}' } },
+        ],
+      } as never,
+    ],
+  })
+  expect(out.messages[0]!.content).toBeNull()
 })
 
 // ─── End-to-end: full /chat/completions route with a mocked upstream ───

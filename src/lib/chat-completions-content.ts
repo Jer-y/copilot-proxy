@@ -24,6 +24,12 @@ export function normalizeChatCompletionContent(
 function normalizeMessageContent(message: Message): Message {
   const content = message.content as unknown
 
+  // WorkBuddy custom models emit assistant messages with `tool_calls` but no
+  // `content` field at all. OpenAI treats that as content === null, which is
+  // the valid form upstream expects, so normalize absent content to null.
+  if (content === undefined)
+    return { ...message, content: null }
+
   if (content === null || typeof content === 'string' || Array.isArray(content))
     return message
 

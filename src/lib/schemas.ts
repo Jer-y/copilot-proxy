@@ -378,12 +378,17 @@ export const ChatCompletionsPayloadSchema = z.object({
     // A single content-part object (e.g. { type: 'text', text: '...' }) is
     // accepted for compatibility with clients that emit it; it is normalized to
     // a string/array by normalizeChatCompletionContent() before forwarding.
+    // Some clients (e.g. WorkBuddy custom models) also emit assistant messages
+    // with `tool_calls` but NO `content` field at all. OpenAI treats that as
+    // content === null, so we accept absent/undefined content too and let the
+    // normalizer turn it into null.
     content: z.union([
       z.string(),
       z.array(z.unknown()),
       z.record(z.string(), z.unknown()),
       z.null(),
-    ]),
+      z.undefined(),
+    ]).optional(),
   }).passthrough()),
   stream: z.boolean().nullable().optional(),
   temperature: z.number().nullable().optional(),
