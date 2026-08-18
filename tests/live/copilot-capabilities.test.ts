@@ -1,5 +1,4 @@
 import type {
-  AnthropicFilesCapabilityProbe,
   AnthropicMessagesCapabilityProbe,
   CapabilityProbe,
   CapabilityProbeEndpoint,
@@ -20,7 +19,12 @@ import { state } from '~/lib/state'
 import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 import { createChatCompletions } from '~/services/copilot/create-chat-completions'
 import { createResponses } from '~/services/copilot/create-responses'
-import { copilotCapabilityProbes } from './copilot-capability-matrix'
+import {
+  buildAnthropicPauseContinuation,
+  copilotCapabilityProbes,
+  findRetryableAnthropicServerToolErrorCode,
+  mergeAnthropicProbeResponses,
+} from './copilot-capability-matrix'
 
 type ProbeStatus
   = | 'supported'
@@ -41,6 +45,7 @@ interface ProbeOutcome {
   httpStatus?: number
   errorCode?: string
   message?: string
+  retryable?: boolean
 }
 
 interface LiveEnvConfig extends LiveCopilotProbeConfig {
@@ -54,6 +59,7 @@ const LIVE_RESPONSES_ONLY = process.env.COPILOT_LIVE_RESPONSES_ONLY === '1'
 const LIVE_ANTHROPIC_ONLY = process.env.COPILOT_LIVE_ANTHROPIC_ONLY === '1'
 const LIVE_TEST_TIMEOUT_MS = parseTimeout(process.env.COPILOT_LIVE_TIMEOUT_MS)
 const LIVE_TEST_RETRY_COUNT = parseRetryCount(process.env.COPILOT_LIVE_RETRY_COUNT)
+const MAX_ANTHROPIC_PAUSE_CONTINUATIONS = 5
 const runLiveTest = LIVE_TEST_ENABLED ? test : test.skip
 
 runLiveTest(
@@ -107,8 +113,7 @@ function getEnabledLiveProbes(config: LiveEnvConfig): Array<CapabilityProbe> {
 
     return copilotCapabilityProbes.filter(probe =>
       probe.endpoint === 'anthropic-messages'
-      || probe.endpoint === 'anthropic-raw'
-      || probe.endpoint === 'anthropic-files',
+      || probe.endpoint === 'anthropic-raw',
     )
   }
 
@@ -145,7 +150,7 @@ async function runProbeWithRetries(
 }
 
 function isRetryableProbeOutcome(outcome: ProbeOutcome): boolean {
-  if (outcome.status === 'network_error') {
+  if (outcome.retryable || outcome.status === 'network_error') {
     return true
   }
 
@@ -247,9 +252,30 @@ async function runProbe(
     const payload = anthropicProbe.buildPayload(config)
 
     try {
-      const result = await withLiveCopilotState(config, async () => {
-        return await createAnthropicMessages(payload)
+      const probeResponses: Array<AnthropicResponse> = []
+      let currentPayload = payload
+      let result = await withLiveCopilotState(config, async () => {
+        return await createAnthropicMessages(currentPayload)
       })
+      if (isAnthropicResponse(result.body)) {
+        probeResponses.push(result.body)
+      }
+
+      for (
+        let continuation = 0;
+        continuation < MAX_ANTHROPIC_PAUSE_CONTINUATIONS
+        && isAnthropicResponse(result.body)
+        && result.body.stop_reason === 'pause_turn';
+        continuation++
+      ) {
+        currentPayload = buildAnthropicPauseContinuation(payload, result.body)
+        result = await withLiveCopilotState(config, async () => {
+          return await createAnthropicMessages(currentPayload)
+        })
+        if (isAnthropicResponse(result.body)) {
+          probeResponses.push(result.body)
+        }
+      }
 
       if (!isAnthropicResponse(result.body)) {
         return {
@@ -263,8 +289,7 @@ async function runProbe(
         }
       }
 
-      const validationError = anthropicProbe.validateResponse?.(result.body)
-      if (validationError) {
+      if (result.body.stop_reason === 'pause_turn') {
         return {
           id: probe.id,
           endpoint: probe.endpoint,
@@ -272,7 +297,27 @@ async function runProbe(
           status: 'unexpected_response',
           model: payload.model,
           durationMs: Date.now() - startedAt,
+          message: `Anthropic server tool remained paused after ${MAX_ANTHROPIC_PAUSE_CONTINUATIONS} continuations`,
+        }
+      }
+
+      const validationResponse = mergeAnthropicProbeResponses(probeResponses)
+      const validationError = anthropicProbe.validateResponse?.(validationResponse)
+      if (validationError) {
+        const retryableErrorCode = findRetryableAnthropicServerToolErrorCode(
+          validationResponse,
+          validationError,
+        )
+        return {
+          id: probe.id,
+          endpoint: probe.endpoint,
+          title: probe.title,
+          status: retryableErrorCode ? 'api_error' : 'unexpected_response',
+          model: payload.model,
+          durationMs: Date.now() - startedAt,
+          errorCode: retryableErrorCode,
           message: validationError,
+          retryable: retryableErrorCode !== undefined,
         }
       }
 
@@ -349,66 +394,6 @@ async function runProbe(
         error,
         probe,
         model: request.model ?? config.claudeModel,
-        durationMs: Date.now() - startedAt,
-      })
-    }
-  }
-
-  if (probe.endpoint === 'anthropic-files') {
-    const probeConfig = (probe as AnthropicFilesCapabilityProbe).buildPayload(config)
-
-    try {
-      const result = await withLiveCopilotState(config, async () => {
-        const headers: Record<string, string> = {
-          ...copilotHeaders(state.defaultAccount),
-          ...(probeConfig.headers || {}),
-        }
-        const response = await fetch(`${copilotBaseUrl(state.defaultAccount)}/v1/files`, {
-          method: 'GET',
-          headers,
-        })
-        return { response, body: await response.json().catch(() => null) }
-      })
-
-      if (result.response.ok) {
-        return {
-          id: probe.id,
-          endpoint: probe.endpoint,
-          title: probe.title,
-          status: 'supported',
-          model: 'N/A',
-          durationMs: Date.now() - startedAt,
-        }
-      }
-
-      // Classify as unsupported if status matches
-      if (probe.isUnsupported?.({ status: result.response.status })) {
-        return {
-          id: probe.id,
-          endpoint: probe.endpoint,
-          title: probe.title,
-          status: 'unsupported',
-          model: 'N/A',
-          durationMs: Date.now() - startedAt,
-          httpStatus: result.response.status,
-        }
-      }
-
-      return {
-        id: probe.id,
-        endpoint: probe.endpoint,
-        title: probe.title,
-        status: 'api_error',
-        model: 'N/A',
-        durationMs: Date.now() - startedAt,
-        httpStatus: result.response.status,
-      }
-    }
-    catch (error) {
-      return classifyProbeError({
-        error,
-        probe,
-        model: 'N/A',
         durationMs: Date.now() - startedAt,
       })
     }
@@ -543,7 +528,7 @@ function isExpectedRawResponsesBody(
 
 function isExpectedRawAnthropicBody(
   bodyText: string,
-  expectedBody: 'any' | 'message_stream' | 'input_tokens' | 'list',
+  expectedBody: 'any' | 'message_stream' | 'input_tokens',
 ): boolean {
   if (expectedBody === 'any') {
     return true
@@ -562,11 +547,7 @@ function isExpectedRawAnthropicBody(
     return false
   }
 
-  if (expectedBody === 'input_tokens') {
-    return typeof parsed.input_tokens === 'number'
-  }
-
-  return Array.isArray(parsed.data)
+  return typeof parsed.input_tokens === 'number'
 }
 
 async function withLiveCopilotState<T>(

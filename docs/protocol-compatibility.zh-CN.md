@@ -55,6 +55,8 @@ Codex 目前在模型提供商级别选择 Responses 传输，而不是按模型
 
 翻译路径会拒绝 Responses 无法表示的 Anthropic 服务端工具和会话状态控制，也会拒绝语义会丢失的请求控制，例如不受支持的停止、采样、推理、任务预算、工具选择或 MCP 设置。只有所选后端能够保留契约时，才会翻译自定义函数工具和输出格式。
 
+原生工具探针区分 `code_execution`、`web_search` 等服务端托管工具与 `bash`、文本编辑器、memory 等客户端执行工具：前者必须验证可观察的服务端结果，后者必须验证名称正确且输入可执行、符合请求操作的 `tool_use`。Anthropic 平台控制面 API 不属于逐模型能力矩阵。
+
 Anthropic 专属行为以原生 Messages 为准。代理不会为了获得表面上的 `200` 响应而通过 Chat Completions 路由 Messages。
 
 ## 能力声明所需的证据

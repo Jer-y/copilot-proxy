@@ -31,7 +31,7 @@ OpenAI 路由也接受对应的不带 `/v1` 前缀路径。Anthropic Messages �
 
 ### Claude Code 文档边界
 
-受支持的 Claude setup 只选择具有原生 `/v1/messages` 路由的模型。Claude Code 会把本地文本与 Markdown 文件转换为普通 `text` 或 `tool_result` block。只有客户端发送 base64 `application/pdf` document block 时才原样转发 PDF；Claude Code 也可能把 PDF 页面渲染为 base64 图片。生成路径不实现通用 Anthropic document 适配：`document.source` 使用 `text`、`content`、`url`、`file` 或非 PDF base64 media type 时，会返回 Anthropic `400 invalid_request_error`。Anthropic 到 Responses 的生成翻译路由同样会拒绝 document block，不会在本地抓取、解析或展开文档。`/v1/messages/count_tokens` 按端点独立处理；由于 Copilot token counting 接受 generation 会拒绝的形状，该端点不会套用 generation 专用的 sanitizer 或 document gate。URL 或 `file_id` 成功返回 token 数只代表请求形状被接受，不代表 URL 已被抓取，也不代表文件存在或可读。
+受支持的 Claude setup 只选择具有原生 `/v1/messages` 路由的模型。Claude Code 会把本地文本与 Markdown 文件转换为普通 `text` 或 `tool_result` block。只有客户端发送 base64 `application/pdf` document block 时才原样转发 PDF；Claude Code 也可能把 PDF 页面渲染为 base64 图片。代理不提供 Anthropic Files、Message Batches、Skills 或 Managed Agents 控制面。生成路径不实现通用 Anthropic document 适配：`document.source` 使用 `text`、`content`、`url`、`file` 或非 PDF base64 media type 时，会返回 Anthropic `400 invalid_request_error`。Anthropic 到 Responses 的生成翻译路由同样会拒绝 document block，不会在本地抓取、解析或展开文档。`/v1/messages/count_tokens` 按端点独立处理；由于 Copilot token counting 接受 generation 会拒绝的形状，该端点不会套用 generation 专用的 sanitizer 或 document gate。URL 或 `file_id` 成功返回 token 数只代表请求形状被接受，不代表 URL 已被抓取，也不代表文件存在或可读。
 
 多账号模式下，生成路由接受 `x-copilot-account: <id>`。带模型的请求也可以使用 `<account-id>/<model-id>`。selector 冲突时返回 `409`；所选账号不可用时返回 `503`，不会自动切换。`/usage?account=<id>` 与 `/readyz?account=<id>` 可检查单个账号。
 

@@ -1,4 +1,4 @@
-import type { AnthropicMessagesPayload, AnthropicResponse } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicToolUseBlock } from '~/lib/translation/types'
 import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 
@@ -19,7 +19,7 @@ export interface ProbeErrorDetails {
   rawBody?: string
 }
 
-export type CapabilityProbeEndpoint = 'chat-completions' | 'responses' | 'responses-raw' | 'anthropic-messages' | 'anthropic-raw' | 'anthropic-files'
+export type CapabilityProbeEndpoint = 'chat-completions' | 'responses' | 'responses-raw' | 'anthropic-messages' | 'anthropic-raw'
 export type CapabilityProbeTier = 'baseline' | 'optional'
 export type CapabilityProbeExpectation
   = | 'must_support'
@@ -72,7 +72,7 @@ export interface RawAnthropicProbeRequest {
   path: string
   body?: Record<string, unknown>
   headers?: Record<string, string>
-  expectedBody?: 'any' | 'message_stream' | 'input_tokens' | 'list'
+  expectedBody?: 'any' | 'message_stream' | 'input_tokens'
   model?: string
 }
 
@@ -81,12 +81,58 @@ export interface RawAnthropicCapabilityProbe extends CapabilityProbeBase {
   buildRequest: (config: LiveCopilotProbeConfig) => RawAnthropicProbeRequest
 }
 
-export interface AnthropicFilesCapabilityProbe extends CapabilityProbeBase {
-  endpoint: 'anthropic-files'
-  buildPayload: (config: LiveCopilotProbeConfig) => { headers?: Record<string, string> }
+export type CapabilityProbe = ChatCompletionsCapabilityProbe | ResponsesCapabilityProbe | RawResponsesCapabilityProbe | AnthropicMessagesCapabilityProbe | RawAnthropicCapabilityProbe
+
+export function buildAnthropicPauseContinuation(
+  payload: AnthropicMessagesPayload,
+  response: AnthropicResponse,
+): AnthropicMessagesPayload {
+  return {
+    ...payload,
+    messages: [
+      ...payload.messages,
+      { role: 'assistant', content: response.content },
+    ],
+  }
 }
 
-export type CapabilityProbe = ChatCompletionsCapabilityProbe | ResponsesCapabilityProbe | RawResponsesCapabilityProbe | AnthropicMessagesCapabilityProbe | RawAnthropicCapabilityProbe | AnthropicFilesCapabilityProbe
+export function mergeAnthropicProbeResponses(
+  responses: ReadonlyArray<AnthropicResponse>,
+): AnthropicResponse {
+  if (responses.length === 0) {
+    throw new Error('Cannot merge an empty Anthropic probe response list')
+  }
+
+  return Object.assign({}, ...responses, {
+    content: responses.flatMap(response => response.content),
+  }) as AnthropicResponse
+}
+
+export function findRetryableAnthropicServerToolErrorCode(
+  response: AnthropicResponse,
+  validationError: string,
+): string | undefined {
+  const retryableCodes = new Set(['too_many_requests', 'unavailable'])
+
+  for (const block of response.content) {
+    if (!block.type.endsWith('_tool_result') || !isRecord(block) || !isRecord(block.content)) {
+      continue
+    }
+
+    const errorCode = block.content.error_code
+    if (typeof errorCode !== 'string') {
+      continue
+    }
+    if (
+      retryableCodes.has(errorCode)
+      && validationError.includes(`error_code=${errorCode}`)
+    ) {
+      return errorCode
+    }
+  }
+
+  return undefined
+}
 
 interface ResponsesReasoningProbePayload extends Omit<ResponsesPayload, 'reasoning'> {
   reasoning?: {
@@ -101,6 +147,9 @@ const NOOP_TOOL_SCHEMA = {
   properties: {},
   additionalProperties: false,
 } as const
+
+const CODE_EXECUTION_SENTINEL = '323'
+const WEB_SEARCH_SENTINEL = 'Example Domain'
 
 const TINY_PNG_DATA_URL
   = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABjElEQVR4nAXBkQIAIAxAweEwDMMwDMNhOByGw/39604QQYUmdGEIU1jCFo5gwhVcCOEJKZQIoqjSlK4MZSpL2cpRTLmKK6E8JZVSQRraaI3eGI3ZWI3dOA1r3IY3ovEa2agmSEc7rdM7ozM7q7M7p2Od2/FOdF4nO9UFGeigDfpgDOZgDfbgDGxwBz6IwRvkoIYgE520SZ+MyZysyZ6ciU3uxCcxeZOc1BRkoYu26IuxmIu12IuzsMVd+CIWb5GLWoJsdNM2fTM2c7M2e3M2trkb38TmbXJTW5CDHtqhH8ZhHtZhH87BDvfghzi8Qx7qCGKo0YxuDGMay9jGMcy4hhthPCONMkEuemmXfhmXeVmXfTkXu9yLX+LyLnmpK4ijTnO6M5zpLGc7xzHnOu6E85x0ygUJNGhBD0YwgxXs4AQW3MCDCF6QQYUgD320R3+Mx3ysx36chz3uwx/xeI981BMk0aQlPRnJTFayk5NYchNPInlJJpWCFFq0ohejmMUqdnEKK27hRRSvyKLqA5W0dxDdq+ReAAAAAElFTkSuQmCC'
@@ -202,6 +251,211 @@ function validateAnthropicCitations(response: AnthropicResponse): string | undef
   return hasCitations
     ? undefined
     : 'Expected at least one non-empty content[].citations array'
+}
+
+function validateAnthropicCodeExecution(response: AnthropicResponse): string | undefined {
+  const serverToolUseIds = new Set<string>()
+  for (const block of response.content) {
+    if (
+      block.type === 'server_tool_use'
+      && (block.name === 'bash_code_execution' || block.name === 'code_execution')
+    ) {
+      serverToolUseIds.add(block.id)
+    }
+  }
+  if (serverToolUseIds.size === 0) {
+    return 'Expected a code-execution server_tool_use block'
+  }
+
+  let hasLinkedResult = false
+  let hasSuccessfulSentinelResult = false
+  let executionErrorCode: string | undefined
+  for (const block of response.content) {
+    if (block.type !== 'bash_code_execution_tool_result' || !isRecord(block)) {
+      continue
+    }
+    if (typeof block.tool_use_id !== 'string' || !serverToolUseIds.has(block.tool_use_id)) {
+      continue
+    }
+
+    hasLinkedResult = true
+    if (!isRecord(block.content)) {
+      continue
+    }
+    if (typeof block.content.error_code === 'string') {
+      executionErrorCode ??= block.content.error_code
+      continue
+    }
+    if (
+      block.content.type === 'bash_code_execution_result'
+      && block.content.return_code === 0
+      && typeof block.content.stdout === 'string'
+      && block.content.stdout.trim() === CODE_EXECUTION_SENTINEL
+    ) {
+      hasSuccessfulSentinelResult = true
+    }
+  }
+  if (!hasLinkedResult) {
+    return 'Expected a bash_code_execution_tool_result linked to the code-execution server_tool_use'
+  }
+  if (!hasSuccessfulSentinelResult) {
+    return executionErrorCode
+      ? `Code execution returned error_code=${executionErrorCode}`
+      : `Expected a linked successful code execution result with stdout=${CODE_EXECUTION_SENTINEL}`
+  }
+
+  let finalText: string | undefined
+  for (const block of response.content) {
+    if (block.type === 'text') {
+      finalText = block.text
+    }
+  }
+  if (finalText?.trim() !== CODE_EXECUTION_SENTINEL) {
+    return `Expected final assistant text to equal ${CODE_EXECUTION_SENTINEL}`
+  }
+  if (response.stop_reason !== 'end_turn') {
+    return 'Expected code execution probe to finish with stop_reason=end_turn'
+  }
+
+  const container = (response as unknown as Record<string, unknown>).container
+  if (
+    !isRecord(container)
+    || typeof container.id !== 'string'
+    || container.id.trim() === ''
+    || typeof container.expires_at !== 'string'
+    || !Number.isFinite(Date.parse(container.expires_at))
+    || Date.parse(container.expires_at) <= Date.now()
+  ) {
+    return 'Expected code execution response to include expiring container metadata'
+  }
+
+  return undefined
+}
+
+function validateAnthropicClientToolUse(
+  toolName: string,
+  validateInput: (input: Record<string, unknown>) => string | undefined,
+) {
+  return (response: AnthropicResponse): string | undefined => {
+    const toolUse = response.content.find((block): block is AnthropicToolUseBlock =>
+      block.type === 'tool_use' && block.name === toolName,
+    )
+    if (!toolUse) {
+      return `Expected a client tool_use block for ${toolName}`
+    }
+    if (!isRecord(toolUse.input)) {
+      return `Expected executable ${toolName} tool input: input must be an object`
+    }
+    const inputError = validateInput(toolUse.input)
+    if (inputError) {
+      return `Expected executable ${toolName} tool input: ${inputError}`
+    }
+    return response.stop_reason === 'tool_use'
+      ? undefined
+      : `Expected client tool probe for ${toolName} to finish with stop_reason=tool_use`
+  }
+}
+
+function validateAnthropicBashInput(input: Record<string, unknown>): string | undefined {
+  const command = typeof input.command === 'string' ? input.command.trim() : ''
+  const directSentinel = /^(?:printf|\/bin\/printf|\/usr\/bin\/printf)[ \t]+(?:CLIENT_BASH_OK|'CLIENT_BASH_OK(?:\\n)?'|"CLIENT_BASH_OK(?:\\n)?")$/
+  const formattedSentinel = /^(?:printf|\/bin\/printf|\/usr\/bin\/printf)[ \t]+(?:%s|'%s(?:\\n)?'|"%s(?:\\n)?")[ \t]+(?:CLIENT_BASH_OK|'CLIENT_BASH_OK'|"CLIENT_BASH_OK")$/
+  return directSentinel.test(command) || formattedSentinel.test(command)
+    ? undefined
+    : 'command must be a standalone printf that prints CLIENT_BASH_OK'
+}
+
+function validateAnthropicViewInput(expectedPath: string) {
+  return (input: Record<string, unknown>): string | undefined => {
+    if (input.command !== 'view') {
+      return 'command must equal view'
+    }
+    return input.path === expectedPath
+      ? undefined
+      : `path must equal ${expectedPath}`
+  }
+}
+
+function validateAnthropicWebSearch(response: AnthropicResponse): string | undefined {
+  const serverToolUseIds = new Set<string>()
+  for (const block of response.content) {
+    if (block.type === 'server_tool_use' && block.name === 'web_search') {
+      serverToolUseIds.add(block.id)
+    }
+  }
+  if (serverToolUseIds.size === 0) {
+    return 'Expected a web_search server_tool_use block'
+  }
+
+  let hasLinkedResult = false
+  let hasSuccessfulResult = false
+  let lastSuccessfulResultIndex = -1
+  let resultHasSourceUrl = false
+  let searchErrorCode: string | undefined
+  for (const [index, block] of response.content.entries()) {
+    if (block.type !== 'web_search_tool_result' || !isRecord(block)) {
+      continue
+    }
+    if (typeof block.tool_use_id !== 'string' || !serverToolUseIds.has(block.tool_use_id)) {
+      continue
+    }
+
+    hasLinkedResult = true
+    if (Array.isArray(block.content)) {
+      const searchResults = block.content.filter(item =>
+        isRecord(item) && item.type === 'web_search_result',
+      )
+      if (searchResults.length > 0) {
+        hasSuccessfulResult = true
+        lastSuccessfulResultIndex = index
+        resultHasSourceUrl ||= searchResults.some(result =>
+          typeof result.url === 'string' && isExampleDomainUrl(result.url),
+        )
+      }
+    }
+    else if (isRecord(block.content) && typeof block.content.error_code === 'string') {
+      searchErrorCode ??= block.content.error_code
+    }
+  }
+  if (!hasLinkedResult) {
+    return 'Expected a web_search_tool_result linked to the web_search server_tool_use'
+  }
+  if (!hasSuccessfulResult) {
+    return searchErrorCode
+      ? `Web search returned error_code=${searchErrorCode}`
+      : 'Expected a linked web_search_tool_result with successful search results'
+  }
+
+  const finalText = response.content
+    .slice(lastSuccessfulResultIndex + 1)
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('')
+  if (finalText.trim() !== WEB_SEARCH_SENTINEL) {
+    return `Expected final assistant text to equal ${WEB_SEARCH_SENTINEL}`
+  }
+  const citations = response.content
+    .filter(block => block.type === 'text')
+    .flatMap(block => block.citations ?? [])
+  const citationHasSourceUrl = citations.some(citation =>
+    isRecord(citation)
+    && typeof citation.url === 'string'
+    && isExampleDomainUrl(citation.url),
+  )
+  if (!resultHasSourceUrl && !citationHasSourceUrl) {
+    return 'Expected web search results or citations to include an example.com URL'
+  }
+  return response.stop_reason === 'end_turn'
+    ? undefined
+    : 'Expected web search probe to finish with stop_reason=end_turn'
+}
+
+function isExampleDomainUrl(value: string): boolean {
+  return /https?:\/\/(?:www\.)?example\.com(?:\/|$)/i.test(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function toAnthropicHyphenAlias(model: string): string {
@@ -2258,33 +2512,38 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
   },
   {
     id: 'native-anthropic-server-tool-code-execution',
-    title: 'Native Anthropic code_execution server tool schema',
+    title: 'Native Anthropic code_execution server tool semantics',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Allow Anthropic code_execution tools through native passthrough only when Copilot accepts the schema.',
-    candidateMapping: 'Anthropic code_execution_20260120 -> Copilot /v1/messages tools',
-    rationale: 'Server-side tool schemas vary by Claude model and backend policy.',
+    candidateFix: 'Allow Anthropic code_execution through native passthrough only when Copilot completes a real deterministic sandbox execution.',
+    candidateMapping: 'Anthropic code_execution_20260521 -> Copilot /v1/messages server tool execution',
+    rationale: 'Schema acceptance is insufficient for a hosted tool; require the server call, execution result, exact stdout/final answer, and expiring container metadata.',
     isUnsupported: buildUnsupportedMatcher([
-      'code_execution_20260120',
+      'code_execution_20260521',
       'code_execution',
       'tools.0',
     ]),
     buildPayload: config => ({
       ...buildAnthropicBasicPayload(config),
-      tools: [{ type: 'code_execution_20260120', name: 'code_execution' }],
-      messages: [{ role: 'user', content: 'Reply OK without using tools.' }],
+      max_tokens: 512,
+      tools: [{ type: 'code_execution_20260521', name: 'code_execution' }],
+      messages: [{
+        role: 'user',
+        content: `Use code execution to calculate 17 * 19. Print only ${CODE_EXECUTION_SENTINEL} in the execution environment, then answer with exactly ${CODE_EXECUTION_SENTINEL}.`,
+      }],
     }),
+    validateResponse: validateAnthropicCodeExecution,
   },
   {
-    id: 'native-anthropic-server-tool-memory',
-    title: 'Native Anthropic memory server tool schema',
+    id: 'native-anthropic-client-tool-memory',
+    title: 'Native Anthropic memory client tool call',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Allow Anthropic memory tools through native passthrough only when Copilot accepts the schema.',
-    candidateMapping: 'Anthropic memory_20250818 -> Copilot /v1/messages tools',
-    rationale: 'Memory is a Claude server-side tool schema used by newer SDKs.',
+    candidateFix: 'Preserve the Anthropic memory tool declaration when Copilot can emit a client-executed tool call.',
+    candidateMapping: 'Anthropic memory_20250818 -> Copilot /v1/messages client tool_use',
+    rationale: 'The caller implements memory storage and execution; the upstream capability is producing the correct tool_use block, not running a hosted memory service.',
     isUnsupported: buildUnsupportedMatcher([
       'memory_20250818',
       'memory',
@@ -2292,19 +2551,25 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     ]),
     buildPayload: config => ({
       ...buildAnthropicBasicPayload(config),
+      max_tokens: 256,
       tools: [{ type: 'memory_20250818', name: 'memory' }],
-      messages: [{ role: 'user', content: 'Reply OK without using tools.' }],
+      tool_choice: { type: 'tool', name: 'memory' },
+      messages: [{ role: 'user', content: 'Use the memory tool to list the memory directory.' }],
     }),
+    validateResponse: validateAnthropicClientToolUse(
+      'memory',
+      validateAnthropicViewInput('/memories'),
+    ),
   },
   {
-    id: 'native-anthropic-server-tool-bash',
-    title: 'Native Anthropic bash server tool schema',
+    id: 'native-anthropic-client-tool-bash',
+    title: 'Native Anthropic bash client tool call',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Allow Anthropic bash tools through native passthrough only when Copilot accepts the schema.',
-    candidateMapping: 'Anthropic bash_20250124 -> Copilot /v1/messages tools',
-    rationale: 'Claude Code-style local tool loops rely on client tools, but server-side bash schema support still affects SDK compatibility.',
+    candidateFix: 'Preserve the Anthropic bash declaration when Copilot can emit a client-executed tool call.',
+    candidateMapping: 'Anthropic bash_20250124 -> Copilot /v1/messages client tool_use',
+    rationale: 'Claude Code or the SDK executes bash locally; Copilot only needs to emit the correct tool_use block.',
     isUnsupported: buildUnsupportedMatcher([
       'bash_20250124',
       'bash',
@@ -2312,19 +2577,22 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     ]),
     buildPayload: config => ({
       ...buildAnthropicBasicPayload(config),
+      max_tokens: 256,
       tools: [{ type: 'bash_20250124', name: 'bash' }],
-      messages: [{ role: 'user', content: 'Reply OK without using tools.' }],
+      tool_choice: { type: 'tool', name: 'bash' },
+      messages: [{ role: 'user', content: 'Use the bash tool to run printf CLIENT_BASH_OK.' }],
     }),
+    validateResponse: validateAnthropicClientToolUse('bash', validateAnthropicBashInput),
   },
   {
-    id: 'native-anthropic-server-tool-text-editor',
-    title: 'Native Anthropic text editor server tool schema',
+    id: 'native-anthropic-client-tool-text-editor',
+    title: 'Native Anthropic text editor client tool call',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Allow Anthropic text editor tools through native passthrough only when Copilot accepts the schema.',
-    candidateMapping: 'Anthropic text_editor_20250728 -> Copilot /v1/messages tools',
-    rationale: 'Claude Code-compatible edit tools have versioned Anthropic schema names.',
+    candidateFix: 'Preserve the Anthropic text-editor declaration when Copilot can emit a client-executed tool call.',
+    candidateMapping: 'Anthropic text_editor_20250728 -> Copilot /v1/messages client tool_use',
+    rationale: 'Claude Code or the SDK owns the filesystem and executes the edit; the upstream capability is the tool call shape.',
     isUnsupported: buildUnsupportedMatcher([
       'text_editor_20250728',
       'text_editor',
@@ -2332,29 +2600,37 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     ]),
     buildPayload: config => ({
       ...buildAnthropicBasicPayload(config),
+      max_tokens: 256,
       tools: [{ type: 'text_editor_20250728', name: 'str_replace_based_edit_tool' }],
-      messages: [{ role: 'user', content: 'Reply OK without using tools.' }],
+      tool_choice: { type: 'tool', name: 'str_replace_based_edit_tool' },
+      messages: [{ role: 'user', content: 'Use the text editor tool to view the file /tmp/probe.txt.' }],
     }),
+    validateResponse: validateAnthropicClientToolUse(
+      'str_replace_based_edit_tool',
+      validateAnthropicViewInput('/tmp/probe.txt'),
+    ),
   },
   {
     id: 'native-anthropic-server-tool-web-search',
-    title: 'Native Anthropic web_search server tool schema',
+    title: 'Native Anthropic web_search server tool semantics',
     tier: 'optional',
     endpoint: 'anthropic-messages',
     expectation: 'support_or_clean_unsupported',
-    candidateFix: 'Do not add a local rejection if Copilot accepts web_search for any selected Claude model.',
-    candidateMapping: 'Anthropic web_search_20260209 -> Copilot /v1/messages tools',
-    rationale: 'Web search is a documented Anthropic server-side tool but may be unavailable through Copilot.',
+    candidateFix: 'Do not add a local rejection if Copilot completes a real web search with the expected fact and source for the selected Claude model.',
+    candidateMapping: 'Anthropic web_search_20260318 -> Copilot /v1/messages server tool execution',
+    rationale: 'Web search is a hosted tool; acceptance alone is insufficient, so a positive result must include the completed call, result, expected fact, and example.com source.',
     isUnsupported: buildUnsupportedMatcher([
-      'web_search_20260209',
+      'web_search_20260318',
       'web search',
       'web_search',
     ]),
     buildPayload: config => ({
       ...buildAnthropicBasicPayload(config),
-      tools: [{ type: 'web_search_20260209', name: 'web_search' }],
-      messages: [{ role: 'user', content: 'Reply OK without using tools.' }],
+      max_tokens: 512,
+      tools: [{ type: 'web_search_20260318', name: 'web_search' }],
+      messages: [{ role: 'user', content: `Use web search to find the H1 heading on example.com and answer with exactly ${WEB_SEARCH_SENTINEL}.` }],
     }),
+    validateResponse: validateAnthropicWebSearch,
   },
   {
     id: 'native-anthropic-mid-conversation-system-beta',
@@ -2722,81 +2998,6 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
           { type: 'text', text: 'What is this?' },
         ],
       }],
-    }),
-  },
-  {
-    id: 'native-anthropic-models-api-unsupported',
-    title: 'Anthropic Models API is not exposed by Copilot',
-    tier: 'optional',
-    endpoint: 'anthropic-raw',
-    expectation: 'must_be_unsupported',
-    candidateFix: 'Use Copilot /models for local model listing; do not rely on upstream Anthropic /v1/models.',
-    candidateMapping: 'Anthropic GET /v1/models -> Copilot /v1/models',
-    rationale: 'The official Claude SDK exposes Models API, but Copilot upstream may not expose it on Anthropic paths.',
-    isUnsupported: details => details.status === 404 || buildUnsupportedMatcher(['models'])(details),
-    buildRequest: () => ({
-      method: 'GET',
-      path: '/v1/models',
-      expectedBody: 'list',
-      model: 'N/A',
-    }),
-  },
-  {
-    id: 'native-anthropic-batches-list-unsupported',
-    title: 'Anthropic Message Batches list is not exposed by Copilot',
-    tier: 'optional',
-    endpoint: 'anthropic-raw',
-    expectation: 'must_be_unsupported',
-    candidateFix: 'Do not claim asynchronous Anthropic batch processing unless Copilot exposes the endpoint or the proxy implements real batch semantics.',
-    candidateMapping: 'Anthropic GET /v1/messages/batches -> Copilot /v1/messages/batches',
-    rationale: 'Returning fake batch success would be misleading because clients expect asynchronous processing and retrievable results.',
-    isUnsupported: details => details.status === 404 || buildUnsupportedMatcher(['batches'])(details),
-    buildRequest: () => ({
-      method: 'GET',
-      path: '/v1/messages/batches?limit=1',
-      expectedBody: 'list',
-      model: 'N/A',
-    }),
-  },
-  {
-    id: 'native-anthropic-batches-create-unsupported',
-    title: 'Anthropic Message Batches create is not exposed by Copilot',
-    tier: 'optional',
-    endpoint: 'anthropic-raw',
-    expectation: 'must_be_unsupported',
-    candidateFix: 'Do not claim asynchronous Anthropic batch processing unless Copilot exposes the endpoint or the proxy implements real batch semantics.',
-    candidateMapping: 'Anthropic POST /v1/messages/batches -> Copilot /v1/messages/batches',
-    rationale: 'A fake 200 would not produce a real batch or usable result stream.',
-    isUnsupported: details => details.status === 404 || buildUnsupportedMatcher(['batches'])(details),
-    buildRequest: config => ({
-      method: 'POST',
-      path: '/v1/messages/batches',
-      body: {
-        requests: [{
-          custom_id: 'probe-1',
-          params: {
-            model: config.claudeModel,
-            max_tokens: 16,
-            messages: [{ role: 'user', content: 'Reply OK.' }],
-          },
-        }],
-      },
-      expectedBody: 'any',
-      model: 'N/A',
-    }),
-  },
-  {
-    id: 'native-anthropic-files-api-unsupported',
-    title: 'Anthropic Files API (expected 404)',
-    tier: 'optional',
-    endpoint: 'anthropic-files',
-    expectation: 'must_be_unsupported',
-    candidateFix: 'N/A',
-    candidateMapping: 'N/A',
-    rationale: 'Copilot upstream does not expose the Anthropic Files API.',
-    isUnsupported: details => details.status === 404,
-    buildPayload: () => ({
-      headers: { 'anthropic-beta': 'files-api-2025-04-14' },
     }),
   },
 ]

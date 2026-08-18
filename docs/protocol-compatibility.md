@@ -55,6 +55,8 @@ The proxy catalog also sets `use_responses_lite=false` on exposed models. The ge
 
 The translated path rejects Anthropic server-side tools and conversation-state controls that Responses cannot represent. It also rejects request controls whose meaning would be lost, such as unsupported stop, sampling, reasoning, task-budget, tool-choice, or MCP settings. Custom function-style tools and output formats are translated only when the selected backend can preserve their contract.
 
+Native tool probes distinguish hosted server tools such as `code_execution` and `web_search` from client-executed tools such as `bash`, text editor, and memory. The former require observable server results; the latter require a correctly named `tool_use` with executable input matching the requested operation. Anthropic platform control-plane APIs are outside the per-model capability matrix.
+
 Native Messages remains the source of truth for Anthropic-specific behavior. The proxy does not route Messages through Chat Completions to obtain a nominal `200` response.
 
 ## Evidence required for capability claims
