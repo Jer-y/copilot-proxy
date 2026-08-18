@@ -25,6 +25,7 @@ import { state } from '~/lib/state'
 import { getTokenCount } from '~/lib/tokenizer'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
+import { normalizeChatCompletionContent } from '~/lib/chat-completions-content'
 import { validateBody } from '~/lib/validate'
 import {
   createChatCompletions,
@@ -34,6 +35,7 @@ export async function handleCompletion(c: Context) {
   await enforceRateLimit(state)
 
   let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
+  payload = normalizeChatCompletionContent(payload)
   if (consola.level >= 4) {
     consola.debug('Chat completions request:', summarizeChatCompletionRequest(payload))
   }
