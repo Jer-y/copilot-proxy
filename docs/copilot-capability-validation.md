@@ -77,10 +77,12 @@ bun run test:live:copilot
 
 The per-model Claude matrix is limited to request-scoped inference behavior and client tool-call compatibility. Do not add Anthropic platform control-plane surfaces such as Models, Files, Message Batches, Skills, or Managed Agents as model probes, and do not use state-creating requests as negative probes.
 
-Keep the two Anthropic tool classes separate:
+Classify tool probes by execution owner across Anthropic Messages and OpenAI Responses. The protocol-specific tool type is not the boundary:
 
-- Hosted server tools such as `code_execution` and `web_search` require semantic validation. Code execution must produce a server-tool call, a successful execution result with the deterministic stdout, the same final answer, and expiring container metadata. Web search must produce the completed tool call/result, the expected fact, and an `example.com` source URL. A clean feature-specific rejection remains `unsupported`.
-- Client-executed tools such as `bash`, `str_replace_based_edit_tool`, and `memory` are implemented by Claude Code or the calling SDK. Their upstream probe validates the correctly named `tool_use` block, executable input matching the requested operation, and `stop_reason=tool_use`; it must not expect Copilot to run the local tool.
+- Server-executed tools are run by the upstream platform. Positive semantic evidence must include the completed server call and its observable result, not only an accepted declaration. Examples include Anthropic `code_execution` and `web_search`, and Responses web search, file search, image generation, remote MCP, code interpreter, and `shell` with `environment.type=container_auto`.
+- Client-executed tools return a call for Claude Code, Codex, an SDK, or another caller-owned runtime to execute. Positive semantic evidence is the correctly named call with executable input and the expected tool-call stop/output state; the probe must not expect Copilot to execute it. Examples include Anthropic `bash`, `str_replace_based_edit_tool`, memory, and custom tools, plus Responses function/custom tools, `local_shell`, apply patch, and computer-use actions.
+
+The live summaries expose this classification as `tool_execution=server|client`. Anthropic hosted-tool probes additionally require their native response details: code execution must produce a server-tool call, a successful execution result with deterministic stdout, the same final answer, and expiring container metadata; web search must produce the completed call/result, expected fact, and an `example.com` source URL. A clean feature-specific rejection remains `unsupported`.
 
 Interpret results as follows:
 
@@ -92,7 +94,8 @@ Only report semantic support when a probe or a separate live gate validates the 
 
 | Probe family | What generic `supported` proves | What is still required for semantic support |
 | --- | --- | --- |
-| Hosted tool declarations without a probe-specific semantic validator, including Responses web search and file search, MCP, image generation, and computer use | Copilot accepted the tool schema while the probe used `tool_choice:none` | Force or naturally trigger the tool, then validate the completed tool call, result, and citations or resource output |
+| Server-executed tool declarations without a probe-specific semantic validator, including Responses web search, file search, MCP, and image generation | Copilot accepted the tool schema while the probe used `tool_choice:none` | Force or naturally trigger the tool, then validate the completed server call, result, and citations or resource output |
+| Client-executed tool declarations without a probe-specific semantic validator, including Responses computer use, `local_shell`, custom tools, and apply patch | Copilot accepted the tool schema while the probe used `tool_choice:none` | Force the tool, then validate the executable client call and expected tool-call output state without expecting Copilot to execute it |
 | `tool_choice` and parallel-tool controls | Copilot accepted the request and returned a response envelope | Verify the requested tool was selected and that required or parallel-call constraints were obeyed |
 | Structured output and JSON schema | Copilot accepted the format fields and returned a response envelope | Parse the generated output and validate it against the requested JSON/schema contract |
 | Stop, state, reasoning, verbosity, and similar controls | Copilot accepted the field and returned the expected top-level response shape | Validate the observable stop reason, state transition, reasoning artifact, output constraint, or other requested behavior |

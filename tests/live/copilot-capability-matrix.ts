@@ -21,6 +21,7 @@ export interface ProbeErrorDetails {
 
 export type CapabilityProbeEndpoint = 'chat-completions' | 'responses' | 'responses-raw' | 'anthropic-messages' | 'anthropic-raw'
 export type CapabilityProbeTier = 'baseline' | 'optional'
+export type CapabilityProbeToolExecution = 'server' | 'client'
 export type CapabilityProbeExpectation
   = | 'must_support'
     | 'must_be_unsupported'
@@ -35,6 +36,7 @@ export interface CapabilityProbeBase {
   candidateMapping: string
   rationale: string
   expectation: CapabilityProbeExpectation
+  toolExecution?: CapabilityProbeToolExecution
   isUnsupported?: (details: ProbeErrorDetails) => boolean
 }
 
@@ -479,7 +481,7 @@ function buildNoopResponsesToolPayload(config: LiveCopilotProbeConfig): Response
   }
 }
 
-function buildHostedToolPresencePayload(
+function buildToolDeclarationPresencePayload(
   config: LiveCopilotProbeConfig,
   tool: NonNullable<ResponsesPayload['tools']>[number],
 ): ResponsesPayload {
@@ -639,6 +641,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'Anthropic tool_choice:any/tool -> Copilot chat-completions tool_choice',
     rationale: 'This probe tells us whether the selected Claude chat-completions path accepts tool choice constraints upstream.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'tool_choice',
       'tool choice',
@@ -676,6 +679,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'Anthropic tool_choice.disable_parallel_tool_use=true -> Copilot chat-completions parallel_tool_calls=false',
     rationale: 'Parallel tool execution control is part of Claude compatibility too, so we should validate it on the actual Claude upstream path rather than infer it from Responses behavior.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'parallel_tool_calls',
       'parallel tool calls',
@@ -1371,6 +1375,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses max_tool_calls -> Copilot /responses',
     rationale: 'Tool-loop limiting is part of the official Responses agentic control surface.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'max_tool_calls',
       'max tool calls',
@@ -1389,6 +1394,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses function_call_output input -> Copilot /responses',
     rationale: 'Stateless tool loops in Responses can replay function call items directly in input, independent of previous_response_id.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'function_call',
       'function_call_output',
@@ -1429,6 +1435,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'Anthropic tool_choice.disable_parallel_tool_use=true -> Responses parallel_tool_calls=false',
     rationale: 'Parallel tool execution control is easy to drop accidentally, so we need a probe before wiring it through.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'parallel_tool_calls',
       'parallel tool calls',
@@ -1458,6 +1465,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses tool_choice={type:function,name} -> Copilot /responses',
     rationale: 'The official Responses tool_choice schema includes object forms beyond none/auto/required strings.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'tool_choice',
       'tool choice',
@@ -1480,6 +1488,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses tool_choice={type:allowed_tools,...} -> Copilot /responses',
     rationale: 'Allowed-tools constraints are a distinct official tool-routing control for large tool sets.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'tool_choice',
       'allowed_tools',
@@ -1508,12 +1517,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI hosted web_search tool -> Copilot /responses',
     rationale: 'Web search is one of the core OpenAI-hosted Responses tools and should be tracked separately from function tools.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'web_search',
       'web search',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'web_search',
     }),
   },
@@ -1526,12 +1536,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI hosted web_search_preview tool -> Copilot /responses',
     rationale: 'The official OpenAPI still exposes the preview web search tool alongside the newer web_search shape.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'web_search_preview',
       'web search',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'web_search_preview',
     }),
   },
@@ -1544,6 +1555,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI hosted file_search tool -> Copilot /responses',
     rationale: 'File search is a core hosted Responses tool and is distinct from raw input_file parts.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildNotFoundOrUnsupportedMatcher([
       'file_search',
       'file search',
@@ -1552,7 +1564,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       'tool',
       'not found',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'file_search',
       vector_store_ids: ['vs_live_probe_missing'],
     }),
@@ -1566,12 +1578,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI hosted image_generation tool -> Copilot /responses',
     rationale: 'Image generation is part of the official Responses tool union and has a separate schema from image inputs.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'image_generation',
       'image generation',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'image_generation',
       quality: 'low',
       size: '1024x1024',
@@ -1586,13 +1599,14 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses mcp tool -> Copilot /responses',
     rationale: 'Remote MCP is an official Responses tool family and should be probed separately from local proxy MCP handling.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'mcp',
       'server_url',
       'server_label',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'mcp',
       server_label: 'live_probe',
       server_url: 'https://example.com/mcp',
@@ -1604,9 +1618,10 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     tier: 'optional',
     endpoint: 'responses',
     candidateFix: 'Forward computer use tools only if Copilot accepts the official computer_use_preview shape.',
-    candidateMapping: 'OpenAI hosted computer_use_preview tool -> Copilot /responses',
-    rationale: 'Computer use is part of the official Responses hosted-tool union and has required display/environment fields.',
+    candidateMapping: 'OpenAI client-executed computer_use_preview tool -> Copilot /responses',
+    rationale: 'Computer use returns UI actions for the caller-owned browser or VM harness to execute.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'computer_use_preview',
       'computer use',
@@ -1615,7 +1630,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       'environment',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'computer_use_preview',
       environment: 'browser',
       display_width: 1024,
@@ -1631,6 +1646,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses tool_search -> Copilot /responses',
     rationale: 'Tool search lets large tool catalogs defer definitions, and it has a different schema from normal function tools.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'tool_search',
       'tool search',
@@ -1665,12 +1681,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses local_shell tool -> Copilot /responses',
     rationale: 'Local shell is part of the Responses tool union used by coding agents.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'local_shell',
       'local shell',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'local_shell',
     }),
   },
@@ -1683,13 +1700,14 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses shell tool -> Copilot /responses',
     rationale: 'Hosted/container shell is part of the official Responses tool union and has a different schema from local_shell.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'shell',
       'container_auto',
       'environment',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'shell',
       environment: {
         type: 'container_auto',
@@ -1705,12 +1723,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses custom tool -> Copilot /responses',
     rationale: 'Custom tools are a separate official tool family from JSON-schema function tools.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'custom',
       'format',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'custom',
       name: 'noop_custom',
       format: {
@@ -1727,12 +1746,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses namespace tool -> Copilot /responses',
     rationale: 'Namespace tools are part of the Responses tool union and affect large tool-catalog routing.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'namespace',
       'tools',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'namespace',
       name: 'probe',
       description: 'Live probe namespace.',
@@ -1754,12 +1774,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI Responses apply_patch tool -> Copilot /responses',
     rationale: 'Apply patch is now part of the official Responses tool union and is relevant to coding-agent traffic.',
     expectation: 'support_or_clean_unsupported',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'apply_patch',
       'apply patch',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'apply_patch',
     }),
   },
@@ -1772,12 +1793,13 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateMapping: 'OpenAI hosted code_interpreter tool -> Copilot /responses',
     rationale: 'Code interpreter is an official hosted tool; this probe records whether the selected Responses model accepts or cleanly rejects it.',
     expectation: 'must_be_unsupported',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'code_interpreter',
       'code interpreter',
       'tool',
     ]),
-    buildPayload: config => buildHostedToolPresencePayload(config, {
+    buildPayload: config => buildToolDeclarationPresencePayload(config, {
       type: 'code_interpreter',
       container: {
         type: 'auto',
@@ -2454,6 +2476,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Forward native Anthropic tool_choice on Claude-routed models when Copilot accepts it.',
     candidateMapping: 'Anthropic tool_choice.tool -> Copilot /v1/messages tool_choice',
     rationale: 'Claude Code and SDK clients can constrain tool use through Anthropic tool_choice.',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'tool_choice',
       'tool',
@@ -2475,6 +2498,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Forward native disable_parallel_tool_use on Claude-routed models when Copilot accepts it.',
     candidateMapping: 'Anthropic tool_choice.disable_parallel_tool_use -> Copilot /v1/messages',
     rationale: 'Parallel tool control is part of Anthropic tool semantics and differs by model/backend.',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'disable_parallel_tool_use',
       'parallel',
@@ -2497,6 +2521,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Preserve strict custom tools when Copilot accepts structured-output enforcement for the selected model.',
     candidateMapping: 'Anthropic strict custom tool -> Copilot /v1/messages tool schema',
     rationale: 'Strict tools are model/policy-dependent and should not be inferred from non-strict tool support.',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'strict',
       'structured_outputs',
@@ -2519,6 +2544,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Allow Anthropic code_execution through native passthrough only when Copilot completes a real deterministic sandbox execution.',
     candidateMapping: 'Anthropic code_execution_20260521 -> Copilot /v1/messages server tool execution',
     rationale: 'Schema acceptance is insufficient for a hosted tool; require the server call, execution result, exact stdout/final answer, and expiring container metadata.',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'code_execution_20260521',
       'code_execution',
@@ -2544,6 +2570,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Preserve the Anthropic memory tool declaration when Copilot can emit a client-executed tool call.',
     candidateMapping: 'Anthropic memory_20250818 -> Copilot /v1/messages client tool_use',
     rationale: 'The caller implements memory storage and execution; the upstream capability is producing the correct tool_use block, not running a hosted memory service.',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'memory_20250818',
       'memory',
@@ -2570,6 +2597,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Preserve the Anthropic bash declaration when Copilot can emit a client-executed tool call.',
     candidateMapping: 'Anthropic bash_20250124 -> Copilot /v1/messages client tool_use',
     rationale: 'Claude Code or the SDK executes bash locally; Copilot only needs to emit the correct tool_use block.',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'bash_20250124',
       'bash',
@@ -2593,6 +2621,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Preserve the Anthropic text-editor declaration when Copilot can emit a client-executed tool call.',
     candidateMapping: 'Anthropic text_editor_20250728 -> Copilot /v1/messages client tool_use',
     rationale: 'Claude Code or the SDK owns the filesystem and executes the edit; the upstream capability is the tool call shape.',
+    toolExecution: 'client',
     isUnsupported: buildUnsupportedMatcher([
       'text_editor_20250728',
       'text_editor',
@@ -2619,6 +2648,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
     candidateFix: 'Do not add a local rejection if Copilot completes a real web search with the expected fact and source for the selected Claude model.',
     candidateMapping: 'Anthropic web_search_20260318 -> Copilot /v1/messages server tool execution',
     rationale: 'Web search is a hosted tool; acceptance alone is insufficient, so a positive result must include the completed call, result, expected fact, and example.com source.',
+    toolExecution: 'server',
     isUnsupported: buildUnsupportedMatcher([
       'web_search_20260318',
       'web search',

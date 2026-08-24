@@ -41,6 +41,7 @@ interface ProbeOutcome {
   title: string
   status: ProbeStatus
   model: string
+  toolExecution?: CapabilityProbe['toolExecution']
   durationMs: number
   httpStatus?: number
   errorCode?: string
@@ -146,7 +147,10 @@ async function runProbeWithRetries(
     outcome = await runProbe(probe, config)
   }
 
-  return outcome
+  return {
+    ...outcome,
+    ...(probe.toolExecution && { toolExecution: probe.toolExecution }),
+  }
 }
 
 function isRetryableProbeOutcome(outcome: ProbeOutcome): boolean {
@@ -757,6 +761,10 @@ function formatFailure(probe: CapabilityProbe, outcome: ProbeOutcome): string {
     `model=${outcome.model}`,
   ]
 
+  if (probe.toolExecution) {
+    details.push(`tool_execution=${probe.toolExecution}`)
+  }
+
   if (outcome.httpStatus !== undefined) {
     details.push(`http=${outcome.httpStatus}`)
   }
@@ -786,6 +794,10 @@ function printSummary(outcomes: Array<ProbeOutcome>): void {
       `model=${outcome.model}`,
       `duration_ms=${outcome.durationMs}`,
     ]
+
+    if (outcome.toolExecution) {
+      parts.push(`tool_execution=${outcome.toolExecution}`)
+    }
 
     if (outcome.httpStatus !== undefined) {
       parts.push(`http=${outcome.httpStatus}`)

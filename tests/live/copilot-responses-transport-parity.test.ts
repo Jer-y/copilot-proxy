@@ -37,6 +37,7 @@ runLiveParityTest(
     const rows: Array<{
       feature: string
       sse: ResponsesTransportOutcome
+      toolExecution?: ReturnType<typeof buildResponsesTransportParityScenarios>[number]['toolExecution']
       verdict: ReturnType<typeof evaluateResponsesTransportPair>
       websocket: ResponsesTransportOutcome
     }> = []
@@ -57,7 +58,13 @@ runLiveParityTest(
         const websocket = classifyResponsesTransportAttempt(scenario, websocketAttempt)
         const verdict = evaluateResponsesTransportPair(sse, websocket)
 
-        rows.push({ feature: scenario.feature, sse, verdict, websocket })
+        rows.push({
+          feature: scenario.feature,
+          sse,
+          toolExecution: scenario.toolExecution,
+          verdict,
+          websocket,
+        })
         if (verdict.status === 'failed')
           failures.push(`${scenario.feature}: ${verdict.detail}`)
       }
@@ -135,6 +142,7 @@ function printParitySummary(
   rows: Array<{
     feature: string
     sse: ResponsesTransportOutcome
+    toolExecution?: ReturnType<typeof buildResponsesTransportParityScenarios>[number]['toolExecution']
     verdict: ReturnType<typeof evaluateResponsesTransportPair>
     websocket: ResponsesTransportOutcome
   }>,
@@ -143,8 +151,11 @@ function printParitySummary(
     `GitHub Copilot Responses transport parity: account=${config.accountType} model=${config.model}\n`,
   )
   for (const row of rows) {
+    const toolExecution = row.toolExecution
+      ? ` tool_execution=${row.toolExecution}`
+      : ''
     process.stdout.write(
-      `- ${row.feature} sse=${row.sse.category} websocket=${row.websocket.category} verdict=${row.verdict.status}\n`,
+      `- ${row.feature}${toolExecution} sse=${row.sse.category} websocket=${row.websocket.category} verdict=${row.verdict.status}\n`,
     )
   }
 

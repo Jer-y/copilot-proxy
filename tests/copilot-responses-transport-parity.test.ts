@@ -1,4 +1,4 @@
-import type { ResponsesTransportProbeResultLike } from './live/copilot-responses-transport-parity'
+import type { ResponsesParityFeature, ResponsesTransportProbeResultLike } from './live/copilot-responses-transport-parity'
 
 import { describe, expect, test } from 'bun:test'
 import {
@@ -13,6 +13,14 @@ const scenarios = buildResponsesTransportParityScenarios({
 })
 
 describe('Responses SSE/WebSocket transport parity helpers', () => {
+  test('classifies semantic scenarios by execution owner', () => {
+    expect(scenario('function_tool_control').toolExecution).toBe('client')
+    for (const feature of ['web_search', 'web_search_preview', 'mcp', 'file_search'] as const) {
+      expect(scenario(feature).toolExecution).toBe('server')
+    }
+    expect(scenario('json_schema').toolExecution).toBeUndefined()
+  })
+
   test('builds a real MCP call and keeps missing file search resources explicit', () => {
     const mcp = scenario('mcp')
     const fileSearch = scenario('file_search')
@@ -581,7 +589,7 @@ function scenario(feature: Parameters<typeof findScenario>[0]) {
   return found
 }
 
-function findScenario(feature: 'json_schema' | 'web_search' | 'mcp' | 'file_search') {
+function findScenario(feature: ResponsesParityFeature) {
   return scenarios.find(candidate => candidate.feature === feature)
 }
 

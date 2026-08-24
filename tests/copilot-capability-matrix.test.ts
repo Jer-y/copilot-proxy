@@ -21,7 +21,49 @@ const CONFIG: LiveCopilotProbeConfig = {
   fileUrl: 'https://example.com/file.pdf',
 }
 
-describe('Claude capability probe boundaries', () => {
+describe('Capability probe boundaries', () => {
+  test('classifies tool probes by execution owner across protocols', () => {
+    const serverExecuted = [
+      'responses-web-search-tool',
+      'responses-file-search-tool',
+      'responses-image-generation-tool',
+      'responses-mcp-tool',
+      'responses-tool-search-tool',
+      'responses-shell-tool',
+      'responses-code-interpreter-tool-unsupported',
+      'native-anthropic-server-tool-code-execution',
+      'native-anthropic-server-tool-web-search',
+    ]
+    const clientExecuted = [
+      'claude-tool-choice-required',
+      'responses-function-call-output-input',
+      'responses-computer-use-preview-tool',
+      'responses-local-shell-tool',
+      'responses-custom-tool',
+      'responses-namespace-tool',
+      'responses-apply-patch-tool',
+      'native-anthropic-tool-choice-specific',
+      'native-anthropic-client-tool-memory',
+      'native-anthropic-client-tool-bash',
+      'native-anthropic-client-tool-text-editor',
+    ]
+
+    for (const id of serverExecuted) {
+      expect(capabilityProbe(id).toolExecution).toBe('server')
+    }
+    for (const id of clientExecuted) {
+      expect(capabilityProbe(id).toolExecution).toBe('client')
+    }
+
+    const shellProbe = capabilityProbe('responses-shell-tool')
+    if (shellProbe.endpoint !== 'responses')
+      throw new Error('Expected Responses shell probe')
+    expect(shellProbe.buildPayload(CONFIG).tools).toEqual([{
+      type: 'shell',
+      environment: { type: 'container_auto' },
+    }])
+  })
+
   test('excludes Anthropic platform control-plane APIs from the model matrix', () => {
     const ids = copilotCapabilityProbes.map(probe => probe.id)
     expect(ids).not.toContain('native-anthropic-models-api-unsupported')
@@ -367,10 +409,17 @@ describe('Claude capability probe boundaries', () => {
 })
 
 function anthropicProbe(id: string): AnthropicMessagesCapabilityProbe {
-  const probe = copilotCapabilityProbes.find(candidate => candidate.id === id)
-  if (!probe || probe.endpoint !== 'anthropic-messages') {
+  const probe = capabilityProbe(id)
+  if (probe.endpoint !== 'anthropic-messages') {
     throw new Error(`Missing Anthropic messages probe: ${id}`)
   }
+  return probe
+}
+
+function capabilityProbe(id: string) {
+  const probe = copilotCapabilityProbes.find(candidate => candidate.id === id)
+  if (!probe)
+    throw new Error(`Missing capability probe: ${id}`)
   return probe
 }
 

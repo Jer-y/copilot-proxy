@@ -1,3 +1,4 @@
+import type { CapabilityProbeToolExecution } from './copilot-capability-matrix'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 
 export type ResponsesParityFeature
@@ -51,6 +52,7 @@ export interface ResponsesTransportParityScenario {
   payload: ResponsesPayload
   syntheticMissingResource?: boolean
   title: string
+  toolExecution?: CapabilityProbeToolExecution
   validate: (result: ResponsesTransportProbeResultLike) => string | undefined
 }
 
@@ -120,6 +122,7 @@ export function buildResponsesTransportParityScenarios(
           },
         }],
       },
+      toolExecution: 'client',
       validate: validateFunctionToolControl,
     },
     {
@@ -170,6 +173,7 @@ export function buildResponsesTransportParityScenarios(
         tool_choice: 'required' as const,
         tools: [{ type: toolType }],
       },
+      toolExecution: 'server' as const,
       validate: validateWebSearch,
     })),
     {
@@ -190,6 +194,7 @@ export function buildResponsesTransportParityScenarios(
           require_approval: 'never',
         }],
       },
+      toolExecution: 'server',
       validate: validateMcp,
     },
     {
@@ -209,6 +214,7 @@ export function buildResponsesTransportParityScenarios(
           vector_store_ids: [vectorStoreId],
         }],
       },
+      toolExecution: 'server',
       validate: result => validateFileSearch(result, config.fileSearchSentinel),
     },
   ]
