@@ -80,6 +80,26 @@ describe('native service instance identity', () => {
         'instance_token_non_loopback',
         'proxy.internal',
       )).toBe(true)
+      expect(await probeCopilotProxyServer(
+        '0.0.0.0',
+        port,
+        'instance_token_non_loopback',
+        'proxy.internal',
+        {
+          maxBodyBytes: 64 * 1024,
+          path: '/readyz',
+          validate: (statusCode, body, headers) => (statusCode === 200 || statusCode === 503)
+            && headers[NATIVE_SERVICE_INSTANCE_HEADER] === undefined
+            && typeof JSON.parse(body).configuration === 'object',
+        },
+      )).toBe(true)
+      expect(await probeCopilotProxyServer(
+        '0.0.0.0',
+        port,
+        'different_instance_non_loopback',
+        'proxy.internal',
+        { path: '/readyz', validate: () => true },
+      )).toBe(false)
 
       delete process.env.COPILOT_PROXY_ALLOWED_HOSTS
       expect(await probeCopilotProxyServer(

@@ -85,6 +85,21 @@ export async function probeCopilotProxyServer(
     validate?: (statusCode: number, body: string, headers: http.IncomingHttpHeaders) => boolean
   } = {},
 ): Promise<boolean> {
+  const path = options.path ?? '/'
+  if (expectedInstanceToken !== undefined && path !== '/') {
+    // Only the root readiness response exposes the instance token. Pin the
+    // installed service there before validating non-secret health payloads.
+    const instanceMatches = await probeCopilotProxyServer(
+      host,
+      port,
+      expectedInstanceToken,
+      requestHost,
+    )
+    if (!instanceMatches)
+      return false
+    return await probeCopilotProxyServer(host, port, undefined, requestHost, options)
+  }
+
   const hostname = readinessProbeHostname(host)
   const maxBodyBytes = options.maxBodyBytes ?? 64
   return await new Promise<boolean>((resolve) => {
@@ -99,7 +114,7 @@ export async function probeCopilotProxyServer(
     const request = http.get({
       hostname,
       port,
-      path: options.path ?? '/',
+      path,
       headers: { Host: readinessProbeHostHeader(requestHost, port) },
       timeout: 1_500,
     }, (response) => {
