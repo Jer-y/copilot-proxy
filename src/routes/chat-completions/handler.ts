@@ -76,17 +76,9 @@ export async function handleCompletion(c: Context) {
     selection.ctx.models?.data,
   )
 
-  const route = resolveRoute('chat-completions', payload.model, throwOpenAIInvalidRequestError, {
+  resolveRoute('chat-completions', payload.model, throwOpenAIInvalidRequestError, {
     models: selection.ctx.models?.data,
   })
-  // chat-completions clients only ever route to chat-completions backend.
-  // resolveRoute() throws 4xx if the model does not list chat-completions in its supportedApis.
-  if (route.backend !== 'chat-completions' || route.kind !== 'direct') {
-    throwOpenAIInvalidRequestError(
-      `Model ${payload.model} cannot be served via /chat/completions. The proxy does not translate from chat-completions to other backends.`,
-    )
-  }
-
   return await handleViaChatCompletions(c, payload, selection.ctx)
 }
 

@@ -500,7 +500,7 @@ fi
     expect(selectSetupModel('openai-sdk', [dualEndpoint], dualEndpoint.id).api).toBe('responses')
   })
 
-  test('rejects requested models that require translation', () => {
+  test('rejects requested models without the client native API', () => {
     expect(() => selectSetupModel('claude', MODELS, 'gpt-responses')).toThrow('not a direct claude model')
     expect(() => selectSetupModel('codex', [MODELS[2]])).toThrow('No current Copilot model')
   })

@@ -1,11 +1,10 @@
-import type { AnthropicDocumentBlock, AnthropicMessagesPayload } from '~/lib/translation/types'
+import type { AnthropicDocumentBlock, AnthropicMessagesPayload } from '~/lib/anthropic/types'
 
 import { describe, expect, test } from 'bun:test'
 
 import {
   normalizeAdaptiveThinkingForCopilot,
   prepareAnthropicPayloadForNativeCopilotBackend,
-  prepareAnthropicPayloadForTranslatedBackends,
   sanitizeForCopilotBackend,
   stripAssistantThinkingBlocks,
 } from '~/routes/messages/request-adaptation'
@@ -233,29 +232,6 @@ describe('prepareAnthropicPayloadForNativeCopilotBackend', () => {
 
     expect(() => prepareAnthropicPayloadForNativeCopilotBackend(payload)).toThrow(
       'supports only base64 application/pdf blocks; received base64 text/markdown',
-    )
-  })
-})
-
-describe('prepareAnthropicPayloadForTranslatedBackends', () => {
-  test('rejects document blocks instead of translating them to Responses', () => {
-    const payload = makePayload({
-      model: 'gpt-5.4',
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: 'application/pdf',
-            data: 'JVBERi0xLjQK',
-          },
-        }],
-      }],
-    })
-
-    expect(() => prepareAnthropicPayloadForTranslatedBackends(payload)).toThrow(
-      'document blocks cannot be translated faithfully',
     )
   })
 })

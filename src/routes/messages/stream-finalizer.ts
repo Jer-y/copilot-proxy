@@ -1,4 +1,4 @@
-import type { AnthropicResponse, AnthropicStreamEventData, AnthropicStreamState } from '~/lib/translation/types'
+import type { AnthropicStreamEventData } from '~/lib/anthropic/types'
 
 import consola from 'consola'
 
@@ -23,71 +23,6 @@ export interface AnthropicStreamFailureOptions {
   canRecoverTermination?: () => boolean
   clientAborted?: () => boolean
   shouldEmitTerminationError?: () => boolean
-  debugTranslatedEvents?: boolean
-}
-
-function isTranslatedToolBlockOpen(state: AnthropicStreamState): boolean {
-  return state.contentBlockOpen && state.currentBlockType === 'tool_use'
-}
-
-function closeTranslatedAnthropicBlock(
-  events: Array<AnthropicStreamEventData>,
-  state: AnthropicStreamState,
-): void {
-  if (!state.contentBlockOpen) {
-    return
-  }
-
-  events.push({
-    type: 'content_block_stop',
-    index: state.contentBlockIndex,
-  })
-  state.contentBlockIndex++
-  state.contentBlockOpen = false
-  state.currentBlockType = null
-  state.thinkingSignature = null
-}
-
-function flushPendingLeadingText(
-  events: Array<AnthropicStreamEventData>,
-  state: AnthropicStreamState,
-): void {
-  if (!state.pendingLeadingText) {
-    return
-  }
-
-  ensureTextBlockOpen(events, state)
-  events.push({
-    type: 'content_block_delta',
-    index: state.contentBlockIndex,
-    delta: {
-      type: 'text_delta',
-      text: state.pendingLeadingText,
-    },
-  })
-  state.pendingLeadingText = ''
-}
-
-function ensureTextBlockOpen(
-  events: Array<AnthropicStreamEventData>,
-  state: AnthropicStreamState,
-): void {
-  if (state.contentBlockOpen && state.currentBlockType !== 'text') {
-    closeTranslatedAnthropicBlock(events, state)
-  }
-
-  if (!state.contentBlockOpen) {
-    events.push({
-      type: 'content_block_start',
-      index: state.contentBlockIndex,
-      content_block: {
-        type: 'text',
-        text: '',
-      },
-    })
-    state.contentBlockOpen = true
-    state.currentBlockType = 'text'
-  }
 }
 
 export function canRecoverUpstreamTerminationAsMessage(
@@ -100,74 +35,7 @@ export function canRecoverUpstreamTerminationAsMessage(
   return state.hasNonThinkingContent
 }
 
-export function finalizeAnthropicStreamFromState(
-  state: AnthropicStreamState,
-  options?: {
-    stopReason?: AnthropicResponse['stop_reason']
-    outputTokens?: number
-  },
-): Array<AnthropicStreamEventData> {
-  const events: Array<AnthropicStreamEventData> = []
-
-  if (!state.messageStartSent || state.messageStopSent) {
-    return events
-  }
-
-  if (state.pendingLeadingText) {
-    flushPendingLeadingText(events, state)
-  }
-
-  if (isTranslatedToolBlockOpen(state)) {
-    return events
-  }
-
-  if (state.contentBlockOpen) {
-    closeTranslatedAnthropicBlock(events, state)
-  }
-
-  events.push(
-    {
-      type: 'message_delta',
-      delta: {
-        stop_reason: options?.stopReason ?? 'end_turn',
-        stop_sequence: null,
-      },
-      usage: {
-        output_tokens: options?.outputTokens ?? 0,
-      },
-    },
-    {
-      type: 'message_stop',
-    },
-  )
-  state.messageStopSent = true
-
-  return events
-}
-
-export function finalizeTruncatedAnthropicStreamFromState(
-  state: AnthropicStreamState,
-): Array<AnthropicStreamEventData> {
-  const events: Array<AnthropicStreamEventData> = []
-
-  if (!state.messageStartSent || state.messageStopSent) {
-    return events
-  }
-
-  if (state.contentBlockOpen && !isTranslatedToolBlockOpen(state)) {
-    closeTranslatedAnthropicBlock(events, state)
-  }
-
-  events.push(translateErrorToAnthropicErrorEvent(
-    getUpstreamTerminationErrorMessage(state),
-  ))
-  state.upstreamTerminalEventSeen = true
-  state.messageStopSent = true
-
-  return events
-}
-
-export function translateErrorToAnthropicErrorEvent(
+export function createAnthropicErrorEvent(
   message?: string,
 ): AnthropicStreamEventData {
   return {
@@ -182,14 +50,8 @@ export function translateErrorToAnthropicErrorEvent(
 export async function writeAnthropicEvents(
   writer: AnthropicEventWriter,
   events: Array<AnthropicStreamEventData>,
-  options?: {
-    debugTranslatedEvents?: boolean
-  },
 ): Promise<void> {
   for (const event of events) {
-    if (options?.debugTranslatedEvents && consola.level >= 4) {
-      consola.debug('Translated Anthropic event summary:', summarizeAnthropicEvent(event))
-    }
     await writer.writeEvent(event)
   }
 }
@@ -208,16 +70,14 @@ export async function handleAnthropicStreamFailure(
 
   if (recoveredEvents.length > 0) {
     consola.warn(`${options.streamLabel} terminated without a ${options.completionTerm}; synthesizing Anthropic message_stop.`)
-    await writeAnthropicEvents(options.writer, recoveredEvents, {
-      debugTranslatedEvents: options.debugTranslatedEvents,
-    })
+    await writeAnthropicEvents(options.writer, recoveredEvents)
     return
   }
 
   if (upstreamTerminated && (options.shouldEmitTerminationError?.() ?? true)) {
     consola.warn(`${options.streamLabel} terminated without recoverable assistant output; returning Anthropic error event.`)
     await options.writer.writeEvent(
-      translateErrorToAnthropicErrorEvent(
+      createAnthropicErrorEvent(
         getUpstreamTerminationErrorMessage(options.state),
       ),
     )
@@ -228,7 +88,7 @@ export async function handleAnthropicStreamFailure(
     ? options.error.message
     : options.unexpectedErrorMessage
   consola.error(`${options.errorLabel} failed:`, summarizeStreamFailure(options.error))
-  await options.writer.writeEvent(translateErrorToAnthropicErrorEvent(message))
+  await options.writer.writeEvent(createAnthropicErrorEvent(message))
 }
 
 export function getUpstreamTerminationErrorMessage(
@@ -408,64 +268,6 @@ export function shouldEmitNativeAnthropicTerminationError(
   state: NativeAnthropicPassthroughState,
 ): boolean {
   return state.messageStartSeen && !state.messageStopSeen && !state.errorSeen
-}
-
-function summarizeAnthropicEvent(event: AnthropicStreamEventData): Record<string, unknown> {
-  switch (event.type) {
-    case 'message_start':
-      return {
-        type: event.type,
-        model: event.message.model,
-        inputTokens: event.message.usage.input_tokens,
-      }
-    case 'content_block_start':
-      return {
-        type: event.type,
-        index: event.index,
-        blockType: event.content_block.type,
-        initialChars: event.content_block.type === 'text'
-          ? event.content_block.text.length
-          : event.content_block.type === 'thinking'
-            ? event.content_block.thinking.length
-            : event.content_block.type === 'redacted_thinking'
-              ? event.content_block.data.length
-              : 0,
-      }
-    case 'content_block_delta': {
-      const chars = event.delta.type === 'text_delta'
-        ? event.delta.text.length
-        : event.delta.type === 'thinking_delta'
-          ? event.delta.thinking.length
-          : event.delta.type === 'signature_delta'
-            ? event.delta.signature.length
-            : event.delta.type === 'input_json_delta'
-              ? event.delta.partial_json.length
-              : 0
-      return {
-        type: event.type,
-        index: event.index,
-        deltaType: event.delta.type,
-        chars,
-      }
-    }
-    case 'content_block_stop':
-      return { type: event.type, index: event.index }
-    case 'message_delta':
-      return {
-        type: event.type,
-        stopReason: event.delta.stop_reason,
-        outputTokens: event.usage?.output_tokens,
-      }
-    case 'error':
-      return {
-        type: event.type,
-        errorType: event.error.type,
-        messageChars: event.error.message.length,
-      }
-    case 'message_stop':
-    case 'ping':
-      return { type: event.type }
-  }
 }
 
 function summarizeStreamFailure(error: unknown): Record<string, unknown> {

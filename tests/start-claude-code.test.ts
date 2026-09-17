@@ -8,7 +8,7 @@ describe('start --claude-code model selection', () => {
   test('uses the same direct Messages choices for the main and small model prompts', async () => {
     const modelIds = selectClaudeCodeModelIds([
       makeModel('claude-direct', ['/v1/messages']),
-      makeModel('gpt-translated', ['/responses']),
+      makeModel('gpt-responses-only', ['/responses']),
       makeModel('unsupported', ['/chat/completions']),
       makeModel('claude-policy-direct'),
     ])
@@ -37,12 +37,12 @@ describe('start --claude-code model selection', () => {
     ])
     expect(command).toContain('"ANTHROPIC_MODEL":"claude-direct"')
     expect(command).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-policy-direct"')
-    expect(command).not.toContain('gpt-translated')
+    expect(command).not.toContain('gpt-responses-only')
   })
 
   test('fails clearly when the live catalog has no direct Messages model', () => {
     expect(() => selectClaudeCodeModelIds([
-      makeModel('gpt-translated', ['/responses']),
+      makeModel('gpt-responses-only', ['/responses']),
       makeModel('unsupported', ['/chat/completions']),
     ])).toThrow('No current Copilot model can serve Claude Code through a faithful direct Messages route.')
   })

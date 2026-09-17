@@ -108,58 +108,6 @@ describe('messages error paths', () => {
     }
   })
 
-  test('Responses-backed upstream 413 becomes an Anthropic request_too_large error with safe headers', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    globalThis.fetch = mock(async (url: string) => {
-      expect(url.endsWith('/responses')).toBe(true)
-      return new Response(JSON.stringify({
-        error: {
-          message: 'failed to parse oversized request',
-          type: 'invalid_request_error',
-        },
-      }), {
-        status: 413,
-        headers: {
-          'Content-Type': 'application/json',
-          'Retry-After': '11',
-          'X-Copilot-Service-Request-Id': 'copilot_service_messages_too_large',
-          'X-GitHub-Request-Id': 'github_messages_too_large',
-          'X-Request-Id': 'req_messages_too_large',
-          'X-RateLimit-Remaining': '7',
-          'Set-Cookie': 'secret=not-forwarded',
-        },
-      })
-    }) as unknown as typeof fetch
-
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.6-sol',
-        max_tokens: 64,
-        messages: [{ role: 'user', content: 'Oversized history.' }],
-      }),
-    })
-
-    expect(res.status).toBe(413)
-    expect(res.headers.get('retry-after')).toBe('11')
-    expect(res.headers.get('x-copilot-service-request-id')).toBe('copilot_service_messages_too_large')
-    expect(res.headers.get('x-github-request-id')).toBe('github_messages_too_large')
-    expect(res.headers.get('x-request-id')).toBe('req_messages_too_large')
-    expect(res.headers.get('x-ratelimit-remaining')).toBe('7')
-    expect(res.headers.get('set-cookie')).toBeNull()
-    expect(await res.json()).toEqual({
-      type: 'error',
-      error: {
-        type: 'request_too_large',
-        message: expect.stringContaining('Upstream /responses rejected the request with 413 Payload Too Large.'),
-      },
-      request_id: 'req_messages_too_large',
-    })
-  })
-
   test('native Anthropic errors preserve upstream correlation headers', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
@@ -897,40 +845,6 @@ describe('messages error paths', () => {
     expect(json.error.message).toContain('thinking.adaptive.budget_tokens')
   })
 
-  test('adaptive thinking with budget_tokens is rejected before translated backend routing', async () => {
-    state.copilotToken = 'test-token'
-    // @ts-expect-error test mock only needs fetch callable shape
-    globalThis.fetch = fetchMock
-
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        max_tokens: 100,
-        thinking: {
-          type: 'adaptive',
-          budget_tokens: 4096,
-        },
-        output_config: {
-          format: { type: 'json_object' },
-        },
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-
-    const json = await res.json() as {
-      type: string
-      error: { type: string, message: string }
-    }
-    expect(json.type).toBe('error')
-    expect(json.error.type).toBe('invalid_request_error')
-    expect(json.error.message).toContain('thinking.adaptive.budget_tokens')
-  })
-
   test('missing "max_tokens" is backfilled from model limits before forwarding', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
@@ -1041,7 +955,7 @@ describe('messages error paths', () => {
     }
   })
 
-  test('Opus 5 uses the verified 64K default for Messages and translated Responses', async () => {
+  test('Opus 5 uses the verified 64K default for native Messages', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
     state.accountType = 'individual'
@@ -1078,118 +992,6 @@ describe('messages error paths', () => {
       max_tokens: 64000,
       model: 'claude-opus-5',
     })
-
-    fetchMock.mockClear()
-    const responsesRes = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-5',
-        store: false,
-        input: 'hi',
-      }),
-    })
-
-    expect(responsesRes.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [responsesUrl, responsesInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(responsesUrl).toBe('https://api.githubcopilot.com/v1/messages')
-    const responsesPayload = JSON.parse(String(responsesInit?.body)) as { max_tokens?: number, model?: string }
-    expect(responsesPayload).toMatchObject({
-      max_tokens: 64000,
-      model: 'claude-opus-5',
-    })
-  })
-
-  test('translated Responses preserves explicit max_output_tokens and uses the verified Opus default', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    state.models = {
-      data: [{
-        id: 'claude-opus-4.8',
-        capabilities: {
-          limits: {
-            max_output_tokens: 64000,
-          },
-        },
-        supported_endpoints: ['/v1/messages'],
-      }],
-    } as typeof state.models
-
-    // @ts-expect-error test mock only needs fetch callable shape
-    globalThis.fetch = fetchMock
-
-    const res = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.8',
-        store: false,
-        input: 'hi',
-        max_output_tokens: 128000,
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
-    expect(forwardedPayload.max_tokens).toBe(128000)
-
-    fetchMock.mockClear()
-    const defaultedRes = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.8',
-        store: false,
-        input: 'hi',
-      }),
-    })
-
-    expect(defaultedRes.status).toBe(200)
-    const [, defaultedInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    const defaultedPayload = JSON.parse(String(defaultedInit?.body)) as { max_tokens?: number }
-    expect(defaultedPayload.max_tokens).toBe(128000)
-  })
-
-  test('gpt-5.4 anthropic requests without "max_tokens" are backfilled and routed to /responses', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    state.models = {
-      data: [{
-        id: 'gpt-5.4',
-        capabilities: {
-          limits: {
-            max_output_tokens: 8192,
-          },
-        },
-      }],
-    } as typeof state.models
-
-    // @ts-expect-error test mock only needs fetch callable shape
-    globalThis.fetch = fetchMock
-
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/responses')
-
-    const forwardedPayload = JSON.parse(String(init?.body)) as { max_output_tokens?: number, model?: string }
-    expect(forwardedPayload.model).toBe('gpt-5.4')
-    expect(forwardedPayload.max_output_tokens).toBe(8192)
   })
 
   test('missing "messages" field returns 400', async () => {

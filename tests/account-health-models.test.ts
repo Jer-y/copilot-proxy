@@ -30,6 +30,23 @@ afterEach(() => {
 })
 
 describe('multi-account health and models', () => {
+  test('does not report retired cross-protocol required routes as ready', () => {
+    for (const [surface, model, reason] of [
+      ['responses-http', 'claude-opus-4.8', 'responses_http_unsupported'],
+      ['anthropic-messages', 'gpt-5.4', 'anthropic_messages_unsupported'],
+    ] as const) {
+      state.accounts?.stopRefreshes()
+      const registry = createRegistry({ requiredRoutes: [{ surface, model }] })
+      state.accounts = registry
+      setDefaultAccountContext(registry.defaultAccount)
+
+      expect(buildReadinessStatus()).toMatchObject({
+        status: 'degraded',
+        requiredRoutes: [{ surface, model, ready: false, reason }],
+      })
+    }
+  })
+
   test('reports safe per-account readiness and supports account-scoped checks', async () => {
     const readiness = await server.request('/readyz')
     expect(readiness.status).toBe(200)

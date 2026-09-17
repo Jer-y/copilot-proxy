@@ -23,8 +23,6 @@ const FLOORS: CoverageFloor[] = [
   { file: 'src/lib/proxy-environment.ts', lines: 0.85, functions: 0.85 },
   { file: 'src/lib/routing-policy.ts', lines: 0.95, functions: 0.95 },
   { file: 'src/lib/security.ts', lines: 0.90, functions: 0.95 },
-  { file: 'src/lib/translation/anthropic-to-responses.ts', lines: 0.80, functions: 0.85 },
-  { file: 'src/lib/translation/responses-to-anthropic.ts', lines: 0.60, functions: 0.80 },
   { file: 'src/routes/messages/stream-finalizer.ts', lines: 0.65, functions: 0.80 },
   { file: 'src/routes/responses/websocket.ts', lines: 0.90, functions: 0.85 },
   { file: 'src/services/copilot/create-anthropic-messages.ts', lines: 0.90, functions: 0.90 },

@@ -60,7 +60,64 @@ beforeEach(() => {
   state.models = undefined
 })
 
-describe('compat routing fallback', () => {
+describe('native protocol routing', () => {
+  test.each([false, true])('rejects both retired directions without contacting Copilot (stream=%s)', async (stream) => {
+    for (const withLiveCatalog of [false, true]) {
+      state.models = withLiveCatalog
+        ? {
+            object: 'list',
+            data: [
+              makeModel('claude-opus-4.8', ['/v1/messages']),
+              makeModel('gpt-5.4', ['/responses']),
+            ],
+          }
+        : undefined
+
+      for (const [path, payload] of [
+        ['/v1/responses', { model: 'claude-opus-4.8', input: 'hello', store: false, stream }],
+        ['/v1/messages', { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hello' }], max_tokens: 64, stream }],
+      ] as const) {
+        fetchMock.mockClear()
+        const response = await server.request(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+
+        expect(response.status).toBe(400)
+        expect(response.headers.get('content-type')).toContain('application/json')
+        const body = await response.json() as { type?: string, error: { type: string, message: string } }
+        expect(body.error.type).toBe('invalid_request_error')
+        expect(body.error.message).toContain('cross-protocol translation is not supported')
+        if (path === '/v1/messages')
+          expect(body.type).toBe('error')
+        expect(fetchMock).not.toHaveBeenCalled()
+      }
+    }
+  })
+
+  test('uses advertised native endpoints rather than model brand', async () => {
+    state.models = {
+      object: 'list',
+      data: [makeModel('claude-native-responses', ['/responses']), makeModel('gpt-native-messages', ['/v1/messages'])],
+    }
+
+    for (const [path, payload, upstream] of [
+      ['/v1/responses', { model: 'claude-native-responses', input: 'hello' }, '/responses'],
+      ['/v1/messages', { model: 'gpt-native-messages', messages: [{ role: 'user', content: 'hello' }], max_tokens: 64 }, '/v1/messages'],
+    ] as const) {
+      fetchMock.mockClear()
+      const response = await server.request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      expect(response.status).toBe(200)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.githubcopilot.com${upstream}`)
+    }
+  })
+
   test('/v1/responses rejects unknown models with 4xx (no auto-translation to chat-completions)', async () => {
     const response = await server.request('/v1/responses', {
       method: 'POST',
@@ -120,220 +177,6 @@ describe('compat routing fallback', () => {
     expect(calledUrls).toEqual([
       'https://api.githubcopilot.com/responses',
     ])
-  })
-
-  test('/v1/responses rejects Claude json_object locally instead of dropping the format constraint', async () => {
-    const response = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        store: false,
-        input: 'Return JSON.',
-        text: {
-          format: {
-            type: 'json_object',
-          },
-        },
-      }),
-    })
-
-    expect(response.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
-    const body = await response.json() as { error?: { message?: string } }
-    expect(body.error?.message).toContain('json_object')
-  })
-
-  test('/v1/responses translates Claude json_schema without the Responses-only schema name', async () => {
-    let forwardedPayload: Record<string, unknown> | undefined
-    fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
-      if (!url.endsWith('/v1/messages'))
-        throw new Error(`Unexpected upstream URL: ${url}`)
-
-      forwardedPayload = JSON.parse(String(init?.body)) as Record<string, unknown>
-      return Response.json({
-        id: 'msg_schema',
-        type: 'message',
-        role: 'assistant',
-        model: 'claude-opus-4.6',
-        content: [{ type: 'text', text: '{"answer":"ok"}' }],
-        stop_reason: 'end_turn',
-        stop_sequence: null,
-        usage: { input_tokens: 5, output_tokens: 2 },
-      })
-    })
-
-    const response = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        store: false,
-        input: 'Return JSON.',
-        text: {
-          format: {
-            type: 'json_schema',
-            name: 'sample',
-            schema: {
-              type: 'object',
-              properties: { answer: { type: 'string' } },
-              required: ['answer'],
-            },
-          },
-        },
-      }),
-    })
-
-    expect(response.status).toBe(200)
-
-    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
-    expect(calledUrls).toEqual([
-      'https://api.githubcopilot.com/v1/messages',
-    ])
-    expect(forwardedPayload).toMatchObject({
-      output_config: {
-        format: {
-          type: 'json_schema',
-          schema: {
-            type: 'object',
-          },
-        },
-      },
-    })
-    const forwardedFormat = (forwardedPayload?.output_config as { format?: Record<string, unknown> } | undefined)?.format
-    expect(forwardedFormat).not.toHaveProperty('name')
-  })
-
-  test('/v1/responses does not retry Claude json_schema native rejection through chat-completions', async () => {
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url.endsWith('/v1/messages')) {
-        return new Response(JSON.stringify({
-          type: 'error',
-          error: {
-            type: 'invalid_request_error',
-            message: 'output_config.format: Extra inputs are not permitted',
-          },
-        }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-
-      if (url.endsWith('/chat/completions')) {
-        return new Response(JSON.stringify({
-          id: 'chatcmpl_false_success',
-          object: 'chat.completion',
-          created: 0,
-          model: 'claude-opus-4.6',
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: 'assistant',
-                content: '4',
-              },
-              finish_reason: 'stop',
-            },
-          ],
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-
-      throw new Error(`Unexpected upstream URL: ${url}`)
-    })
-
-    const response = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        store: false,
-        input: 'What is 2+2? Return answer.',
-        text: {
-          format: {
-            type: 'json_schema',
-            schema: {
-              type: 'object',
-              properties: { answer: { type: 'string' } },
-              required: ['answer'],
-              additionalProperties: false,
-            },
-          },
-        },
-      }),
-    })
-
-    expect(response.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    const calledUrls = fetchMock.mock.calls.map(call => call[0] as string)
-    expect(calledUrls).toEqual([
-      'https://api.githubcopilot.com/v1/messages',
-    ])
-
-    const body = await response.json() as { error?: { message?: string } }
-    expect(body.error?.message).toContain('output_config.format')
-  })
-
-  test('/v1/responses rejects Claude input_file payloads locally instead of silently dropping file parts in Anthropic translation', async () => {
-    const response = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        input: [
-          {
-            role: 'user',
-            content: [
-              { type: 'input_text', text: 'Summarize this file.' },
-              { type: 'input_file', file_url: 'https://example.com/report.pdf' },
-            ],
-          },
-        ],
-      }),
-    })
-
-    expect(response.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-
-    const body = await response.json() as {
-      error?: {
-        type?: string
-        message?: string
-      }
-    }
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('input_file is only supported')
-  })
-
-  test('/v1/responses rejects hosted tools locally when the model cannot route directly to /responses', async () => {
-    const response = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        input: 'Search the web for nothing.',
-        tools: [
-          {
-            type: 'web_search',
-          },
-        ],
-      }),
-    })
-
-    expect(response.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-
-    const body = await response.json() as {
-      error?: {
-        type?: string
-        message?: string
-      }
-    }
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('Hosted Responses tools are only supported')
   })
 
   test('/v1/responses surfaces unsupported_api_for_model errors verbatim (no chat-completions fallback)', async () => {

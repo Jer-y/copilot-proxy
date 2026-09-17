@@ -10,15 +10,14 @@ export type ProductClientRoute
     | 'responsesWebSocket'
     | 'anthropicMessages'
 
-export type ProductRouteMode = 'direct' | 'translated' | 'unsupported'
+export type ProductRouteMode = 'direct' | 'unsupported'
 export type ProductMaturity = 'stable' | 'conditional' | 'experimental' | 'unsupported'
 
 export interface ProductRouteCapability {
   maturity: ProductMaturity
   mode: ProductRouteMode
-  reasonCode: 'bounded_translation' | 'catalog_direct' | 'no_faithful_route' | 'policy_direct' | 'websocket_advertised' | 'websocket_not_advertised'
+  reasonCode: 'catalog_direct' | 'no_faithful_route' | 'policy_direct' | 'websocket_advertised' | 'websocket_not_advertised'
   source: 'live-catalog-metadata' | 'bundled-routing-policy' | 'none'
-  target?: BackendApiType
 }
 
 export interface ModelCapabilityFeatures {
@@ -167,17 +166,6 @@ function buildHttpRoute(options: {
     }
   }
 
-  const peer = translatablePeer(clientApi)
-  if (peer && supportedApis.has(peer)) {
-    return {
-      mode: 'translated',
-      maturity: 'conditional',
-      source,
-      reasonCode: 'bounded_translation',
-      target: peer,
-    }
-  }
-
   return {
     mode: 'unsupported',
     maturity: 'unsupported',
@@ -202,14 +190,6 @@ function buildResponsesWebSocketRoute(supportedEndpoints: Array<string>): Produc
     source: 'live-catalog-metadata',
     reasonCode: 'websocket_advertised',
   }
-}
-
-function translatablePeer(clientApi: BackendApiType): BackendApiType | undefined {
-  if (clientApi === 'responses')
-    return 'anthropic-messages'
-  if (clientApi === 'anthropic-messages')
-    return 'responses'
-  return undefined
 }
 
 function endpointToBackendApi(endpoint: string): BackendApiType | undefined {

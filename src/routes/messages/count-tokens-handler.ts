@@ -1,14 +1,14 @@
 import type { Context } from 'hono'
 
-import type { AnthropicMessagesPayload } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload } from '~/lib/anthropic/types'
 
 import { getAccountRegistry } from '~/lib/account/registry'
 import { selectAccount } from '~/lib/account/router'
+import { throwAnthropicInvalidRequestError } from '~/lib/anthropic/compat'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
 import { resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
-import { throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { validateBody } from '~/lib/validate'
 import { createAnthropicCountTokens } from '~/services/copilot/create-anthropic-messages'
@@ -39,20 +39,9 @@ export async function handleCountTokens(c: Context) {
     }
   }
 
-  const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
+  resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
     models: selection.ctx.models?.data,
   })
-
-  if (route.backend === 'responses') {
-    throwAnthropicInvalidRequestError(
-      `Anthropic token counting is unavailable for model ${effectiveModel} because its generation route uses the Responses API and the selected GitHub Copilot backend does not expose /responses/input_tokens.`,
-    )
-  }
-  if (route.backend !== 'anthropic-messages' || route.kind !== 'direct') {
-    throwAnthropicInvalidRequestError(
-      `Model ${effectiveModel} cannot be served by the Anthropic token-counting endpoint.`,
-    )
-  }
 
   // Copilot's token-counting endpoint accepts request shapes that native
   // generation rejects. Keep this path endpoint-specific and forward the

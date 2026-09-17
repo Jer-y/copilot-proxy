@@ -82,7 +82,7 @@ copilot-proxy check-usage --account work
 
 启用 `accounts.json` 后，`models` 与 `check-usage` 默认使用 `defaultAccount`；可通过 `--account <id>` 检查其他已配置账号。两者只加载所选账号的持久 token，并以数值 GitHub identity 严格核对已记录的账号槽位，绝不会回退到旧版 `github_token` 或 Device Flow。没有 `accounts.json` 时，`models --account-type` 与旧版认证路径保持原有含义。
 
-`models` 显示所选账号的完整实时目录，包括只能通过显式账号 header 或模型前缀访问的模型；不会按该账号的未前缀静态 glob 绑定进行裁剪。表格同时显示 `direct` 直连路由和有界的 `translated` 翻译路由，以及成熟度、限制和部分功能标志；JSON 输出还包含所选账号 ID、账号类型，以及精简的路由 source、target 与 reason code。setup 更严格，只会配置当前可用的**直连**路由。`models` 和 diagnostics 都会省略 `model_picker_enabled=false` 的条目。
+`models` 显示所选账号的完整实时目录，包括只能通过显式账号 header 或模型前缀访问的模型；不会按该账号的未前缀静态 glob 绑定进行裁剪。表格显示原生 `direct` 路由与 `unsupported` 组合，以及成熟度、限制和部分功能标志；JSON 输出还包含所选账号 ID、账号类型，以及精简的路由 source 与 reason code。客户端筛选和 setup 只包含具有对应客户端原生路由的模型。`models` 和 diagnostics 都会省略 `model_picker_enabled=false` 的条目。
 
 `models` 与 setup 共享这个 picker-enabled 和实时路由可见性基线，但候选集不一定相同。`setup codex` 还要求本机 Codex 不低于 0.134.0，并将直连 Responses 候选与 bundled catalog 中具备可用 `base_instructions` 和 `context_window` metadata 的条目取交集。`models --client codex` 不检查本机 bundled catalog，因此可能展示当前机器上的 setup 无法配置的特定传输模型或 metadata 缺失模型。面向兼容性的 `/v1/models` 响应是另一套按静态绑定生成的客户端目录。提供 `models` 的发布版会在 npm package 和 Docker 镜像中包含 `models --json` 返回的相对文档路径。
 

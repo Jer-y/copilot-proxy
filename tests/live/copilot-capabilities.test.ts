@@ -7,7 +7,7 @@ import type {
   ProbeErrorDetails,
   RawAnthropicCapabilityProbe,
 } from './copilot-capability-matrix'
-import type { AnthropicResponse } from '~/lib/translation/types'
+import type { AnthropicResponse } from '~/lib/anthropic/types'
 
 import type { ChatCompletionResponse } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload, ResponsesResponse } from '~/services/copilot/create-responses'
@@ -466,7 +466,7 @@ async function runProbe(
   try {
     const result = await withLiveCopilotState(config, async () => {
       // The live probe intentionally exercises candidate upstream values such
-      // as reasoning.effort="xhigh" before translation behavior is enabled.
+      // as reasoning.effort="xhigh" against the native Responses upstream.
       return await createResponses(payload as ResponsesPayload)
     })
 

@@ -22,7 +22,7 @@ The documentation is split by task so that product policy, operations, deploymen
 
 ## Protocol compatibility
 
-[Protocol compatibility](protocol-compatibility.md) describes the API surface, direct and translated routes, Responses WebSocket behavior, and known protocol boundaries.
+[Protocol compatibility](protocol-compatibility.md) describes the API surface, native routes, Responses WebSocket behavior, and known protocol boundaries.
 
 ## API and configuration reference
 

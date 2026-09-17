@@ -62,7 +62,7 @@ afterEach(() => {
 })
 
 describe('multi-account model routing through real proxy handlers', () => {
-  test('routes historical Claude aliases by their canonical upstream model', async () => {
+  test('routes Claude aliases natively and rejects their retired Responses path', async () => {
     for (const path of ['/v1/messages', '/v1/responses']) {
       calls.length = 0
       const response = await server.request(path, {
@@ -80,6 +80,15 @@ describe('multi-account model routing through real proxy handlers', () => {
               input: 'hello',
             }),
       })
+
+      if (path === '/v1/responses') {
+        expect(response.status).toBe(400)
+        expect(calls).toHaveLength(0)
+        expect(await response.json()).toMatchObject({
+          error: { type: 'invalid_request_error', message: expect.stringContaining('cross-protocol translation is not supported') },
+        })
+        continue
+      }
 
       expect(response.status).toBe(200)
       expect(calls).toHaveLength(1)

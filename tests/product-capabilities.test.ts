@@ -53,15 +53,14 @@ describe('product capability profiles', () => {
           source: 'live-catalog-metadata',
         },
         anthropicMessages: {
-          mode: 'translated',
-          maturity: 'conditional',
+          mode: 'unsupported',
+          maturity: 'unsupported',
         },
       },
     })
     expect(profile?.routes.responsesHttp.reasonCode).toBe('catalog_direct')
     expect(profile?.routes.anthropicMessages).toMatchObject({
-      reasonCode: 'bounded_translation',
-      target: 'responses',
+      reasonCode: 'no_faithful_route',
     })
     expect(profile).not.toHaveProperty('productSupport')
     expect(profile).not.toHaveProperty('validationEvidence')
@@ -79,7 +78,7 @@ describe('product capability profiles', () => {
     expect(profile?.routes.anthropicMessages.mode).toBe('unsupported')
   })
 
-  test('allows translation only between Responses and Anthropic Messages', () => {
+  test('does not advertise Responses for a Messages-only model', () => {
     const [profile] = buildModelCapabilityProfiles([
       makeModel('native-messages-model', {
         supportedEndpoints: ['/v1/messages'],
@@ -87,12 +86,12 @@ describe('product capability profiles', () => {
     ])
 
     expect(profile?.routes.anthropicMessages.mode).toBe('direct')
-    expect(profile?.routes.responsesHttp.mode).toBe('translated')
+    expect(profile?.routes.responsesHttp.mode).toBe('unsupported')
     expect(profile?.routes.chatCompletions.mode).toBe('unsupported')
     expect(profile?.routes.responsesWebSocket.mode).toBe('unsupported')
   })
 
-  test('keeps bounded translation conditional for preview models while direct routes are experimental', () => {
+  test('keeps unsupported protocols unavailable for preview models', () => {
     const [profile] = buildModelCapabilityProfiles([
       makeModel('preview-responses-model', {
         preview: true,
@@ -109,9 +108,9 @@ describe('product capability profiles', () => {
       maturity: 'experimental',
     })
     expect(profile?.routes.anthropicMessages).toMatchObject({
-      mode: 'translated',
-      maturity: 'conditional',
-      reasonCode: 'bounded_translation',
+      mode: 'unsupported',
+      maturity: 'unsupported',
+      reasonCode: 'no_faithful_route',
     })
   })
 
@@ -126,9 +125,9 @@ describe('product capability profiles', () => {
       source: 'bundled-routing-policy',
     })
     expect(profile?.routes.responsesHttp).toMatchObject({
-      mode: 'translated',
-      maturity: 'conditional',
-      source: 'bundled-routing-policy',
+      mode: 'unsupported',
+      maturity: 'unsupported',
+      source: 'none',
     })
     expect(profile?.routes.responsesWebSocket.mode).toBe('unsupported')
   })
@@ -207,10 +206,10 @@ describe('product capability profiles', () => {
     expect(profiles.map(profile => profile.id)).toEqual(['gpt-visible'])
   })
 
-  test('keeps translated Messages routes visible generally but excludes them from direct client selection', () => {
+  test('only exposes native Messages models to both selection helpers', () => {
     const models = [
       makeModel('claude-direct', { supportedEndpoints: ['/v1/messages'] }),
-      makeModel('gpt-translated', { supportedEndpoints: ['/responses'] }),
+      makeModel('gpt-responses-only', { supportedEndpoints: ['/responses'] }),
       makeModel('embedding-only', { supportedEndpoints: ['/embeddings'] }),
       {
         ...makeModel('hidden-messages', { supportedEndpoints: ['/v1/messages'] }),
@@ -220,7 +219,6 @@ describe('product capability profiles', () => {
 
     expect(selectableModelIdsForRoute(models, 'anthropicMessages')).toEqual([
       'claude-direct',
-      'gpt-translated',
     ])
     expect(selectableDirectModelIdsForRoute(models, 'anthropicMessages')).toEqual([
       'claude-direct',

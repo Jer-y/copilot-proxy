@@ -68,10 +68,12 @@ bun install --frozen-lockfile
 | OpenAI 兼容 API | Chat Completions、HTTP/SSE Responses、Models 与 Embeddings |
 | Anthropic 兼容 API | Messages 与 token count；按模型选择直连路由 |
 | Responses WebSocket | 仅由实时明确的 `ws:/responses` metadata 放行的原生传输 |
-| 路由 | 优先直连；只有能够保留请求意图时才进行有限翻译 |
+| 路由 | 只支持原生协议；客户端必须使用所选模型支持的 API |
 | 运维 | 客户端设置、模型查看、健康诊断、服务管理与诊断面板 |
 
 能力可用性取决于当前 Copilot 账号、模型、端点与传输。契约和限制见[协议兼容性](docs/protocol-compatibility.zh-CN.md)，验证范围、执行方式与结果判读见[能力验证](docs/copilot-capability-validation.md)。
+
+已移除 Messages ↔ Responses 跨协议路由。原先依赖翻译的请求现在会在本地失败，迁移方式见[协议兼容性](docs/protocol-compatibility.zh-CN.md#从跨协议路由迁移)。
 
 ## 产品边界
 

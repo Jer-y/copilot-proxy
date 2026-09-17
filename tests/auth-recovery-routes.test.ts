@@ -74,28 +74,7 @@ const cases: RecoveryRouteCase[] = [
     upstreamSuffix: '/v1/messages',
     success: () => messagesSuccess('claude-opus-4.8'),
   },
-  {
-    name: 'Anthropic translated to Responses',
-    path: '/v1/messages',
-    payload: {
-      model: 'gpt-5.4',
-      max_tokens: 32,
-      messages: [{ role: 'user', content: 'reply recovered' }],
-    },
-    upstreamSuffix: '/responses',
-    success: () => responsesSuccess('gpt-5.4'),
-  },
-  {
-    name: 'Responses translated to Anthropic',
-    path: '/v1/responses',
-    payload: {
-      model: 'claude-opus-4.8',
-      input: 'reply recovered',
-      store: false,
-    },
-    upstreamSuffix: '/v1/messages',
-    success: () => messagesSuccess('claude-opus-4.8'),
-  },
+
 ]
 
 describe('real route authentication recovery', () => {

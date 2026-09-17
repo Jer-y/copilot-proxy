@@ -36,5 +36,5 @@ copilot-proxy 不用于构建：
 - [入门指南](getting-started.zh-CN.md)：验证首次真实响应并生成客户端配置。
 - [运维](operations.zh-CN.md)：运行预设、确定性多账号路由、模型检查、诊断与原生服务生命周期。
 - [部署](deployment.zh-CN.md)：回环地址、Docker 与认证私有网关拓扑。
-- [协议兼容性](protocol-compatibility.zh-CN.md)：直连与翻译路由、成熟度标签和协议边界。
+- [协议兼容性](protocol-compatibility.zh-CN.md)：原生路由、成熟度标签和协议边界。
 - [Copilot 能力验证](copilot-capability-validation.md)：实时探针的执行方式与语义校验规则。

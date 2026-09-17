@@ -3,7 +3,7 @@ import type {
   LiveCopilotProbeConfig,
   RawAnthropicCapabilityProbe,
 } from './live/copilot-capability-matrix'
-import type { AnthropicAssistantContentBlock, AnthropicResponse } from '~/lib/translation/types'
+import type { AnthropicAssistantContentBlock, AnthropicResponse } from '~/lib/anthropic/types'
 
 import { describe, expect, test } from 'bun:test'
 

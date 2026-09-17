@@ -68,10 +68,12 @@ When the proxy starts, it prints a link to the [hosted diagnostics dashboard](ht
 | OpenAI-compatible APIs | Chat Completions, Responses over HTTP/SSE, Models, and Embeddings |
 | Anthropic-compatible APIs | Messages and token counting, with model-aware direct routing |
 | Responses WebSocket | Native transport gated by explicit live `ws:/responses` metadata |
-| Routing | Direct routes are preferred; bounded translation is used only where intent can be preserved |
+| Routing | Native protocols only; clients must use an API supported by the selected model |
 | Operations | Client setup, model inspection, health diagnosis, service management, and a diagnostics dashboard |
 
 Capability availability depends on the current Copilot account, model, endpoint, and transport. Read [Protocol compatibility](docs/protocol-compatibility.md) for contracts and limitations, and [Capability validation](docs/copilot-capability-validation.md) for what to validate, how to run it, and how to interpret the result.
+
+Cross-protocol Messages ↔ Responses routing has been removed. Previously translated requests now fail locally; see [migration guidance](docs/protocol-compatibility.md#migration-from-cross-protocol-routing).
 
 ## Product boundary
 

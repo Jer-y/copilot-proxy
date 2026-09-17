@@ -172,7 +172,7 @@ describe('/diagnostics', () => {
         chatCompletions: { mode: 'unsupported' },
         responsesHttp: { mode: 'direct' },
         responsesWebSocket: { mode: 'direct' },
-        anthropicMessages: { mode: 'translated' },
+        anthropicMessages: { mode: 'unsupported' },
       },
     })
     expect(body.models[0]).not.toHaveProperty('features')

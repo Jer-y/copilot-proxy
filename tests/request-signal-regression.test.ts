@@ -201,7 +201,7 @@ describe('route request-signal regression', () => {
     expectSingleUpstreamRequestIsolatedFromInboundAbort('/responses', inboundController)
   })
 
-  test('responses translated through messages do not forward the inbound request signal upstream', async () => {
+  test('retired Responses-to-Messages route never sends an upstream request', async () => {
     const inboundController = new AbortController()
     const response = await server.request('/v1/responses', {
       method: 'POST',
@@ -214,8 +214,8 @@ describe('route request-signal regression', () => {
       }),
     })
 
-    expect(response.status).toBe(200)
-    expectSingleUpstreamRequestIsolatedFromInboundAbort('/v1/messages', inboundController)
+    expect(response.status).toBe(400)
+    expect(upstreamRequests).toHaveLength(0)
   })
 
   test('native messages do not forward the inbound request signal upstream', async () => {
@@ -241,7 +241,7 @@ describe('route request-signal regression', () => {
     expectSingleUpstreamRequestIsolatedFromInboundAbort('/v1/messages', inboundController)
   })
 
-  test('messages translated through responses do not forward the inbound request signal upstream', async () => {
+  test('retired Messages-to-Responses route never sends an upstream request', async () => {
     const inboundController = new AbortController()
     const response = await server.request('/v1/messages', {
       method: 'POST',
@@ -254,8 +254,8 @@ describe('route request-signal regression', () => {
       }),
     })
 
-    expect(response.status).toBe(200)
-    expectSingleUpstreamRequestIsolatedFromInboundAbort('/responses', inboundController)
+    expect(response.status).toBe(400)
+    expect(upstreamRequests).toHaveLength(0)
   })
 
   test('embeddings do not forward the inbound request signal upstream', async () => {

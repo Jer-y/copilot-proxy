@@ -1,5 +1,4 @@
 import type {
-  AnthropicCacheControl,
   AnthropicDocumentBlock,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
@@ -9,10 +8,6 @@ import type {
 
 import consola from 'consola'
 import { JSONResponseError } from '~/lib/error'
-
-interface CopilotCacheControl {
-  type: 'ephemeral'
-}
 
 export function throwAnthropicInvalidRequestError(message: string): never {
   throw new JSONResponseError(message, 400, {
@@ -26,9 +21,6 @@ export function throwAnthropicInvalidRequestError(message: string): never {
 
 export function assertCopilotCompatibleAnthropicRequest(
   payload: AnthropicMessagesPayload,
-  options?: {
-    documentMode?: 'messages-base64-pdf-only' | 'reject'
-  },
 ): void {
   for (const message of payload.messages) {
     if (message.role !== 'user' || !Array.isArray(message.content)) {
@@ -36,34 +28,9 @@ export function assertCopilotCompatibleAnthropicRequest(
     }
 
     for (const block of message.content) {
-      assertSupportedUserContentBlock(block, options)
+      assertSupportedUserContentBlock(block)
     }
   }
-}
-
-export function mapAnthropicCacheControl(
-  cacheControl: AnthropicCacheControl | null | undefined,
-  context: string,
-): CopilotCacheControl | undefined {
-  if (!cacheControl) {
-    return undefined
-  }
-
-  if (cacheControl.ttl) {
-    logIgnoredAnthropicParameter(
-      `${context}.cache_control.ttl`,
-      'Copilot only supports ephemeral cache hints without a TTL override.',
-    )
-  }
-
-  return { type: 'ephemeral' }
-}
-
-export function logIgnoredAnthropicParameter(
-  parameter: string,
-  reason: string,
-): void {
-  consola.debug(`Ignoring Anthropic ${parameter}: ${reason}`)
 }
 
 export function logLossyAnthropicCompatibility(
@@ -75,9 +42,6 @@ export function logLossyAnthropicCompatibility(
 
 function assertSupportedUserContentBlock(
   block: AnthropicUserContentBlock,
-  options?: {
-    documentMode?: 'messages-base64-pdf-only' | 'reject'
-  },
 ): void {
   if (isExternalImageUrl(block)) {
     throwAnthropicInvalidRequestError(
@@ -86,18 +50,15 @@ function assertSupportedUserContentBlock(
   }
 
   if (isDocumentBlock(block))
-    assertSupportedDocumentBlock(block, options?.documentMode ?? 'reject')
+    assertSupportedDocumentBlock(block)
 
   if (block.type === 'tool_result') {
-    assertSupportedToolResultContent(block, options)
+    assertSupportedToolResultContent(block)
   }
 }
 
 function assertSupportedToolResultContent(
   block: AnthropicToolResultBlock,
-  options?: {
-    documentMode?: 'messages-base64-pdf-only' | 'reject'
-  },
 ): void {
   if (!Array.isArray(block.content)) {
     return
@@ -111,20 +72,13 @@ function assertSupportedToolResultContent(
     }
 
     if (isDocumentBlock(contentBlock))
-      assertSupportedDocumentBlock(contentBlock, options?.documentMode ?? 'reject')
+      assertSupportedDocumentBlock(contentBlock)
   }
 }
 
 function assertSupportedDocumentBlock(
   block: AnthropicDocumentBlock,
-  mode: 'messages-base64-pdf-only' | 'reject',
 ): void {
-  if (mode === 'reject') {
-    throwAnthropicInvalidRequestError(
-      'Anthropic document blocks cannot be translated faithfully to the selected Responses backend. Use a native Claude model, or provide the content as ordinary text or image blocks.',
-    )
-  }
-
   if (block.source.type === 'base64'
     && block.source.media_type.trim().toLowerCase() === 'application/pdf') {
     return

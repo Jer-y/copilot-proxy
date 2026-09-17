@@ -6,24 +6,6 @@ import { server } from '~/server'
 const originalFetch = globalThis.fetch
 
 async function defaultFetchMock(url: string, init?: RequestInit) {
-  if (url.endsWith('/responses')) {
-    return new Response(JSON.stringify({
-      id: 'resp_route_test',
-      object: 'response',
-      model: 'gpt-5.4',
-      output: [{
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: 'ok' }],
-      }],
-      status: 'completed',
-      error: null,
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-
   if (url.endsWith('/v1/messages/count_tokens')) {
     return new Response(JSON.stringify({
       input_tokens: 26,
@@ -68,41 +50,6 @@ async function defaultFetchMock(url: string, init?: RequestInit) {
       stop_reason: 'end_turn',
       stop_sequence: null,
       usage: { input_tokens: 5, output_tokens: 1 },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-
-  if (url.endsWith('/chat/completions')) {
-    const forwardedPayload = init?.body
-      ? JSON.parse(String(init.body)) as { stream?: boolean }
-      : {}
-
-    if (forwardedPayload.stream) {
-      return new Response([
-        'data: {"id":"chatcmpl_route_stream","object":"chat.completion.chunk","created":0,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
-        'data: [DONE]\n\n',
-      ].join(''), {
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-      })
-    }
-
-    return new Response(JSON.stringify({
-      id: 'chatcmpl_route_test',
-      object: 'chat.completion',
-      created: 0,
-      model: 'claude-opus-4.6',
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: 'ok',
-        },
-        logprobs: null,
-        finish_reason: 'stop',
-      }],
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -241,43 +188,6 @@ describe('messages route upstream adaptation', () => {
     expect(responseBody).not.toContain('native Anthropic socket closed after message_stop')
   })
 
-  test('Responses-translated Messages streaming ignores AbortError after response.completed', async () => {
-    fetchMock.mockImplementationOnce(async (url: string) => {
-      expect(url.endsWith('/responses')).toBe(true)
-      return new Response(createErroringSSE([
-        [
-          'event: response.created',
-          'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_terminal_abort","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}',
-          '',
-          'event: response.completed',
-          'data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_terminal_abort","object":"response","model":"gpt-5.4","output":[],"status":"completed","error":null,"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}',
-          '',
-          '',
-        ].join('\n'),
-      ], 'Responses socket closed after response.completed', 'AbortError', 25), {
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-      })
-    })
-
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        stream: true,
-        messages: [{ role: 'user', content: 'Say hello.' }],
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    const responseBody = await res.text()
-    expect(responseBody).toContain('event: message_stop')
-    expect(responseBody).not.toContain('event: error')
-    expect(responseBody).not.toContain('Responses socket closed after response.completed')
-  })
-
   test('Claude json_object requests are forwarded natively (proxy no longer translates to chat-completions)', async () => {
     fetchMock.mockImplementationOnce(async (url: string) => {
       if (!url.endsWith('/v1/messages')) {
@@ -309,74 +219,6 @@ describe('messages route upstream adaptation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.githubcopilot.com/v1/messages')
-  })
-
-  test('Responses-backed json_object requests are forwarded to /responses with text.format', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        messages: [{ role: 'user', content: 'Return JSON.' }],
-        output_config: {
-          format: {
-            type: 'json_object',
-          },
-        },
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/responses')
-
-    const forwardedPayload = JSON.parse(String(init?.body)) as {
-      text?: { format?: { type?: string } }
-      model?: string
-    }
-
-    expect(forwardedPayload.model).toBe('gpt-5.4')
-    expect(forwardedPayload.text).toEqual({ format: { type: 'json_object' } })
-  })
-
-  test('Responses-backed requests reject max_tokens below 16 instead of increasing it', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 15,
-        messages: [{ role: 'user', content: 'Be brief.' }],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-    const body = await res.json() as { error?: { type?: string, message?: string } }
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('max_tokens must be at least 16')
-  })
-
-  test('Responses-backed requests reject unknown typed tools instead of omitting them', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        messages: [{ role: 'user', content: 'Fetch the page.' }],
-        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch' }],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-    const body = await res.json() as { error?: { type?: string, message?: string } }
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('server-side tools')
   })
 
   test('Claude json_schema requests strip Responses-only metadata before native routing', async () => {
@@ -863,45 +705,6 @@ describe('messages route upstream adaptation', () => {
     expect(body).not.toContain('event: error')
   })
 
-  test('Responses translated stream emits an error when upstream EOF arrives before terminal event', async () => {
-    fetchMock.mockImplementationOnce(async (url: string) => {
-      if (!url.endsWith('/responses')) {
-        throw new Error(`Unexpected upstream URL: ${url}`)
-      }
-
-      return new Response([
-        'event: response.created\n',
-        'data: {"type":"response.created","response":{"id":"resp_partial","object":"response","model":"gpt-5.4","output":[],"status":"in_progress","error":null}}\n\n',
-        'event: response.output_text.delta\n',
-        'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}\n\n',
-      ].join(''), {
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-      })
-    })
-
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        stream: true,
-        max_tokens: 64,
-        messages: [{ role: 'user', content: 'Say hello.' }],
-      }),
-    })
-
-    expect(res.status).toBe(200)
-
-    const body = await res.text()
-    expect(body).toContain('event: message_start')
-    expect(body).toContain('event: content_block_delta')
-    expect(body).toContain('event: error')
-    expect(body).toContain('Upstream Copilot connection terminated before the response completed.')
-    expect(body).not.toContain('event: message_stop')
-    expect(body).not.toContain('"stop_reason":"end_turn"')
-  })
-
   test('Claude non-streaming requests forward error responses from upstream', async () => {
     fetchMock.mockImplementationOnce(async (url: string) => {
       if (!url.endsWith('/v1/messages')) {
@@ -1141,53 +944,12 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.message).toContain('base64')
   })
 
-  test('Responses-backed URL image requests fail locally with Anthropic invalid_request_error', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'url',
-                  url: 'https://example.com/cat.png',
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
-
-    const body = await res.json() as {
-      type?: string
-      error?: {
-        type?: string
-        message?: string
-      }
-    }
-
-    expect(body.type).toBe('error')
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('external image URLs')
-    expect(body.error?.message).toContain('base64')
-  })
-
   test('tool_result URL image requests fail locally with Anthropic invalid_request_error', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-5.4',
+        model: 'claude-opus-4.8',
         max_tokens: 64,
         messages: [
           {
@@ -1228,96 +990,6 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.type).toBe('invalid_request_error')
     expect(body.error?.message).toContain('external image URLs')
     expect(body.error?.message).toContain('base64')
-  })
-
-  test('Responses-backed rich tool_result forwards text and base64 image as rich output parts', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        messages: [{
-          role: 'user',
-          content: [{
-            type: 'tool_result',
-            tool_use_id: 'toolu_image',
-            content: [
-              { type: 'text', text: 'Screenshot attached' },
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: 'image/png',
-                  data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
-                },
-              },
-            ],
-          }],
-        }],
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('https://api.githubcopilot.com/responses')
-    const headers = init.headers as Record<string, string>
-    expect(headers['copilot-vision-request']).toBe('true')
-    const forwardedPayload = JSON.parse(String(init.body)) as { input?: unknown }
-    expect(forwardedPayload.input).toEqual([{
-      type: 'function_call_output',
-      call_id: 'toolu_image',
-      output: [
-        { type: 'input_text', text: 'Screenshot attached' },
-        {
-          type: 'input_image',
-          image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
-        },
-      ],
-    }])
-  })
-
-  test('Responses-backed document blocks are rejected without local PDF parsing', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                title: 'report.pdf',
-                source: {
-                  type: 'base64',
-                  media_type: 'application/pdf',
-                  data: 'JVBERi0xLjQK',
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
-
-    const body = await res.json() as {
-      type?: string
-      error?: {
-        type?: string
-        message?: string
-      }
-    }
-
-    expect(body.type).toBe('error')
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('document blocks cannot be translated faithfully')
   })
 
   test('Claude document blocks are forwarded natively without local expansion', async () => {
@@ -1473,35 +1145,6 @@ describe('messages route upstream adaptation', () => {
     expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received content')
   })
 
-  test('Responses-backed document translation rejects citations before upstream', async () => {
-    const res = await server.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        max_tokens: 64,
-        messages: [{
-          role: 'user',
-          content: [{
-            type: 'document',
-            source: {
-              type: 'text',
-              media_type: 'text/plain',
-              data: 'Citation source.',
-            },
-            citations: { enabled: true },
-          }],
-        }],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
-    const body = await res.json() as { error?: { type?: string, message?: string } }
-    expect(body.error?.type).toBe('invalid_request_error')
-    expect(body.error?.message).toContain('document blocks cannot be translated faithfully')
-  })
-
   test('Claude native passthrough rejects legacy source.text documents', async () => {
     const res = await server.request('/v1/messages', {
       method: 'POST',
@@ -1608,29 +1251,6 @@ describe('messages route upstream adaptation', () => {
     const body = await res.json() as { error?: { type?: string, message?: string } }
     expect(body.error?.type).toBe('invalid_request_error')
     expect(body.error?.message).toContain('supports only base64 application/pdf blocks; received url')
-  })
-
-  test('/v1/responses Claude json_object requests are rejected before lossy Anthropic translation', async () => {
-    const res = await server.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4.6',
-        store: false,
-        input: 'Return JSON.',
-        text: {
-          format: {
-            type: 'json_object',
-          },
-        },
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-    const body = await res.json() as { error: { message: string, type: string } }
-    expect(body.error.type).toBe('invalid_request_error')
-    expect(body.error.message).toContain('json_object')
   })
 
   test('native generation and count_tokens preserve top-level search_result blocks', async () => {
@@ -1743,7 +1363,7 @@ describe('messages route upstream adaptation', () => {
       type: 'error',
       error: {
         type: 'invalid_request_error',
-        message: expect.stringContaining('/responses/input_tokens'),
+        message: expect.stringContaining('cross-protocol translation is not supported'),
       },
     })
   })

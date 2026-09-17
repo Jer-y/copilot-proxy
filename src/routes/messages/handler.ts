@@ -1,26 +1,24 @@
 import type { Context } from 'hono'
 
 import type { AccountContext } from '~/lib/account/types'
-import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/anthropic/types'
 
 import consola from 'consola'
 import { streamSSE } from 'hono/streaming'
 import { getAccountRegistry } from '~/lib/account/registry'
 import { selectAccount } from '~/lib/account/router'
+import { throwAnthropicInvalidRequestError } from '~/lib/anthropic/compat'
 import { isAbortError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
 import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
-import { assertMessagesPayloadTranslatable, resolveRoute } from '~/lib/routing-policy'
+import { resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
-import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 
+import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 import { state } from '~/lib/state'
-import { createAnthropicFromResponsesStreamState, translateAnthropicRequestToResponses, translateResponsesResponseToAnthropic, translateResponsesStreamEventToAnthropic } from '~/lib/translation'
-import { throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
-import { createResponses, summarizeResponsesPayload } from '~/services/copilot/create-responses'
 import {
   normalizeAnthropicModelName,
   sanitizeAnthropicBetaHeader,
@@ -32,20 +30,16 @@ import {
   overrideAnthropicResponseModel,
   overrideAnthropicStreamEventModel,
   prepareAnthropicPayloadForNativeCopilotBackend,
-  prepareAnthropicPayloadForTranslatedBackends,
 } from './request-adaptation'
 import { createAnthropicSSEWriter } from './sse-writer'
 import {
+  createAnthropicErrorEvent,
   createNativeAnthropicPassthroughState,
-  finalizeAnthropicStreamFromState,
   finalizeNativeAnthropicPassthroughState,
-  finalizeTruncatedAnthropicStreamFromState,
   getUpstreamTerminationErrorMessage,
   handleAnthropicStreamFailure,
   shouldEmitNativeAnthropicTerminationError,
-  translateErrorToAnthropicErrorEvent,
   updateNativeAnthropicPassthroughState,
-  writeAnthropicEvents,
 } from './stream-finalizer'
 
 export async function handleCompletion(c: Context) {
@@ -86,179 +80,18 @@ export async function handleCompletion(c: Context) {
   normalizeAdaptiveThinkingForCopilot(anthropicPayload)
   assertNoUnsupportedAdvisorToolsForCopilot(anthropicPayload)
 
-  const route = resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
+  resolveRoute('anthropic-messages', effectiveModel, throwAnthropicInvalidRequestError, {
     models: selection.ctx.models?.data,
   })
 
-  switch (route.backend) {
-    case 'anthropic-messages':
-      return await handleViaNativeAnthropic(
-        c,
-        anthropicPayload,
-        anthropicBeta,
-        effectiveModel,
-        requestedModel,
-        selection.ctx,
-      )
-    case 'responses':
-      assertMessagesPayloadTranslatable(anthropicPayload, throwAnthropicInvalidRequestError, {
-        models: selection.ctx.models?.data,
-      })
-      await prepareAnthropicPayloadForTranslatedBackends(anthropicPayload)
-      return await handleViaResponses(c, anthropicPayload, effectiveModel, requestedModel, selection.ctx)
-    case 'chat-completions':
-      // Unreachable: resolveRoute() never returns chat-completions for an Anthropic client.
-      throwAnthropicInvalidRequestError(
-        `Model ${effectiveModel} cannot be served via /v1/messages (would require translating to /chat/completions, which is disallowed).`,
-      )
-  }
-}
-
-/** Translation path: Anthropic → Responses → Anthropic */
-async function handleViaResponses(
-  c: Context,
-  anthropicPayload: AnthropicMessagesPayload,
-  effectiveModel: string,
-  requestedModel: string,
-  ctx: AccountContext,
-) {
-  const responsesPayload = translateAnthropicRequestToResponses(anthropicPayload, {
-    model: effectiveModel,
-    models: ctx.models?.data,
-  })
-  if (consola.level >= 4) {
-    consola.debug('Translated Anthropic→Responses payload summary:', summarizeResponsesPayload(responsesPayload))
-  }
-
-  const setupSignal = getSetupProbeSignal(c)
-  const result = await createResponses(responsesPayload, {
-    ctx,
-    ...(setupSignal && { signal: setupSignal }),
-  })
-
-  if (!isResponsesStreamBody(result.body)) {
-    if (!isResponsesResponseBody(result.body)) {
-      throwAnthropicInvalidRequestError(
-        extractUnexpectedResponsesBodyMessage(result.body),
-      )
-    }
-    if (consola.level >= 4) {
-      consola.debug('Responses result summary (Anthropic path):', summarizeResponsesResult(result.body))
-    }
-    const anthropicResponse = translateResponsesResponseToAnthropic(result.body, { requestedModel })
-    if (consola.level >= 4) {
-      consola.debug('Translated Responses→Anthropic response summary:', summarizeAnthropicResponse(anthropicResponse))
-    }
-    forwardUpstreamHeaders(c, result.headers)
-    return c.json(anthropicResponse)
-  }
-
-  // Streaming translation (Responses stream → Anthropic events)
-  consola.debug('Streaming responses (Anthropic path)')
-  forwardUpstreamHeaders(c, result.headers)
-  const streamBody = result.body
-  return streamSSE(c, async (stream) => {
-    const anthropicWriter = createAnthropicSSEWriter(stream)
-    const streamState = createAnthropicFromResponsesStreamState({ requestedModel })
-    let completed = false
-    stream.onAbort(() => result.cancel?.('anthropic client disconnected before translated Responses stream completed'))
-
-    try {
-      for await (const rawEvent of streamBody) {
-        if (stream.aborted)
-          break
-        if (rawEvent.data === '[DONE]')
-          break
-        if (!rawEvent.data)
-          continue
-
-        let event
-        try {
-          event = JSON.parse(rawEvent.data)
-        }
-        catch {
-          consola.error('Failed to parse Responses stream event:', {
-            event: rawEvent.event ?? 'message',
-            dataChars: rawEvent.data.length,
-          })
-          await anthropicWriter.writeEvent(
-            translateErrorToAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Responses upstream response.'),
-          )
-          return
-        }
-
-        const anthropicEvents = translateResponsesStreamEventToAnthropic(event, streamState)
-        for (const evt of anthropicEvents) {
-          await anthropicWriter.writeEvent(evt)
-
-          if (evt.type === 'error') {
-            return
-          }
-        }
-      }
-
-      if (!stream.aborted) {
-        const finalEvents = streamState.upstreamTerminalEventSeen
-          ? finalizeAnthropicStreamFromState(streamState)
-          : finalizeTruncatedAnthropicStreamFromState(streamState)
-        await writeAnthropicEvents(anthropicWriter, finalEvents)
-        completed = true
-      }
-    }
-    catch (error) {
-      if (streamState.upstreamTerminalEventSeen && isAbortError(error)) {
-        completed = !stream.aborted
-        return
-      }
-      await handleAnthropicStreamFailure({
-        completionTerm: 'completion event',
-        error,
-        errorLabel: 'Responses stream translation',
-        streamLabel: 'Responses stream',
-        state: streamState,
-        unexpectedErrorMessage: 'An unexpected error occurred while translating the Copilot Responses stream.',
-        writer: anthropicWriter,
-        finalizeRecoveredEvents: () => [],
-        canRecoverTermination: () => false,
-        clientAborted: () => stream.aborted,
-      })
-      return
-    }
-    finally {
-      await anthropicWriter.close()
-      if (!completed) {
-        await result.cancel?.('anthropic client disconnected before translated Responses stream completed')
-      }
-    }
-  })
-}
-
-function isResponsesStreamBody(
-  body: Awaited<ReturnType<typeof createResponses>>['body'],
-): body is AsyncIterable<{ data?: string }> {
-  return typeof (body as { [Symbol.asyncIterator]?: unknown })?.[Symbol.asyncIterator] === 'function'
-}
-
-function isResponsesResponseBody(
-  body: Awaited<ReturnType<typeof createResponses>>['body'],
-): body is import('~/services/copilot/create-responses').ResponsesResponse {
-  return typeof body === 'object'
-    && body !== null
-    && Array.isArray((body as { output?: unknown }).output)
-    && typeof (body as { status?: unknown }).status === 'string'
-}
-
-function extractUnexpectedResponsesBodyMessage(
-  body: Awaited<ReturnType<typeof createResponses>>['body'],
-): string {
-  if (typeof body === 'object' && body !== null) {
-    const error = (body as { error?: unknown }).error
-    if (typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string') {
-      return (error as { message: string }).message
-    }
-  }
-
-  return 'Copilot Responses upstream returned a non-stream JSON payload that is not a Responses response.'
+  return await handleViaNativeAnthropic(
+    c,
+    anthropicPayload,
+    anthropicBeta,
+    effectiveModel,
+    requestedModel,
+    selection.ctx,
+  )
 }
 
 /**
@@ -341,7 +174,7 @@ async function handleViaNativeAnthropic(
             dataChars: rawEvent.data.length,
           })
           await anthropicWriter.writeEvent(
-            translateErrorToAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Anthropic upstream response.'),
+            createAnthropicErrorEvent('Failed to parse a streaming event from the Copilot Anthropic upstream response.'),
           )
           return
         }
@@ -359,7 +192,7 @@ async function handleViaNativeAnthropic(
       if (shouldEmitNativeAnthropicTerminationError(passthroughState)) {
         consola.warn('Native Anthropic stream terminated without message_stop; returning an Anthropic error event.')
         await anthropicWriter.writeEvent(
-          translateErrorToAnthropicErrorEvent(
+          createAnthropicErrorEvent(
             getUpstreamTerminationErrorMessage(passthroughState),
           ),
         )
@@ -432,20 +265,6 @@ function summarizeAnthropicPayload(payload: AnthropicMessagesPayload): Record<st
     thinkingType: payload.thinking?.type,
     outputFormatType: payload.output_config?.format?.type,
     systemBlocks: Array.isArray(payload.system) ? payload.system.length : payload.system ? 1 : 0,
-  }
-}
-
-function summarizeResponsesResult(body: unknown): Record<string, unknown> {
-  if (!body || typeof body !== 'object')
-    return { kind: typeof body }
-
-  const response = body as Record<string, unknown>
-  return {
-    object: typeof response.object === 'string' ? response.object : undefined,
-    status: typeof response.status === 'string' ? response.status : undefined,
-    model: typeof response.model === 'string' ? response.model : undefined,
-    outputItems: Array.isArray(response.output) ? response.output.length : undefined,
-    hasError: response.error != null,
   }
 }
 

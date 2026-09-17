@@ -2,42 +2,43 @@ English | [简体中文](protocol-compatibility.zh-CN.md)
 
 # Protocol compatibility
 
-copilot-proxy treats the client-facing protocol and the Copilot upstream protocol as separate contracts. A route is enabled only when the current model has a direct backend or the request can be translated without manufacturing a misleading success.
+copilot-proxy treats the client-facing protocol and the Copilot upstream protocol as separate contracts. Only native protocol routes are supported: the client request and the selected Copilot endpoint must use the same API.
 
 ## Route modes
 
 | Mode | Meaning |
 | --- | --- |
 | `direct` | The client and Copilot sides use the same protocol family; the proxy forwards with bounded compatibility sanitization |
-| `translated` | The proxy converts between OpenAI Responses and Anthropic Messages, subject to request-level fidelity checks |
-| `unsupported` | No faithful route exists, so the request is rejected locally |
+| `unsupported` | No native route exists, so the request is rejected locally |
 
-Chat Completions is direct-only and is never used as a fallback for Responses or Messages. Embeddings is also a direct route. Responses WebSocket is transport-specific and never translated.
+Messages, Responses, Chat Completions, and Embeddings are direct-only. A request is never retried through a different protocol or model. Responses WebSocket remains a separate native transport.
+
+### Migration from cross-protocol routing
+
+**Breaking change:** Messages-to-Responses and Responses-to-Messages translation have been removed. Requests that previously used those paths now return a client-compatible `400 invalid_request_error` without contacting Copilot. Configure the client for a native API supported by the selected model, or select a model supporting the client's API. A model list does not make a single-protocol client support other protocols.
+
+Routing uses endpoint capabilities, not model-brand rules. A model that advertises multiple native APIs remains usable through each of them.
 
 ## Maturity labels
 
 | Label | Product meaning |
 | --- | --- |
 | `stable` | A non-preview model's current catalog advertises a direct HTTP route |
-| `conditional` | A bounded translation (including for preview models) or bundled routing fallback requires request- and model-specific verification |
+| `conditional` | A bundled native-routing fallback requires request- and model-specific verification |
 | `experimental` | A preview model's catalog-advertised direct route or a native Responses WebSocket route may change quickly |
-| `unsupported` | No direct or faithful translated route is available |
+| `unsupported` | No native route is available |
 
 These labels classify routing eligibility. They do not guarantee that every field, tool, stop condition, or output semantic works for a model.
 
-Preview status changes a catalog-advertised direct HTTP route from `stable` to `experimental`. It does not change a bounded translation from `conditional`; native Responses WebSocket routes are always `experimental`.
+Preview status changes a catalog-advertised direct HTTP route from `stable` to `experimental`. Native Responses WebSocket routes are always `experimental`.
 
 ## Responses over HTTP and SSE
 
-`POST /v1/responses` remains available independently from WebSocket. A model with a direct Responses endpoint uses that endpoint. A Messages-backed model may use the bounded Responses-to-Messages translation path.
-
-Translated Responses requests are stateless and must explicitly set `store: false`. Server-side Responses state such as `previous_response_id`, stored prompts, or conversation objects cannot be emulated. Initial instructions may become the Anthropic system prompt, but instructions are not reordered when their original position cannot be represented.
-
-Hosted Responses tools, file inputs, background execution, and other fields without a faithful Messages equivalent are rejected on the translated path. Function tools and supported structured-output forms are mapped only where their observable meaning can be preserved.
+`POST /v1/responses` remains available independently from WebSocket and requires a native Responses backend. Messages-only models cannot be used through this endpoint. Responses payloads and events stay in the Responses protocol, subject to the existing Copilot compatibility adaptations.
 
 ## Responses over WebSocket
 
-`GET /v1/responses` with Upgrade is a one-to-one native Copilot WebSocket bridge. The exact current model entry must explicitly advertise `ws:/responses`; ordinary HTTP Responses metadata, static model defaults, Claude translation, Chat Completions, and Realtime do not establish eligibility.
+`GET /v1/responses` with Upgrade is a one-to-one native Copilot WebSocket bridge. The exact current model entry must explicitly advertise `ws:/responses`; ordinary HTTP Responses metadata, static model defaults, Chat Completions, and Realtime do not establish eligibility.
 
 The connection accepts `response.create` text events, keeps one response in flight, and processes queued turns in FIFO order. Connections and input memory are bounded. `stream` is implicit: `true` or `null` may be removed as transport-compatible no-ops, while `false` and malformed values are rejected. Background mode and `generate: false` warmup are rejected because forwarding them would not preserve the client contract.
 
@@ -51,9 +52,7 @@ The proxy catalog also sets `use_responses_lite=false` on exposed models. The ge
 
 ## Anthropic Messages
 
-`POST /v1/messages` uses native Messages when the selected model advertises that endpoint. Otherwise, a Responses-backed model may use the bounded Messages-to-Responses translation path.
-
-The translated path rejects Anthropic server-side tools and conversation-state controls that Responses cannot represent. It also rejects request controls whose meaning would be lost, such as unsupported stop, sampling, reasoning, task-budget, tool-choice, or MCP settings. Custom function-style tools and output formats are translated only when the selected backend can preserve their contract.
+`POST /v1/messages` requires a native Messages backend. Responses-only models cannot be used through this endpoint. Anthropic payloads and events stay in the Messages protocol, subject to the existing Copilot compatibility adaptations.
 
 Native tool probes distinguish hosted server tools such as `code_execution` and `web_search` from client-executed tools such as `bash`, text editor, and memory. The former require observable server results; the latter require a correctly named `tool_use` with executable input matching the requested operation. Anthropic platform control-plane APIs are outside the per-model capability matrix.
 

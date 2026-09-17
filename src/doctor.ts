@@ -686,14 +686,14 @@ function buildClientChecks(
         `client.${selected}`,
         `Client: ${selected}`,
         'warn',
-        `Only conditional/translated or experimental model(s) are available: ${formatModelList(conditional)}. Inspect \`copilot-proxy models --client ${selected} --json\` and run the relevant live probe.`,
+        `Only conditional or experimental model(s) are available: ${formatModelList(conditional)}. Inspect \`copilot-proxy models --client ${selected} --json\` and run the relevant live probe.`,
       )
     }
     return check(
       `client.${selected}`,
       `Client: ${selected}`,
       'fail',
-      `No direct or bounded translated route is advertised for ${selected}. Inspect \`copilot-proxy models --client ${selected} --json\` for per-model reason codes.`,
+      `No native route is advertised for ${selected}. Inspect \`copilot-proxy models --client ${selected} --json\` for per-model reason codes.`,
     )
   })
 }

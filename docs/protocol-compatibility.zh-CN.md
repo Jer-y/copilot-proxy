@@ -2,42 +2,43 @@
 
 # 协议兼容性
 
-copilot-proxy 将面向客户端的协议与 Copilot 上游协议视为两份独立契约。只有当前模型具备直连后端，或请求可以在不制造误导性成功的前提下完成翻译时，才会启用对应路由。
+copilot-proxy 将面向客户端的协议与 Copilot 上游协议视为两份独立契约。只支持原生协议路由：客户端请求与所选 Copilot 端点必须使用同一种 API。
 
 ## 路由模式
 
 | 模式 | 含义 |
 | --- | --- |
 | `direct` | 客户端和 Copilot 使用同一协议类型；代理只做有界兼容性清理后转发 |
-| `translated` | 代理在 OpenAI Responses 与 Anthropic Messages 之间转换，并逐请求检查语义保真度 |
-| `unsupported` | 不存在语义保真的路由，因此在本地拒绝请求 |
+| `unsupported` | 不存在原生路由，因此在本地拒绝请求 |
 
-Chat Completions 只支持直连，绝不作为 Responses 或 Messages 的回退。Embeddings 也是直连路由。Responses WebSocket 是传输层专用路径，不参与翻译。
+Messages、Responses、Chat Completions 和 Embeddings 都只支持直连。请求不会通过其他协议或模型重试。Responses WebSocket 保持为独立的原生传输方式。
+
+### 从跨协议路由迁移
+
+**不兼容变更：**已移除 Messages 到 Responses、Responses 到 Messages 两条翻译路径。原先依赖这些路径的请求现在会返回符合客户端协议的 `400 invalid_request_error`，且不会访问 Copilot。请把客户端配置为所选模型支持的原生 API，或选择支持客户端 API 的模型。提供模型列表不会让仅支持一种协议的客户端自动具备其他协议能力。
+
+路由按端点能力判断，不按模型品牌限制。一个模型如果声明多个原生 API，仍可通过这些 API 分别接入。
 
 ## 成熟度标签
 
 | 标签 | 产品含义 |
 | --- | --- |
 | `stable` | 当前模型目录为非预览模型提供直连 HTTP 路由 |
-| `conditional` | 有界翻译（包括预览模型的翻译）或内置路由回退需要按请求和模型验证 |
+| `conditional` | 内置原生路由回退需要按请求和模型验证 |
 | `experimental` | 预览模型经目录明确声明的直连路由或原生 Responses WebSocket 路由可能快速变化 |
-| `unsupported` | 不存在直连或语义保真的翻译路由 |
+| `unsupported` | 不存在原生路由 |
 
 这些标签只表示路由是否可用，不保证某模型支持所有字段、工具、停止条件或输出语义。
 
-预览状态会把模型目录明确声明的直连 HTTP 路由从 `stable` 调整为 `experimental`，但不会把有界翻译从 `conditional` 改为其他标签；原生 Responses WebSocket 路由始终为 `experimental`。
+预览状态会把模型目录明确声明的直连 HTTP 路由从 `stable` 调整为 `experimental`；原生 Responses WebSocket 路由始终为 `experimental`。
 
 ## HTTP 与 SSE 上的 Responses
 
-`POST /v1/responses` 独立于 WebSocket 提供。模型存在直连 Responses 端点时使用该端点；Messages 后端模型可使用有界的 Responses 到 Messages 翻译路径。
-
-翻译后的 Responses 请求是无状态的，必须显式设置 `store: false`。`previous_response_id`、已存储 prompt 或 conversation object 等服务端 Responses 状态无法模拟。初始 instructions 可以转换为 Anthropic system prompt；如果无法保留原位置，则不会调整 instructions 的顺序。
-
-翻译路径会拒绝无法忠实映射到 Messages 的托管 Responses 工具、文件输入、后台执行及其他字段。只有可保留可观察语义时，才会映射函数工具和受支持的结构化输出形式。
+`POST /v1/responses` 独立于 WebSocket 提供，且必须使用原生 Responses 后端。只支持 Messages 的模型不能通过此端点调用。请求和事件保持 Responses 协议，只应用现有的 Copilot 兼容处理。
 
 ## WebSocket 上的 Responses
 
-通过 Upgrade 请求访问 `GET /v1/responses` 时，会建立一对一的原生 Copilot WebSocket 桥接。当前模型条目必须明确声明 `ws:/responses`；普通 HTTP Responses 元数据、静态模型默认值、Claude 翻译、Chat Completions 和 Realtime 都不能证明该路由可用。
+通过 Upgrade 请求访问 `GET /v1/responses` 时，会建立一对一的原生 Copilot WebSocket 桥接。当前模型条目必须明确声明 `ws:/responses`；普通 HTTP Responses 元数据、静态模型默认值、Chat Completions 和 Realtime 都不能证明该路由可用。
 
 连接接受 `response.create` 文本事件，同一时间只处理一个响应，并按先进先出顺序处理排队回合。连接和输入内存均有上限。`stream` 是隐式行为：`true` 或 `null` 可作为传输兼容的空操作移除，`false` 或格式错误的值会被拒绝。后台模式和 `generate: false` 预热会被拒绝，因为转发它们无法保留客户端契约。
 
@@ -51,9 +52,7 @@ Codex 目前在模型提供商级别选择 Responses 传输，而不是按模型
 
 ## Anthropic Messages
 
-所选模型声明 Messages 端点时，`POST /v1/messages` 使用原生 Messages。否则，Responses 后端模型可使用有界的 Messages 到 Responses 翻译路径。
-
-翻译路径会拒绝 Responses 无法表示的 Anthropic 服务端工具和会话状态控制，也会拒绝语义会丢失的请求控制，例如不受支持的停止、采样、推理、任务预算、工具选择或 MCP 设置。只有所选后端能够保留契约时，才会翻译自定义函数工具和输出格式。
+`POST /v1/messages` 必须使用原生 Messages 后端。只支持 Responses 的模型不能通过此端点调用。请求和事件保持 Messages 协议，只应用现有的 Copilot 兼容处理。
 
 原生工具探针区分 `code_execution`、`web_search` 等服务端托管工具与 `bash`、文本编辑器、memory 等客户端执行工具：前者必须验证可观察的服务端结果，后者必须验证名称正确且输入可执行、符合请求操作的 `tool_use`。Anthropic 平台控制面 API 不属于逐模型能力矩阵。
 

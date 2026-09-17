@@ -12,7 +12,7 @@ import type {
   AnthropicResponse,
   AnthropicToolResultBlock,
   AnthropicUserContentBlock,
-} from '~/lib/translation/types'
+} from '~/lib/anthropic/types'
 
 import consola from 'consola'
 import { events } from 'fetch-event-stream'

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-htrbgkdKti1yA6bQ6CEHkvcdw1W111OdUj+6tr/DJtA='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-HGCs4Lpz555cMtHtJbX0bEjtCT/zIhpyWwVC/e/QN8M='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     />
     <meta name="color-scheme" content="dark" />
     <meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />
@@ -410,12 +410,6 @@
         border-color: rgba(66, 214, 154, 0.35);
         color: #a9edd3;
         background: var(--ready-soft);
-      }
-
-      .route-badge.translated {
-        border-color: rgba(122, 168, 255, 0.4);
-        color: #bfd3ff;
-        background: var(--accent-soft);
       }
 
       .route-badge.unsupported {
@@ -1251,7 +1245,7 @@
       }
 
       function routeClass(mode) {
-        return ["direct", "translated", "unsupported"].includes(mode) ? mode : "";
+        return ["direct", "unsupported"].includes(mode) ? mode : "";
       }
 
       function renderUsage(usage) {

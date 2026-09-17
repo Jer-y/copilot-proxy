@@ -1,9 +1,9 @@
 import type { AccountContext } from '~/lib/account/types'
-import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/translation/types'
+import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicStreamEventData } from '~/lib/anthropic/types'
 
 import consola from 'consola'
+import { assertCopilotCompatibleAnthropicRequest, logLossyAnthropicCompatibility, throwAnthropicInvalidRequestError } from '~/lib/anthropic/compat'
 import { HTTPError } from '~/lib/error'
-import { assertCopilotCompatibleAnthropicRequest, logLossyAnthropicCompatibility, throwAnthropicInvalidRequestError } from '~/lib/translation/anthropic-compat'
 import { isRecord } from '~/lib/type-guards'
 import { createAnthropicMessages } from '~/services/copilot/create-anthropic-messages'
 
@@ -62,7 +62,7 @@ export async function createAnthropicMessagesWithThinkingSignatureRetry(
  * Minimal sanitization for the native Anthropic passthrough path.
  *
  * The Copilot backend rejects a small number of fields that Claude Code
- * sends. Rather than translating the entire payload (as the CC path does),
+ * sends. Preserve the native payload and apply only known Copilot adaptations,
  * we surgically strip only the known-bad fields and leave everything else
  * intact.
  *
@@ -122,7 +122,7 @@ export function prepareAnthropicPayloadForNativeCopilotBackend(
   payload: AnthropicMessagesPayload,
 ): void {
   sanitizeForCopilotBackend(payload)
-  assertCopilotCompatibleAnthropicRequest(payload, { documentMode: 'messages-base64-pdf-only' })
+  assertCopilotCompatibleAnthropicRequest(payload)
 }
 
 export function assertNoUnsupportedAdvisorToolsForCopilot(payload: AnthropicMessagesPayload): void {
@@ -157,12 +157,6 @@ export function normalizeAdaptiveThinkingForCopilot(
     consola.debug('Stripping budget_tokens_max from adaptive thinking (unsupported by Copilot)')
     delete thinking.budget_tokens_max
   }
-}
-
-export function prepareAnthropicPayloadForTranslatedBackends(
-  payload: AnthropicMessagesPayload,
-): void {
-  assertCopilotCompatibleAnthropicRequest(payload)
 }
 
 export function overrideAnthropicResponseModel(

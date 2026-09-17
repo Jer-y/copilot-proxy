@@ -633,18 +633,18 @@ describe('doctor command', () => {
     expect(findCheck(result, 'client.claude')).toMatchObject({
       status: 'fail',
     })
-    expect(findCheck(result, 'client.claude')?.message).toContain('No direct or bounded translated route')
+    expect(findCheck(result, 'client.claude')?.message).toContain('No native route')
     expect(result.report.status).toBe('fail')
     expect(result.exitCodes).toEqual([1])
   })
 
-  test('warns when a client has only translated or experimental candidates', async () => {
+  test('warns when a client has only conditional or experimental native candidates', async () => {
     const diagnostics = successDiagnostics()
     diagnostics.models = [{
       id: 'claude-conditional',
       name: 'Claude conditional',
       routes: {
-        anthropicMessages: { mode: 'translated', maturity: 'conditional' },
+        anthropicMessages: { mode: 'direct', maturity: 'conditional' },
       },
     }]
 

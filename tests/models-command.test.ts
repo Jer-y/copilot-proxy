@@ -33,7 +33,7 @@ describe('models command', () => {
       'authenticate',
       'fetch-models',
     ])
-    expect(profiles.map(profile => profile.id)).toEqual(['gpt-live-responses', 'claude-live'])
+    expect(profiles.map(profile => profile.id)).toEqual(['gpt-live-responses'])
 
     const body = JSON.parse(output.join('')) as {
       account: string
@@ -75,11 +75,10 @@ describe('models command', () => {
       proxyEnv: false,
     }, makeDependencies([], output))
 
-    expect(profiles.map(profile => profile.id)).toEqual(['gpt-live-responses', 'claude-live'])
+    expect(profiles.map(profile => profile.id)).toEqual(['claude-live'])
     expect(output[0]).toContain('Copilot model compatibility (account: individual, client: claude)')
     expect(output[0]).toContain('MESSAGES')
-    expect(output[0]).toContain('gpt-live-responses')
-    expect(output[0]).toContain('translated/conditional')
+    expect(output[0]).not.toContain('gpt-live-responses')
     expect(output[0]).toContain('claude-live')
     expect(output[0]).toContain('direct/stable')
     expect(output[0]).not.toContain('chat-only\n')

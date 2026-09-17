@@ -700,24 +700,3 @@ export interface ResponsesOutputItem {
   // For reasoning type
   summary?: Array<{ type: 'summary_text', text: string }>
 }
-
-// Stream event types (discriminated union)
-
-export type ResponsesStreamEvent
-  = (
-    | { type: 'response.created', response: ResponsesResponse }
-    | { type: 'response.in_progress', response: ResponsesResponse }
-    | { type: 'response.output_item.added', output_index: number, item: ResponsesOutputItem }
-    | { type: 'response.output_text.delta', output_index: number, content_index: number, delta: string, logprobs: Array<Record<string, unknown>>, item_id: string }
-    | { type: 'response.output_text.done', output_index: number, content_index: number, text: string, logprobs: Array<Record<string, unknown>>, item_id: string }
-    | { type: 'response.function_call_arguments.delta', output_index: number, item_id: string, delta: string }
-    | { type: 'response.function_call_arguments.done', output_index: number, item_id: string, arguments: string, name: string, item?: ResponsesOutputItem }
-    | { type: 'response.content_part.added', output_index: number, content_index: number, part: Record<string, unknown>, item_id: string }
-    | { type: 'response.content_part.done', output_index: number, content_index: number, part: Record<string, unknown>, item_id: string }
-    | { type: 'response.output_item.done', output_index: number, item: ResponsesOutputItem }
-    | { type: 'response.completed', response: ResponsesResponse }
-    | { type: 'response.incomplete', response: ResponsesResponse }
-    | { type: 'response.failed', response: ResponsesResponse }
-    | { type: 'error', code: string | null, message: string, param: string | null }
-    | { type: 'error', error: ResponsesResponseError }
-  ) & { sequence_number: number }

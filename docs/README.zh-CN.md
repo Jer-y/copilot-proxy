@@ -22,7 +22,7 @@
 
 ## 协议兼容性
 
-[协议兼容性](protocol-compatibility.zh-CN.md)说明 API 范围、直连与翻译路由、Responses WebSocket 行为和已知协议边界。
+[协议兼容性](protocol-compatibility.zh-CN.md)说明 API 范围、原生路由、Responses WebSocket 行为和已知协议边界。
 
 ## API 与配置参考
 

@@ -14,7 +14,7 @@ This document explains what to validate, which repository command to run, and ho
 
 | Change | Command | Validation source |
 | --- | --- | --- |
-| Local routing or translation | `bun test tests/create-responses.test.ts tests/messages-routing.test.ts tests/routing-policy.test.ts` | Tests in `tests/` |
+| Native routing | `bun test tests/create-responses.test.ts tests/messages-routing.test.ts tests/routing-policy.test.ts` | Tests in `tests/` |
 | Request-signal behavior | `bun test tests/request-signal-regression.test.ts` | `tests/request-signal-regression.test.ts` |
 | Recovery, concurrency, or health | `bun test tests/copilot-auth-recovery.test.ts tests/auth-recovery-routes.test.ts tests/concurrency-limiter.test.ts tests/health-routes.test.ts` | Focused tests |
 | Full local regression | `bun run test:coverage` | Bun tests plus the critical-file coverage gate |
@@ -236,7 +236,7 @@ Delete the temporary home and stop the listener after the run. Never use the use
 
 ## Feature-specific cautions
 
-- Responses translated to Messages must explicitly use `store:false`; otherwise persistence semantics cannot be preserved.
+- Cross-protocol Messages/Responses requests must fail locally without contacting Copilot; keep native client tool-loop smokes independent.
 - Native Anthropic `output_config.format=json_schema` must remain on `/v1/messages`. Do not retry a native rejection through Chat Completions.
 - Test `output_config.effort=max` against the selected current model before relying on it.
 - Validate `generate:false` as a no-output warmup. Parser acceptance or ordinary generation is failure.

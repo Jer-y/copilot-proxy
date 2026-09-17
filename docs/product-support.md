@@ -36,5 +36,5 @@ A public or independently multi-tenant product would require a separate control-
 - [Getting started](getting-started.md): prove a first real response and generate client configuration.
 - [Operations](operations.md): presets, deterministic multi-account routing, model inspection, diagnostics, and native-service lifecycle.
 - [Deployment](deployment.md): loopback, Docker, and authenticated private-gateway topologies.
-- [Protocol compatibility](protocol-compatibility.md): direct and translated routes, maturity labels, and protocol boundaries.
+- [Protocol compatibility](protocol-compatibility.md): native routes, maturity labels, and protocol boundaries.
 - [Copilot capability validation](copilot-capability-validation.md): live-probe procedures and semantic validation rules.
