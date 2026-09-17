@@ -20,7 +20,6 @@ import { resolveRoute } from '~/lib/routing-policy'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
 import { getSetupProbeSignal } from '~/lib/setup-probe-context'
 import { state } from '~/lib/state'
-import { getTokenCount } from '~/lib/tokenizer'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
 import { isNullish } from '~/lib/utils'
 import { validateBody } from '~/lib/validate'
@@ -51,20 +50,6 @@ export async function handleCompletion(c: Context) {
 
   // Find the selected model
   const selectedModel = findModel(payload.model, selection.ctx.models?.data)
-
-  // Calculate and display token count
-  try {
-    if (selectedModel) {
-      const tokenCount = await getTokenCount(payload, selectedModel)
-      consola.info('Current token count:', tokenCount)
-    }
-    else {
-      consola.warn('No model selected, skipping token count calculation')
-    }
-  }
-  catch (error) {
-    consola.warn('Failed to calculate token count:', error)
-  }
 
   await enforceManualApproval(state)
 

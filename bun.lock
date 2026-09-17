@@ -10,7 +10,6 @@
         "consola": "^3.4.2",
         "crossws": "^0.4.10",
         "fetch-event-stream": "^0.1.6",
-        "gpt-tokenizer": "^3.4.0",
         "hono": "^4.13.5",
         "https-proxy-agent": "^7.0.6",
         "proxy-from-env": "^2.1.0",
@@ -591,8 +590,6 @@
     "globals": ["globals@17.6.0", "", {}, "sha512-sepffkT8stwnIYbsMBpoCHJuJM5l98FUF2AnE07hfvE0m/qp3R586hw4jF4uadbhvg1ooIdzuu7CsfD2jzCaNA=="],
 
     "globrex": ["globrex@0.1.2", "", {}, "sha512-uHJgbwAMwNFf5mLst7IWLNg14x1CkeqglJb/K3doi4dw6q2IvAAmM/Y81kevy83wP+Sst+nutFTYOGg3d1lsxg=="],
-
-    "gpt-tokenizer": ["gpt-tokenizer@3.4.0", "", {}, "sha512-wxFLnhIXTDjYebd9A9pGl3e31ZpSypbpIJSOswbgop5jLte/AsZVDvjlbEuVFlsqZixVKqbcoNmRlFDf6pz/UQ=="],
 
     "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
 

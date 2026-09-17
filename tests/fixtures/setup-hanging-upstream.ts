@@ -1,12 +1,10 @@
 import type { SetupModelChoice } from '~/lib/client-setup'
-import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { Model } from '~/services/copilot/get-models'
 
 import { createServer } from 'node:http'
 import process from 'node:process'
 
 import { state } from '~/lib/state'
-import { getTokenCount } from '~/lib/tokenizer'
 import { runDisposableSetupProbe } from '~/setup'
 
 interface SetupDeadlineEvidence {
@@ -89,20 +87,6 @@ async function main(): Promise<void> {
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false
   state.vsCodeVersion = '1.0.0'
-
-  // The chat route performs token accounting before it opens the upstream
-  // request. Load the real encoder before the per-probe deadline starts so
-  // this fixture measures request timeout and abort behavior, not cold module
-  // loading in a newly spawned Bun process.
-  const chatModel = models[1]!
-  const chatPayload = {
-    model: chatModel.id,
-    messages: [{
-      role: 'user',
-      content: 'Reply with exactly COPILOT_PROXY_SETUP_OK.',
-    }],
-  } satisfies ChatCompletionsPayload
-  await getTokenCount(chatPayload, chatModel)
 
   const evidence: SetupDeadlineEvidence[] = []
   for (const testCase of cases)

@@ -56,7 +56,6 @@
     "consola": "^3.4.2",
     "crossws": "^0.4.10",
     "fetch-event-stream": "^0.1.6",
-    "gpt-tokenizer": "^3.4.0",
     "hono": "^4.13.5",
     "https-proxy-agent": "^7.0.6",
     "proxy-from-env": "^2.1.0",

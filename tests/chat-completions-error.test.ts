@@ -54,6 +54,73 @@ function createErroringSSE(
   })
 }
 
+describe('chat-completions upstream usage passthrough', () => {
+  const usage = {
+    prompt_tokens: 15,
+    completion_tokens: 16,
+    total_tokens: 31,
+    prompt_tokens_details: { cached_tokens: 4 },
+    completion_tokens_details: { reasoning_tokens: 6 },
+    future_token_details: { value: 2 },
+  }
+
+  test.each([false, true])('preserves JSON usage without inventing missing values (present=%s)', async (present) => {
+    fetchMock.mockImplementation(async () => Response.json({
+      id: 'chatcmpl_usage',
+      created: 0,
+      model: 'gpt-5.2',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+      ...(present && { usage }),
+    }))
+    const response = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.2', messages: [{ role: 'user', content: 'hello' }], max_tokens: 32 }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.json() as { usage?: unknown }
+    expect(Object.hasOwn(body, 'usage')).toBe(present)
+    expect(body.usage).toEqual(present ? usage : undefined)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([false, true])('preserves the terminal usage-only SSE chunk and client options (include_usage=%s)', async (includeUsage) => {
+    const requestPayload = {
+      model: 'gpt-5.2',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 32,
+      stream: true,
+      ...(includeUsage && { stream_options: { include_usage: true } }),
+    }
+    const envelope = { id: 'chatcmpl_usage', created: 0, model: 'gpt-5.2' }
+    const chunks = [
+      { ...envelope, choices: [{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }], usage: null },
+      { ...envelope, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: null },
+      { ...envelope, choices: [], usage },
+    ]
+    fetchMock.mockImplementation(async (_url, init) => {
+      expect(JSON.parse(String(init?.body))).toEqual(requestPayload)
+      return new Response(`${chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`, {
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    })
+    const response = await server.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    })
+    expect(response.status).toBe(200)
+    const text = await response.text()
+    const data = text.split('\n').filter(line => line.startsWith('data: ')).map(line => line.slice(6))
+    expect(data.at(-1)).toBe('[DONE]')
+    const events = data.filter(value => value !== '[DONE]').map(value => JSON.parse(value) as { usage?: unknown })
+    expect(events.map(event => event.usage)).toEqual([null, null, usage])
+    expect(events.at(-1)).toMatchObject({ choices: [], usage })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('chat-completions error paths', () => {
   test('invalid JSON body returns 400 with invalid_request_error', async () => {
     const res = await server.request('/chat/completions', {
