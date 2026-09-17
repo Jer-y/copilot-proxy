@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
-
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
+
 import { state } from '~/lib/state'
 import { server } from '~/server'
+import { createTestModelCatalog } from './model-fixtures'
 
 const originalFetch = globalThis.fetch
 const fetchMock = mock(async (url: string, init?: RequestInit) => {
@@ -59,7 +60,7 @@ beforeEach(() => {
   fetchMock.mockClear()
   state.lastRequestTimestamp = undefined
   state.copilotToken = undefined
-  state.models = undefined
+  state.models = createTestModelCatalog()
   globalThis.fetch = originalFetch
 })
 
@@ -852,6 +853,7 @@ describe('messages error paths', () => {
     state.models = {
       data: [{
         id: 'claude-sonnet-4',
+        supported_endpoints: ['/v1/messages'],
         capabilities: {
           limits: {
             max_output_tokens: 8192,
@@ -880,13 +882,14 @@ describe('messages error paths', () => {
     expect(forwardedPayload.max_tokens).toBe(8192)
   })
 
-  test('explicit 128K max_tokens is preserved for verified Opus models even when live metadata is stale', async () => {
+  test('explicit client max_tokens is preserved even above the fetched output limit', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
     state.accountType = 'individual'
     state.models = {
       data: ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8'].map(id => ({
         id,
+        supported_endpoints: ['/v1/messages'],
         capabilities: {
           limits: {
             max_output_tokens: 64000,
@@ -919,13 +922,14 @@ describe('messages error paths', () => {
     }
   })
 
-  test('missing max_tokens uses the verified 128K Opus limit over stale live metadata', async () => {
+  test('missing max_tokens uses the fetched limit without a model-specific floor', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
     state.accountType = 'individual'
     state.models = {
       data: ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8'].map(id => ({
         id,
+        supported_endpoints: ['/v1/messages'],
         capabilities: {
           limits: {
             max_output_tokens: 64000,
@@ -951,11 +955,11 @@ describe('messages error paths', () => {
       expect(res.status).toBe(200)
       const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
       const forwardedPayload = JSON.parse(String(init?.body)) as { max_tokens?: number }
-      expect(forwardedPayload.max_tokens).toBe(128000)
+      expect(forwardedPayload.max_tokens).toBe(64000)
     }
   })
 
-  test('Opus 5 uses the verified 64K default for native Messages', async () => {
+  test('native Messages uses the fetched Opus 5 output limit', async () => {
     state.copilotToken = 'test-token'
     state.vsCodeVersion = '1.0.0'
     state.accountType = 'individual'
@@ -989,7 +993,7 @@ describe('messages error paths', () => {
     expect(messagesUrl).toBe('https://api.githubcopilot.com/v1/messages')
     const messagesPayload = JSON.parse(String(messagesInit?.body)) as { max_tokens?: number, model?: string }
     expect(messagesPayload).toMatchObject({
-      max_tokens: 64000,
+      max_tokens: 32000,
       model: 'claude-opus-5',
     })
   })

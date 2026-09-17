@@ -49,7 +49,7 @@ bun run ./src/main.ts setup codex
 bun run ./src/main.ts setup openai-sdk
 ```
 
-`setup` 会在需要时完成认证、读取当前 Copilot 模型目录、选择**直连**路由，并通过一次性回环监听器进行探测。`supported_endpoints` 列表存在且非空时，以该实时 metadata 为权威依据，必须包含匹配的 HTTP endpoint；`supported_endpoints` 缺失或为空时，setup 才可回退到 copilot-proxy 的内置路由策略，把它作为资格输入。Responses WebSocket 从不使用这项回退，当前模型条目必须明确声明 `ws:/responses`。Codex 还会把具备 HTTP Responses 资格的模型与已安装 bundled catalog 中相同 slug 的可用条目取交集。
+`setup` 会在需要时完成认证、读取当前 Copilot 模型目录、选择**直连**路由，并通过一次性回环监听器进行探测。HTTP 资格要求动态 `supported_endpoints` 声明匹配端点，不使用静态模型策略。缺少端点元数据的模型不会被 setup 选中。Responses WebSocket 要求当前条目明确声明 `ws:/responses`。Codex 还会把具备 HTTP Responses 资格的模型与已安装 bundled catalog 中相同 slug 的可用条目取交集。
 
 只有取得可观察的完整响应后才会生成配置。Codex 与 Claude 使用真实流式请求和终态标记，OpenAI SDK setup 验证所选直连 JSON 路由；如果选择了与主模型不同的 Claude small model，也会单独探测。探测截止时间、输出预算和关闭宽限用于限制一次性服务：触发这些边界只表示验证未完成，不代表上游不支持该能力。如果只有 Codex WebSocket 探测失败，setup 会报告结果，并保留已独立验证、写入 `supports_websockets = false` 的 HTTP/SSE profile。
 

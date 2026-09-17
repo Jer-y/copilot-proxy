@@ -1,206 +1,90 @@
-import type { Model } from '~/services/copilot/get-models'
-
 import { describe, expect, test } from 'bun:test'
 
+import { HTTPError } from '~/lib/error'
 import { modelSupportsResponsesWebSocket, resolveRoute } from '~/lib/routing-policy'
+import { state } from '~/lib/state'
+import { makeModel } from './model-fixtures'
 
 function fail(message: string): never {
   throw new Error(message)
 }
 
-describe('modelSupportsResponsesWebSocket', () => {
-  test('accepts only explicit live Responses WebSocket endpoints', () => {
-    for (const endpoint of [
-      'ws:/responses',
-      'wss:/responses',
-      'ws:/v1/responses',
-      ' ws:/V1/RESPONSES/ ',
-      ' WSS:/V1/RESPONSES/ ',
-    ]) {
-      expect(modelSupportsResponsesWebSocket(makeModel('gpt-ws', [endpoint]))).toBe(true)
+describe('dynamic native routing', () => {
+  test('requires an account catalog, even for formerly hardcoded model names', () => {
+    const previous = state.models
+    state.models = { object: 'list', data: [makeModel('gpt-5.4', ['/responses'])] }
+    try {
+      for (const model of ['gpt-5.4', 'claude-opus-4.8', 'future-model']) {
+        expect(() => resolveRoute('responses', model, fail)).toThrow(HTTPError)
+        expect(() => resolveRoute('responses', model, fail)).toThrow('model catalog is unavailable')
+      }
+    }
+    finally {
+      state.models = previous
     }
   })
 
-  test('does not infer WebSocket support from ordinary Responses or missing live metadata', () => {
-    for (const endpoint of [
-      'responses',
-      '/responses',
-      '/v1/responses',
-      'ws://responses',
-      'https:/responses',
-    ]) {
-      expect(modelSupportsResponsesWebSocket(makeModel('gpt-http', [endpoint]))).toBe(false)
+  test('requires exact membership and does not infer model variants', () => {
+    const models = [makeModel('gpt-5.4', ['/responses'])]
+    for (const model of ['gpt-5.4-fast', 'gpt-5.40', 'missing-model']) {
+      expect(() => resolveRoute('responses', model, fail, { models })).toThrow('not available')
     }
+    expect(() => resolveRoute('responses', 'gpt-5.4', fail, { models: [] })).toThrow('not available')
+  })
 
-    expect(modelSupportsResponsesWebSocket(makeModel('gpt-unknown'))).toBe(false)
+  test('routes every advertised native HTTP API without brand assumptions', () => {
+    for (const [api, endpoints] of [
+      ['responses', ['/responses', ' /V1/RESPONSES/ ']],
+      ['anthropic-messages', ['/v1/messages', ' messages/ ']],
+      ['chat-completions', ['/chat/completions', '/v1/chat/completions/']],
+    ] as const) {
+      for (const endpoint of endpoints) {
+        const models = [makeModel('any-vendor-model', [endpoint])]
+        expect(resolveRoute(api, 'any-vendor-model', fail, { models })).toEqual({ backend: api, kind: 'direct' })
+      }
+    }
+  })
+
+  test('does not recover missing endpoint metadata from a model name', () => {
+    for (const id of ['claude-opus-4.8', 'gpt-4o', 'gpt-5.4']) {
+      for (const endpoints of [undefined, []]) {
+        const model = { ...makeModel(id), supported_endpoints: endpoints }
+        expect(() => resolveRoute('responses', id, fail, { models: [model] })).toThrow('no advertised native HTTP endpoint')
+        expect(() => resolveRoute('anthropic-messages', id, fail, { models: [model] })).toThrow('no advertised native HTTP endpoint')
+      }
+    }
+  })
+
+  test('keeps account-specific endpoint declarations separate', () => {
+    const accountA = [makeModel('shared-model', ['/responses'])]
+    const accountB = [makeModel('shared-model', ['/v1/messages'])]
+    expect(resolveRoute('responses', 'shared-model', fail, { models: accountA }).backend).toBe('responses')
+    expect(() => resolveRoute('responses', 'shared-model', fail, { models: accountB })).toThrow('cross-protocol translation is not supported')
+    expect(resolveRoute('anthropic-messages', 'shared-model', fail, { models: accountB }).backend).toBe('anthropic-messages')
+  })
+
+  test('rejects incompatible protocols rather than falling back to another endpoint', () => {
+    const models = [makeModel('messages-only', ['/v1/messages']), makeModel('responses-only', ['/responses'])]
+    expect(() => resolveRoute('responses', 'messages-only', fail, { models })).toThrow('cannot be reached via /responses')
+    expect(() => resolveRoute('anthropic-messages', 'responses-only', fail, { models })).toThrow('cannot be reached via /v1/messages')
+    expect(() => resolveRoute('chat-completions', 'responses-only', fail, { models })).toThrow('cannot be reached via /chat/completions')
+  })
+
+  test('does not treat WebSocket or unrelated endpoints as HTTP Responses support', () => {
+    for (const endpoint of [' ws:/V1/RESPONSES/ ', '/embeddings', 'https:/responses']) {
+      const model = makeModel('ws-only', [endpoint])
+      expect(() => resolveRoute('responses', model.id, fail, { models: [model] })).toThrow('no advertised native HTTP endpoint')
+    }
+  })
+})
+
+describe('modelSupportsResponsesWebSocket', () => {
+  test('accepts only explicit live WebSocket endpoints', () => {
+    for (const endpoint of ['ws:/responses', 'wss:/responses', 'ws:/v1/responses', ' WSS:/V1/RESPONSES/ '])
+      expect(modelSupportsResponsesWebSocket(makeModel('ws-model', [endpoint]))).toBe(true)
+    for (const endpoint of ['/responses', '/v1/responses', 'responses', 'ws://responses', 'https:/responses'])
+      expect(modelSupportsResponsesWebSocket(makeModel('http-model', [endpoint]))).toBe(false)
+    expect(modelSupportsResponsesWebSocket(makeModel('missing-metadata'))).toBe(false)
     expect(modelSupportsResponsesWebSocket(undefined)).toBe(false)
   })
 })
-
-describe('resolveRoute — Claude Opus 5', () => {
-  test('uses native Messages and Chat Completions, but rejects Responses', () => {
-    expect(resolveRoute('anthropic-messages', 'claude-opus-5', fail)).toEqual({
-      backend: 'anthropic-messages',
-      kind: 'direct',
-    })
-    expect(() => resolveRoute('responses', 'claude-opus-5', fail)).toThrow('cross-protocol translation is not supported')
-    expect(resolveRoute('chat-completions', 'claude-opus-5', fail)).toEqual({
-      backend: 'chat-completions',
-      kind: 'direct',
-    })
-  })
-})
-
-describe('resolveRoute — anthropic-messages client', () => {
-  test('Claude → native /v1/messages (direct)', () => {
-    const route = resolveRoute('anthropic-messages', 'claude-opus-4.6', fail)
-    expect(route).toEqual({ backend: 'anthropic-messages', kind: 'direct' })
-  })
-
-  test('Claude minor version (claude-opus-4.7) → native /v1/messages (direct)', () => {
-    const route = resolveRoute('anthropic-messages', 'claude-opus-4.7', fail)
-    expect(route).toEqual({ backend: 'anthropic-messages', kind: 'direct' })
-  })
-
-  test('Responses-only model rejects Messages instead of translating', () => {
-    expect(() => resolveRoute('anthropic-messages', 'gpt-5.4', fail)).toThrow('cross-protocol translation is not supported')
-  })
-
-  test('Responses-only Codex model rejects Messages instead of translating', () => {
-    expect(() => resolveRoute('anthropic-messages', 'gpt-5.2-codex', fail)).toThrow('cross-protocol translation is not supported')
-  })
-
-  test('live Anthropic endpoint support overrides static defaults for new models', () => {
-    const route = resolveRoute('anthropic-messages', 'future-claude', fail, {
-      models: [
-        makeModel('future-claude', ['/v1/messages']),
-      ],
-    })
-
-    expect(route).toEqual({ backend: 'anthropic-messages', kind: 'direct' })
-  })
-
-  test('chat-completions-only model (gpt-4o) → 4xx (proxy refuses to translate to chat-completions)', () => {
-    let captured: string | undefined
-    expect(() => resolveRoute('anthropic-messages', 'gpt-4o', (msg) => {
-      captured = msg
-      throw new Error('rejected')
-    })).toThrow('rejected')
-    expect(captured).toContain('cannot be reached via /v1/messages')
-    expect(captured).toContain('/chat/completions')
-  })
-})
-
-describe('resolveRoute — responses client', () => {
-  test('Responses-only GPT-5 → /responses (direct)', () => {
-    const route = resolveRoute('responses', 'gpt-5.5', fail)
-    expect(route).toEqual({ backend: 'responses', kind: 'direct' })
-  })
-
-  test('Messages-backed model rejects Responses instead of translating', () => {
-    expect(() => resolveRoute('responses', 'claude-opus-4.6', fail)).toThrow('cross-protocol translation is not supported')
-  })
-
-  test('Dual-stack GPT-5.2 → /responses (direct, preferredApi)', () => {
-    const route = resolveRoute('responses', 'gpt-5.2', fail)
-    expect(route).toEqual({ backend: 'responses', kind: 'direct' })
-  })
-
-  test('live HTTP Responses endpoint support lets future models route without static config', () => {
-    const route = resolveRoute('responses', 'gpt-6-preview', fail, {
-      models: [
-        makeModel('gpt-6-preview', [' /V1/RESPONSES/ ']),
-      ],
-    })
-
-    expect(route).toEqual({ backend: 'responses', kind: 'direct' })
-  })
-
-  test('does not infer HTTP Responses support from a WebSocket-only live endpoint', () => {
-    expect(() => resolveRoute('responses', 'gpt-ws-only', (message) => {
-      throw new Error(message)
-    }, {
-      models: [
-        makeModel('gpt-ws-only', [' ws:/V1/RESPONSES/ ']),
-      ],
-    })).toThrow(/no supported backend API/)
-  })
-
-  test('gpt-5-codex no longer inherits the dual chat-completions gpt-5 config', () => {
-    const route = resolveRoute('responses', 'gpt-5-codex', fail)
-    expect(route).toEqual({ backend: 'responses', kind: 'direct' })
-  })
-
-  test('chat-completions-only model (gpt-4o) → 4xx', () => {
-    expect(() => resolveRoute('responses', 'gpt-4o', (msg) => {
-      throw new Error(msg)
-    })).toThrow(/cannot be reached via \/responses/)
-  })
-})
-
-describe('resolveRoute — chat-completions client', () => {
-  test('chat-completions-only model → /chat/completions (direct)', () => {
-    const route = resolveRoute('chat-completions', 'gpt-4o', fail)
-    expect(route).toEqual({ backend: 'chat-completions', kind: 'direct' })
-  })
-
-  test('Claude (dual-listed) → /chat/completions (direct passthrough)', () => {
-    const route = resolveRoute('chat-completions', 'claude-opus-4.6', fail)
-    expect(route).toEqual({ backend: 'chat-completions', kind: 'direct' })
-  })
-
-  test('Dual-stack GPT-5.2 → /chat/completions (direct, since CC ∈ supportedApis)', () => {
-    const route = resolveRoute('chat-completions', 'gpt-5.2', fail)
-    expect(route).toEqual({ backend: 'chat-completions', kind: 'direct' })
-  })
-
-  test('Current dual-stack GPT-5.4 → /chat/completions direct', () => {
-    expect(resolveRoute('chat-completions', 'gpt-5.4', fail)).toEqual({
-      backend: 'chat-completions',
-      kind: 'direct',
-    })
-  })
-
-  test('Codex model → 4xx', () => {
-    expect(() => resolveRoute('chat-completions', 'gpt-5.3-codex', (msg) => {
-      throw new Error(msg)
-    })).toThrow(/cannot be reached via \/chat\/completions/)
-  })
-
-  test('gpt-5-codex → 4xx instead of inheriting gpt-5 chat support', () => {
-    expect(() => resolveRoute('chat-completions', 'gpt-5-codex', (msg) => {
-      throw new Error(msg)
-    })).toThrow(/cannot be reached via \/chat\/completions/)
-  })
-
-  test('live endpoints can remove stale static chat-completions support', () => {
-    expect(() => resolveRoute('chat-completions', 'gpt-5', (msg) => {
-      throw new Error(msg)
-    }, {
-      models: [
-        makeModel('gpt-5', ['/responses']),
-      ],
-    })).toThrow(/cannot be reached via \/chat\/completions/)
-  })
-})
-
-function makeModel(id: string, supported_endpoints?: string[]): Model {
-  return {
-    id,
-    supported_endpoints,
-    capabilities: {
-      family: 'test',
-      limits: {},
-      object: 'model_capabilities',
-      supports: {},
-      tokenizer: 'o200k_base',
-      type: 'chat',
-    },
-    model_picker_enabled: true,
-    name: id,
-    object: 'model',
-    preview: false,
-    vendor: 'test',
-    version: '1',
-  }
-}

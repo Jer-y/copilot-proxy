@@ -446,39 +446,26 @@ fi
     })
   })
 
-  test('falls back to bundled HTTP policy when live endpoints are missing or empty', () => {
-    for (const fallbackModel of [
+  test('requires advertised HTTP endpoints instead of bundled model policy', () => {
+    for (const candidate of [
       model('gemini-3-flash-preview'),
       model('gemini-3-flash-preview', []),
-    ]) {
-      expect(modelSupportsEndpoint(fallbackModel, 'chat-completions')).toBe(true)
-      expect(selectSetupModel('openai-sdk', [fallbackModel], fallbackModel.id)).toMatchObject({
-        api: 'chat-completions',
-        model: { id: 'gemini-3-flash-preview' },
-        supportsWebSockets: false,
-      })
-    }
-  })
-
-  test('keeps non-empty live endpoints authoritative over bundled HTTP policy', () => {
-    const explicitlyUnsupported = model('gemini-3-flash-preview', ['/embeddings'])
-
-    expect(modelSupportsEndpoint(explicitlyUnsupported, 'chat-completions')).toBe(false)
-    expect(() => selectSetupModel('openai-sdk', [explicitlyUnsupported], explicitlyUnsupported.id)).toThrow('No current Copilot model')
-  })
-
-  test('never infers Responses WebSocket support from bundled HTTP policy', () => {
-    for (const fallbackModel of [
       model('gpt-5.5'),
       model('gpt-5.5', []),
+      model('claude-opus-4.8'),
     ]) {
-      expect(modelSupportsEndpoint(fallbackModel, 'responses')).toBe(true)
-      expect(selectSetupModel('codex', [fallbackModel], fallbackModel.id)).toMatchObject({
-        api: 'responses',
-        supportsWebSockets: false,
-      })
-      expect(modelSupportsResponsesWebSocket(fallbackModel)).toBe(false)
+      for (const api of ['chat-completions', 'responses', 'anthropic-messages'] as const)
+        expect(modelSupportsEndpoint(candidate, api)).toBe(false)
+      expect(() => selectSetupModel('openai-sdk', [candidate], candidate.id)).toThrow('No current Copilot model')
+      expect(() => selectSetupModel('codex', [candidate], candidate.id)).toThrow('No current Copilot model')
+      expect(modelSupportsResponsesWebSocket(candidate)).toBe(false)
     }
+  })
+
+  test('does not infer chat support from another live endpoint', () => {
+    const candidate = model('gemini-3-flash-preview', ['/embeddings'])
+    expect(modelSupportsEndpoint(candidate, 'chat-completions')).toBe(false)
+    expect(() => selectSetupModel('openai-sdk', [candidate], candidate.id)).toThrow('No current Copilot model')
   })
 
   test('prefers Responses for an OpenAI SDK and falls back to Chat Completions', () => {

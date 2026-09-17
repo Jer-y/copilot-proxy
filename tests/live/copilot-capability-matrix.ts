@@ -2,7 +2,7 @@ import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicToolUseBlock
 import type { ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
 import type { ResponsesPayload } from '~/services/copilot/create-responses'
 
-import { getModelConfig } from '~/lib/model-config'
+import { normalizeChatCompletionTokenLimit } from '~/routes/chat-completions/handler'
 import { MINIMAL_PDF_BASE64 } from '../fixtures'
 
 export interface LiveCopilotProbeConfig {
@@ -566,7 +566,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       'chat/completions',
     ]),
     buildPayload: (config) => {
-      const tokenParameter = getModelConfig(config.responsesModel).chatCompletionTokenParameter ?? 'max_tokens'
+      const tokenParameter = 'max_completion_tokens' in normalizeChatCompletionTokenLimit({ model: config.responsesModel, messages: [], max_tokens: 16 }) ? 'max_completion_tokens' : 'max_tokens'
       return {
         model: config.responsesModel,
         messages: [

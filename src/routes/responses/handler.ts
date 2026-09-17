@@ -157,6 +157,9 @@ function prepareModelRoutedPassthroughBody(
     headers,
     normalizeModel: normalizeAnthropicModelName,
   })
+  resolveRoute('responses', selection.effectiveModel, throwInvalidResponsesRequest, {
+    models: selection.ctx.models?.data,
+  })
   return {
     body: selection.effectiveModel === parsed.model
       ? body

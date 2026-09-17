@@ -1,9 +1,10 @@
 import { beforeEach, expect, mock, test } from 'bun:test'
-
 import { ResponsesPayloadSchema } from '../src/lib/schemas'
+
 import { state } from '../src/lib/state'
 import { server } from '../src/server'
 import { normalizeCopilotResponsesEventStream } from '../src/services/copilot/responses-id-normalizer'
+import { createTestModelCatalog } from './model-fixtures'
 
 state.copilotToken = 'test-token'
 state.vsCodeVersion = '1.0.0'
@@ -35,7 +36,7 @@ beforeEach(() => {
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
-  state.models = undefined
+  state.models = createTestModelCatalog()
 })
 
 function createErroringSSE(

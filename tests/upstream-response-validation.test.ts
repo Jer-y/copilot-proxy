@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-
 import { state } from '~/lib/state'
+
 import { server } from '~/server'
+import { createTestModelCatalog } from './model-fixtures'
 
 const originalFetch = globalThis.fetch
 type FetchInput = Parameters<typeof fetch>[0]
@@ -45,7 +46,7 @@ async function expectOpenAIInvalidUpstreamResponse(response: Response): Promise<
 
 beforeEach(() => {
   state.lastRequestTimestamp = undefined
-  state.models = undefined
+  state.models = createTestModelCatalog()
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'

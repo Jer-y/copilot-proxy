@@ -363,41 +363,23 @@ describe('published documentation', () => {
     }
   })
 
-  test('documents layered setup route evidence without promoting policy fallback to live proof', () => {
-    const englishReadme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
-    const chineseReadme = fs.readFileSync(path.join(ROOT, 'README.zh-CN.md'), 'utf8')
+  test('documents dynamic-only endpoint eligibility without replacing real route validation', () => {
+    for (const file of ['README.md', 'docs/getting-started.md']) {
+      const guide = fs.readFileSync(path.join(ROOT, file), 'utf8')
+      expect(guide).toContain('matching endpoint in the fetched `supported_endpoints`')
+      expect(guide).toContain('no static model policy is used')
+      expect(guide).not.toContain('otherwise may use bundled proxy policy')
+      expect(guide).not.toContain('fall back to copilot-proxy\'s bundled routing policy')
+    }
+    for (const file of ['README.zh-CN.md', 'docs/getting-started.zh-CN.md']) {
+      const guide = fs.readFileSync(path.join(ROOT, file), 'utf8')
+      expect(guide).toContain('动态 `supported_endpoints` 声明匹配端点')
+      expect(guide).toContain('不使用静态模型策略')
+      expect(guide).not.toContain('可使用代理内置策略回退')
+    }
     const englishGuide = fs.readFileSync(path.join(ROOT, 'docs/getting-started.md'), 'utf8')
-    const chineseGuide = fs.readFileSync(path.join(ROOT, 'docs/getting-started.zh-CN.md'), 'utf8')
-
-    expect(englishReadme).toContain('a non-empty live `supported_endpoints` list as authoritative')
-    expect(englishReadme).toContain('otherwise may use bundled proxy policy')
-    expect(englishReadme).toContain('WebSocket always requires explicit live `ws:/responses`')
-    expect(englishReadme).toContain('not live route or semantic proof')
-    expect(chineseReadme).toContain('非空的实时 `supported_endpoints` 列表为权威依据')
-    expect(chineseReadme).toContain('否则可使用代理内置策略回退')
-    expect(chineseReadme).toContain('WebSocket 始终要求实时明确的 `ws:/responses`')
-    expect(chineseReadme).toContain('不是实时路由或语义证明')
-
-    expect(englishGuide).toContain('When a model\'s `supported_endpoints` list is present and non-empty, that live metadata is authoritative')
-    expect(englishGuide).toContain('When `supported_endpoints` is missing or empty, setup may instead fall back to copilot-proxy\'s bundled routing policy')
-    expect(englishGuide).toContain('Responses WebSocket never uses this fallback')
-    expect(englishGuide).toContain('Codex further intersects the HTTP Responses-eligible models with the usable installed bundled entries')
     expect(englishGuide).toContain('the setup route probes separately validate observable proxy-route semantics')
-    expect(chineseGuide).toContain('`supported_endpoints` 列表存在且非空时，以该实时 metadata 为权威依据')
-    expect(chineseGuide).toContain('`supported_endpoints` 缺失或为空时，setup 才可回退到 copilot-proxy 的内置路由策略')
-    expect(chineseGuide).toContain('Responses WebSocket 从不使用这项回退')
-    expect(chineseGuide).toContain('Codex 还会把具备 HTTP Responses 资格的模型与已安装 bundled catalog 中相同 slug 的可用条目取交集')
-    expect(chineseGuide).toContain('setup 路由探测会另行验证可观察的代理路由语义')
-
-    for (const guide of [englishReadme, englishGuide]) {
-      expect(guide).not.toContain('must also advertise a live Responses route')
-      expect(guide).not.toContain('only when that live catalog advertises a Responses route')
-      expect(guide).not.toContain('live Responses models')
-    }
-    for (const guide of [chineseReadme, chineseGuide]) {
-      expect(guide).not.toContain('必须提供实时 Responses 路由')
-      expect(guide).not.toContain('同时通过实时 Copilot Responses 路由')
-    }
+    expect(englishGuide).toContain('Codex further intersects the HTTP Responses-eligible models with the usable installed bundled entries')
   })
 
   test('links the hosted dashboard while describing diagnostics as a JSON API', () => {

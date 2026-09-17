@@ -4,8 +4,8 @@ import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { assertProxyEndpointAvailable } from '~/daemon/service-env'
+import { endpointToBackendApi } from '~/lib/backend-api'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
-import { getBundledModelConfig } from '~/lib/model-config'
 import { initializeNodeHttpClient } from '~/lib/proxy'
 
 export const DEFAULT_DOCTOR_ENDPOINT = 'http://127.0.0.1:4399'
@@ -660,7 +660,7 @@ function buildClientChecks(
           `client.${selected}`,
           `Client: ${selected}`,
           'warn',
-          `The legacy catalog lists ${profiles.length} model(s), but has no route metadata and bundled policy does not identify a ${selected} candidate; compatibility is unknown.`,
+          `The legacy catalog lists ${profiles.length} model(s), but does not advertise an endpoint for ${selected}; compatibility cannot be determined from model names.`,
         )
       }
       return check(
@@ -757,10 +757,8 @@ function countLegacyClientCandidates(
     const summary = summarizeClientModels([model], client)
     if (summary.stableDirect.length + summary.conditional.length + summary.experimental.length > 0)
       return true
-    const modelId = safeModelId(model.id)
-    if (!modelId)
-      return false
-    const supportedApis = getBundledModelConfig(modelId).supportedApis
+    const endpoints = Array.isArray(model.supported_endpoints) ? model.supported_endpoints : []
+    const supportedApis = endpoints.filter((value): value is string => typeof value === 'string').map(endpointToBackendApi)
     if (client === 'claude')
       return supportedApis.includes('anthropic-messages')
     if (client === 'codex')

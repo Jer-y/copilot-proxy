@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
-
 import { state } from '~/lib/state'
+
 import { JSON_BODY_SIZE_LIMIT_ENV, readRequestBodyChunk } from '~/lib/validate'
 import { server } from '~/server'
+import { createTestModelCatalog } from './model-fixtures'
 
 const originalFetch = globalThis.fetch
 const originalBodyLimit = process.env[JSON_BODY_SIZE_LIMIT_ENV]
@@ -35,7 +36,7 @@ beforeEach(() => {
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
-  state.models = undefined
+  state.models = createTestModelCatalog()
   fetchMock.mockClear()
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock

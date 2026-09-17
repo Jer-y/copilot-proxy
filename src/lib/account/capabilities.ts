@@ -1,7 +1,7 @@
 import type { AccountRegistry } from './registry'
 import type { AccountContext, ClientSurface, RequiredAccountRoute } from './types'
 
-import { findModelWithFallback } from '~/lib/model-utils'
+import { findModel } from '~/lib/model-utils'
 import { modelSupportsResponsesWebSocket, resolveRoute } from '~/lib/routing-policy'
 import { normalizeAnthropicModelName } from '~/routes/messages/model-normalization'
 
@@ -59,9 +59,7 @@ function unsupportedReason(
   surface: ClientSurface,
   modelId: string,
 ): string | undefined {
-  const model = surface === 'embeddings' || surface === 'responses-websocket'
-    ? ctx.models?.data.find(candidate => candidate.id === modelId)
-    : findModelWithFallback(modelId, ctx.models?.data)
+  const model = findModel(modelId, ctx.models?.data)
   if (!model)
     return 'model_unavailable'
 

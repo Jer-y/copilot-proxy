@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-
 import { state } from '~/lib/state'
+
 import { server } from '~/server'
+import { createTestModelCatalog } from './model-fixtures'
 
 const originalFetch = globalThis.fetch
 const upstreamRequests: Array<{
@@ -129,7 +130,7 @@ beforeEach(() => {
   upstreamRequests.length = 0
   fetchMock.mockClear()
   state.lastRequestTimestamp = undefined
-  state.models = undefined
+  state.models = createTestModelCatalog()
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'

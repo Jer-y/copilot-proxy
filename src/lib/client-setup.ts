@@ -6,8 +6,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
-import { getBundledModelConfig } from '~/lib/model-config'
+import { endpointToBackendApi } from '~/lib/backend-api'
 import { getUserHomeDir } from '~/lib/paths'
+import { modelSupportsResponsesWebSocket } from '~/lib/routing-policy'
 import { toClaudeCodeModelName } from '~/routes/messages/model-normalization'
 import { generateEnvScript, generateShellCommand } from './shell'
 
@@ -113,28 +114,10 @@ export function isSetupClient(value: string): value is SetupClient {
 }
 
 export function modelSupportsEndpoint(model: Model, endpoint: SetupProbeApi): boolean {
-  const liveEndpoints = model.supported_endpoints
-  if (!liveEndpoints?.length)
-    return getBundledModelConfig(model.id).supportedApis.includes(endpoint)
-
-  return liveEndpoints.some((raw) => {
-    const normalized = raw.trim().toLowerCase().replace(/^https?:/, '').replace(/^\/+/, '').replace(/^v1\//, '').replace(/\/+$/, '')
-    if (/^wss?:/.test(raw.trim().toLowerCase()))
-      return false
-    if (endpoint === 'anthropic-messages')
-      return normalized === 'messages'
-    if (endpoint === 'chat-completions')
-      return normalized === 'chat/completions'
-    return normalized === 'responses'
-  })
+  return model.supported_endpoints?.some(raw => endpointToBackendApi(raw) === endpoint) ?? false
 }
 
-export function modelSupportsResponsesWebSocket(model: Model): boolean {
-  return model.supported_endpoints?.some((raw) => {
-    const normalized = raw.trim().toLowerCase().replace(/^wss?:/, '').replace(/^\/+/, '').replace(/^v1\//, '').replace(/\/+$/, '')
-    return /^wss?:/.test(raw.trim().toLowerCase()) && normalized === 'responses'
-  }) ?? false
-}
+export { modelSupportsResponsesWebSocket } from '~/lib/routing-policy'
 
 export function compatibleModelsForClient(
   client: SetupClient,

@@ -28,8 +28,12 @@ embeddingRoutes.post('/', async (c) => {
       headers: c.req.raw.headers,
     })
     const model = selection.ctx.models?.data.find(candidate => candidate.id === selection.effectiveModel)
-    const mustValidateCatalog = getAccountRegistry().explicit || selection.ctx.models !== undefined
-    if (mustValidateCatalog && (!model || model.capabilities.type !== 'embeddings')) {
+    if (!selection.ctx.models) {
+      throw new HTTPError('Copilot model catalog is unavailable.', Response.json({
+        error: { type: 'api_error', code: 'model_catalog_unavailable', message: 'Copilot model catalog is unavailable.' },
+      }, { status: 503 }))
+    }
+    if (!model || model.capabilities.type !== 'embeddings') {
       throw new HTTPError(
         `Model ${selection.effectiveModel} is not an embeddings model for account ${selection.ctx.id}.`,
         Response.json({

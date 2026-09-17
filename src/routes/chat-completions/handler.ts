@@ -2,15 +2,13 @@ import type { Context } from 'hono'
 
 import type { SSEMessage } from 'hono/streaming'
 import type { ChatCompletionResponse, ChatCompletionsPayload } from '~/services/copilot/create-chat-completions'
-import type { Model } from '~/services/copilot/get-models'
 import consola from 'consola'
 
 import { streamSSE } from 'hono/streaming'
 import { getAccountRegistry } from '~/lib/account/registry'
 import { selectAccount } from '~/lib/account/router'
 import { isAbortError } from '~/lib/error'
-import { getModelConfig } from '~/lib/model-config'
-import { findModelWithFallback } from '~/lib/model-utils'
+import { findModel } from '~/lib/model-utils'
 import {
   chatCompletionsHasExternalImageUrls,
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
@@ -52,7 +50,7 @@ export async function handleCompletion(c: Context) {
     : { ...payload, model: selection.effectiveModel }
 
   // Find the selected model
-  const selectedModel = findModelWithFallback(payload.model, selection.ctx.models?.data)
+  const selectedModel = findModel(payload.model, selection.ctx.models?.data)
 
   // Calculate and display token count
   try {
@@ -73,7 +71,6 @@ export async function handleCompletion(c: Context) {
   payload = normalizeChatCompletionTokenLimit(
     payload,
     selectedModel?.capabilities.limits?.max_output_tokens,
-    selection.ctx.models?.data,
   )
 
   resolveRoute('chat-completions', payload.model, throwOpenAIInvalidRequestError, {
@@ -150,11 +147,10 @@ function isCCNonStreaming(body: Awaited<ReturnType<typeof createChatCompletions>
 export function normalizeChatCompletionTokenLimit(
   payload: ChatCompletionsPayload,
   modelMaxOutputTokens?: number,
-  models?: Model[],
 ): ChatCompletionsPayload {
-  const tokenParameter = getModelConfig(payload.model, models).chatCompletionTokenParameter ?? 'max_tokens'
-
-  if (tokenParameter === 'max_completion_tokens') {
+  // Retain the validated Copilot wire-format adaptation. This does not grant
+  // model or endpoint availability; resolveRoute requires a fetched catalog entry.
+  if (payload.model === 'gpt-5.4' || payload.model.startsWith('gpt-5.4-')) {
     const maxCompletionTokens = payload.max_completion_tokens
       ?? payload.max_tokens
       ?? modelMaxOutputTokens

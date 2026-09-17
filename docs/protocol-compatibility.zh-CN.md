@@ -19,12 +19,21 @@ Messages、Responses、Chat Completions 和 Embeddings 都只支持直连。请�
 
 路由按端点能力判断，不按模型品牌限制。一个模型如果声明多个原生 API，仍可通过这些 API 分别接入。
 
+## 动态模型目录
+
+每个账号在启动时拉取自己的 Copilot 模型目录并缓存在内存中。HTTP 路由、模型选择、setup 和能力展示使用该账号动态取得的模型 ID 与 `supported_endpoints`，不使用内置模型表，也不按模型家族前缀推断能力。已知客户端别名的格式归一化与模型是否可用是两回事。
+
+首次拉取失败或目录为空时，该账号不可用。没有缓存目录的模型相关请求返回 `503 model_catalog_unavailable`；模型不在目录内或未声明对应 HTTP 端点时，在本地拒绝。缺少端点元数据表示代理无法提供该路由，不代表已经证明上游会拒绝所有请求。Embeddings 根据动态返回的 `capabilities.type=embeddings` 判断。
+
+定期刷新会整体替换目录，包括移除已消失的模型。刷新失败保留最后一份有效快照并标记过期；刷新成功但目录为空则移除全部模型。普通请求不会重新拉取目录。
+
+代理补充的默认输出额度只取动态目录，客户端显式额度保持不变。已有 GPT-5.4 Chat Completions token 字段归一化等小范围原生格式适配，不用于决定模型或端点是否可用。
+
 ## 成熟度标签
 
 | 标签 | 产品含义 |
 | --- | --- |
 | `stable` | 当前模型目录为非预览模型提供直连 HTTP 路由 |
-| `conditional` | 内置原生路由回退需要按请求和模型验证 |
 | `experimental` | 预览模型经目录明确声明的直连路由或原生 Responses WebSocket 路由可能快速变化 |
 | `unsupported` | 不存在原生路由 |
 
@@ -38,7 +47,7 @@ Messages、Responses、Chat Completions 和 Embeddings 都只支持直连。请�
 
 ## WebSocket 上的 Responses
 
-通过 Upgrade 请求访问 `GET /v1/responses` 时，会建立一对一的原生 Copilot WebSocket 桥接。当前模型条目必须明确声明 `ws:/responses`；普通 HTTP Responses 元数据、静态模型默认值、Chat Completions 和 Realtime 都不能证明该路由可用。
+通过 Upgrade 请求访问 `GET /v1/responses` 时，会建立一对一的原生 Copilot WebSocket 桥接。当前模型条目必须明确声明 `ws:/responses`；普通 HTTP Responses 元数据、Chat Completions 和 Realtime 都不能证明该路由可用。
 
 连接接受 `response.create` 文本事件，同一时间只处理一个响应，并按先进先出顺序处理排队回合。连接和输入内存均有上限。`stream` 是隐式行为：`true` 或 `null` 可作为传输兼容的空操作移除，`false` 或格式错误的值会被拒绝。后台模式和 `generate: false` 预热会被拒绝，因为转发它们无法保留客户端契约。
 
@@ -63,7 +72,7 @@ Anthropic 专属行为以原生 Messages 为准。代理不会为了获得表面
 兼容性判断区分四类证据：
 
 1. 用于判断路由可用性的当前 Copilot 模型目录元数据；
-2. 代理内置的分类策略；
+2. 用于客户端资格判断的本机客户端元数据，不能作为上游模型或端点回退；
 3. 针对指定账号、模型、端点和请求结构，并验证可观察语义的 Copilot 实时探针；
 4. 验证客户端行为的真实 Codex 或 Claude Code 冒烟测试。
 

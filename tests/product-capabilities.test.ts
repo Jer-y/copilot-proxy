@@ -114,15 +114,15 @@ describe('product capability profiles', () => {
     })
   })
 
-  test('labels bundled routing fallback as conditional when live endpoints are absent', () => {
+  test('does not synthesize routes when live endpoints are absent', () => {
     const [profile] = buildModelCapabilityProfiles([
       makeModel('claude-opus-4.8'),
     ])
 
     expect(profile?.routes.anthropicMessages).toMatchObject({
-      mode: 'direct',
-      maturity: 'conditional',
-      source: 'bundled-routing-policy',
+      mode: 'unsupported',
+      maturity: 'unsupported',
+      source: 'none',
     })
     expect(profile?.routes.responsesHttp).toMatchObject({
       mode: 'unsupported',
@@ -132,7 +132,7 @@ describe('product capability profiles', () => {
     expect(profile?.routes.responsesWebSocket.mode).toBe('unsupported')
   })
 
-  test('keeps bundled fallback independent from the process-wide live catalog', () => {
+  test('never fills missing account metadata from the process-wide catalog', () => {
     const previousModels = state.models
     const input = [makeModel('gpt-4o')]
 
@@ -148,7 +148,7 @@ describe('product capability profiles', () => {
 
       expect(withGlobalCatalog).toEqual(withoutGlobalCatalog)
       expect(withGlobalCatalog[0]?.routes).toMatchObject({
-        chatCompletions: { mode: 'direct' },
+        chatCompletions: { mode: 'unsupported' },
         responsesHttp: { mode: 'unsupported' },
         anthropicMessages: { mode: 'unsupported' },
       })

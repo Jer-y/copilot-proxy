@@ -738,7 +738,7 @@ describe('doctor command', () => {
     expect(result.exitCodes).toEqual([1])
   })
 
-  test.each(['o3-mini', 'o4-mini'])('uses bundled Responses policy for legacy Codex model %s', async (modelId) => {
+  test.each(['o3-mini', 'o4-mini'])('does not guess endpoints for legacy Codex model %s', async (modelId) => {
     const result = await executeDoctor({
       client: 'codex',
       fetch: legacyDoctorFetch([{ id: modelId }]),
@@ -746,7 +746,7 @@ describe('doctor command', () => {
 
     expect(findCheck(result, 'models')).toMatchObject({ status: 'pass' })
     expect(findCheck(result, 'client.codex')).toMatchObject({ status: 'warn' })
-    expect(findCheck(result, 'client.codex')?.message).toContain('1 candidate model(s)')
+    expect(findCheck(result, 'client.codex')?.message).toContain('does not advertise an endpoint')
     expect(result.report.status).toBe('warn')
     expect(result.exitCodes).toEqual([0])
   })
@@ -759,7 +759,7 @@ describe('doctor command', () => {
 
     expect(findCheck(result, 'models')).toMatchObject({ status: 'pass' })
     expect(findCheck(result, 'client.codex')).toMatchObject({ status: 'warn' })
-    expect(findCheck(result, 'client.codex')?.message).toContain('compatibility is unknown')
+    expect(findCheck(result, 'client.codex')?.message).toContain('compatibility cannot be determined from model names')
     expect(result.report.status).toBe('warn')
     expect(result.exitCodes).toEqual([0])
   })

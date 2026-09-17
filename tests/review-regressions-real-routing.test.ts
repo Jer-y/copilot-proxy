@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-
 import { state } from '~/lib/state'
+
 import { server } from '~/server'
+import { createTestModelCatalog } from './model-fixtures'
 
 const originalFetch = globalThis.fetch
 const upstreamCalls: Array<{ url: string, body: Record<string, unknown> | undefined }> = []
@@ -51,7 +52,7 @@ async function defaultFetchMock(input: FetchInput, init?: RequestInit): Promise<
 beforeEach(() => {
   upstreamCalls.length = 0
   state.lastRequestTimestamp = undefined
-  state.models = undefined
+  state.models = createTestModelCatalog()
   state.copilotToken = 'test-copilot-token'
   state.vsCodeVersion = '1.99.0'
   state.accountType = 'individual'

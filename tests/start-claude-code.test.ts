@@ -10,10 +10,11 @@ describe('start --claude-code model selection', () => {
       makeModel('claude-direct', ['/v1/messages']),
       makeModel('gpt-responses-only', ['/responses']),
       makeModel('unsupported', ['/chat/completions']),
-      makeModel('claude-policy-direct'),
+      makeModel('claude-without-endpoints'),
+      makeModel('claude-second-direct', ['/v1/messages']),
     ])
     const prompts: Array<{ message: string, modelIds: string[] }> = []
-    const selections = ['claude-direct', 'claude-policy-direct']
+    const selections = ['claude-direct', 'claude-second-direct']
 
     const command = await promptForClaudeCodeLaunchCommand(
       'http://127.0.0.1:4399',
@@ -24,7 +25,7 @@ describe('start --claude-code model selection', () => {
       },
     )
 
-    expect(modelIds).toEqual(['claude-direct', 'claude-policy-direct'])
+    expect(modelIds).toEqual(['claude-direct', 'claude-second-direct'])
     expect(prompts).toEqual([
       {
         message: 'Select a model to use with Claude Code',
@@ -36,7 +37,7 @@ describe('start --claude-code model selection', () => {
       },
     ])
     expect(command).toContain('"ANTHROPIC_MODEL":"claude-direct"')
-    expect(command).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-policy-direct"')
+    expect(command).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-second-direct"')
     expect(command).not.toContain('gpt-responses-only')
   })
 

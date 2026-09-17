@@ -1,9 +1,10 @@
 import type { Model } from '~/services/copilot/get-models'
-
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
 import { state } from '../src/lib/state'
+
 import { server } from '../src/server'
+import { createTestModelCatalog } from './model-fixtures'
 
 state.copilotToken = 'test-token'
 state.vsCodeVersion = '1.0.0'
@@ -57,13 +58,13 @@ const fetchMock = mock(async (url: string) => {
 beforeEach(() => {
   fetchMock.mockClear()
   state.lastRequestTimestamp = undefined
-  state.models = undefined
+  state.models = createTestModelCatalog()
 })
 
 describe('native protocol routing', () => {
   test.each([false, true])('rejects both retired directions without contacting Copilot (stream=%s)', async (stream) => {
-    for (const withLiveCatalog of [false, true]) {
-      state.models = withLiveCatalog
+    for (const minimalCatalog of [false, true]) {
+      state.models = minimalCatalog
         ? {
             object: 'list',
             data: [
@@ -71,7 +72,7 @@ describe('native protocol routing', () => {
               makeModel('gpt-5.4', ['/responses']),
             ],
           }
-        : undefined
+        : createTestModelCatalog()
 
       for (const [path, payload] of [
         ['/v1/responses', { model: 'claude-opus-4.8', input: 'hello', store: false, stream }],

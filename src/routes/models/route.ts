@@ -5,9 +5,7 @@ import consola from 'consola'
 import { Hono } from 'hono'
 
 import { getAccountRegistry } from '~/lib/account/registry'
-import { forwardError } from '~/lib/error'
-import { state } from '~/lib/state'
-import { cacheModels } from '~/lib/utils'
+import { forwardError, HTTPError } from '~/lib/error'
 
 import { createCodexModelsResponseEtag, isCodexModelsRequest, parseCodexClientVersion, toCodexModelsResponse } from './codex-compat'
 
@@ -16,12 +14,12 @@ export const modelRoutes = new Hono()
 modelRoutes.get('/', async (c) => {
   let codexClientVersion: string | undefined
   try {
-    if (!state.models) {
-      // This should be handled by startup logic, but as a fallback.
-      await cacheModels()
-    }
-
     const registry = getAccountRegistry()
+    if (!registry.list().some(ctx => ctx.models !== undefined)) {
+      throw new HTTPError('Copilot model catalog is unavailable.', Response.json({
+        error: { type: 'api_error', code: 'model_catalog_unavailable', message: 'Copilot model catalog is unavailable.' },
+      }, { status: 503 }))
+    }
     const modelsData = buildBoundModelCatalog()
 
     const requestUrl = new URL(c.req.url)

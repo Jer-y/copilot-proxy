@@ -54,9 +54,12 @@ export async function cacheModels(
   )
   const now = dependencies.now ?? Date.now
   const attemptAt = now()
+  ctx.models = undefined
   try {
     const models = await fetchModels()
     assertModelCatalogSnapshot(models)
+    if (models.data.length === 0)
+      throw new Error('Copilot model catalog is empty')
     ctx.models = models
     recordModelCatalogRefreshSuccess(ctx, attemptAt, now())
   }

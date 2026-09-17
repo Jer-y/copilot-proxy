@@ -19,12 +19,21 @@ Messages, Responses, Chat Completions, and Embeddings are direct-only. A request
 
 Routing uses endpoint capabilities, not model-brand rules. A model that advertises multiple native APIs remains usable through each of them.
 
+## Dynamic model catalog
+
+Each account fetches its own Copilot model catalog at startup and keeps it in memory. HTTP routing, model selection, setup, and capability profiles use that account's fetched IDs and `supported_endpoints`; there is no bundled model table or family-prefix capability inference. Known client alias normalization remains separate from model availability.
+
+An initial fetch failure or empty inventory leaves the account unavailable. With no cached catalog, model-dependent requests return `503 model_catalog_unavailable`; an absent model or unadvertised HTTP endpoint is rejected locally. Missing endpoint metadata means the proxy cannot offer that route, not proof that the upstream would reject every possible request. Embeddings uses the fetched model's `capabilities.type=embeddings`.
+
+Periodic refreshes atomically replace the complete snapshot, including removals. A failed refresh retains the last valid snapshot and marks it stale; a successful empty refresh removes all models. Normal requests do not fetch the catalog again.
+
+Proxy-generated output limits use only the fetched model limit. Explicit client limits remain unchanged. Narrow native wire-format adaptations, such as the existing GPT-5.4 Chat Completions token-field normalization, do not grant model or endpoint availability.
+
 ## Maturity labels
 
 | Label | Product meaning |
 | --- | --- |
 | `stable` | A non-preview model's current catalog advertises a direct HTTP route |
-| `conditional` | A bundled native-routing fallback requires request- and model-specific verification |
 | `experimental` | A preview model's catalog-advertised direct route or a native Responses WebSocket route may change quickly |
 | `unsupported` | No native route is available |
 
@@ -38,7 +47,7 @@ Preview status changes a catalog-advertised direct HTTP route from `stable` to `
 
 ## Responses over WebSocket
 
-`GET /v1/responses` with Upgrade is a one-to-one native Copilot WebSocket bridge. The exact current model entry must explicitly advertise `ws:/responses`; ordinary HTTP Responses metadata, static model defaults, Chat Completions, and Realtime do not establish eligibility.
+`GET /v1/responses` with Upgrade is a one-to-one native Copilot WebSocket bridge. The exact current model entry must explicitly advertise `ws:/responses`; ordinary HTTP Responses metadata, Chat Completions, and Realtime do not establish eligibility.
 
 The connection accepts `response.create` text events, keeps one response in flight, and processes queued turns in FIFO order. Connections and input memory are bounded. `stream` is implicit: `true` or `null` may be removed as transport-compatible no-ops, while `false` and malformed values are rejected. Background mode and `generate: false` warmup are rejected because forwarding them would not preserve the client contract.
 
@@ -63,7 +72,7 @@ Native Messages remains the source of truth for Anthropic-specific behavior. The
 Compatibility decisions distinguish four evidence classes:
 
 1. current Copilot catalog metadata for routing eligibility;
-2. bundled proxy classification policy;
+2. installed client metadata for client-specific eligibility, never as an upstream model or endpoint fallback;
 3. live Copilot probes that validate observable semantics for the exact account, model, endpoint, and request shape;
 4. real Codex or Claude Code smokes for client behavior.
 

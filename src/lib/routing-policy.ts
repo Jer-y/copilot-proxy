@@ -1,9 +1,9 @@
-import type { BackendApiType } from './model-config'
+import type { BackendApiType } from './backend-api'
 
 import type { Model } from '~/services/copilot/get-models'
-import { formatBackendApi } from './backend-api'
-import { getModelConfig } from './model-config'
-import { findModelWithFallback } from './model-utils'
+import { endpointToBackendApi, formatBackendApi } from './backend-api'
+import { HTTPError } from './error'
+import { findModel } from './model-utils'
 
 interface BackendRoute {
   backend: BackendApiType
@@ -22,57 +22,23 @@ export function resolveRoute(
     models?: Array<Model>
   },
 ): BackendRoute {
-  const supportedApis = getSupportedApisForRouting(model, options?.models)
+  if (!options?.models) {
+    throw new HTTPError('Copilot model catalog is unavailable.', Response.json({
+      error: { type: 'api_error', code: 'model_catalog_unavailable', message: 'Copilot model catalog is unavailable. Restore model access and restart the proxy.' },
+    }, { status: 503 }))
+  }
+  const liveModel = findModel(model, options.models)
+  if (!liveModel)
+    onLocalError(`Model ${model} is not available in the selected account's fetched catalog.`)
+  const supportedApis = new Set((liveModel.supported_endpoints ?? [])
+    .map(endpointToBackendApi)
+    .filter((api): api is BackendApiType => api !== undefined))
 
   if (supportedApis.has(clientApi)) {
     return { backend: clientApi, kind: 'direct' }
   }
 
   onLocalError(buildUnsupportedClientApiError(clientApi, model, supportedApis))
-}
-
-function getSupportedApisForRouting(
-  model: string,
-  models?: Array<Model>,
-): Set<BackendApiType> {
-  const liveModel = findModelWithFallback(model, models)
-  if (liveModel?.supported_endpoints?.length) {
-    return new Set(
-      liveModel.supported_endpoints
-        .map(endpointToBackendApi)
-        .filter((api): api is BackendApiType => api !== undefined),
-    )
-  }
-
-  return new Set(getModelConfig(model, models).supportedApis)
-}
-
-function endpointToBackendApi(endpoint: string): BackendApiType | undefined {
-  const normalized = endpoint.trim().toLowerCase()
-
-  // WebSocket endpoints are transport capabilities, not evidence that the
-  // corresponding HTTP API is available. In particular, a model advertising
-  // only `ws:/responses` must not be routed through POST /responses.
-  if (/^wss?:/.test(normalized)) {
-    return undefined
-  }
-
-  const normalizedPath = normalized
-    .replace(/^\/v1\//, '/')
-    .replace(/^v1\//, '')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-
-  switch (normalizedPath) {
-    case 'chat/completions':
-      return 'chat-completions'
-    case 'responses':
-      return 'responses'
-    case 'messages':
-      return 'anthropic-messages'
-    default:
-      return undefined
-  }
 }
 
 /**
@@ -108,7 +74,7 @@ function buildUnsupportedClientApiError(
 ): string {
   const supportedList = [...supportedApis].map(formatBackendApi).join(', ')
   if (supportedApis.size === 0) {
-    return `Model ${model} has no supported backend API.`
+    return `Model ${model} has no advertised native HTTP endpoint in the fetched catalog.`
   }
   return `Model ${model} cannot be reached via ${formatBackendApi(clientApi)}. Supported backend(s): ${supportedList}. Use a client configured for a supported native API; cross-protocol translation is not supported.`
 }

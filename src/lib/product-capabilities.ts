@@ -1,7 +1,7 @@
-import type { BackendApiType } from './model-config'
+import type { BackendApiType } from './backend-api'
 import type { Model } from '~/services/copilot/get-models'
 
-import { getBundledModelConfig } from './model-config'
+import { endpointToBackendApi } from './backend-api'
 import { modelSupportsResponsesWebSocket } from './routing-policy'
 
 export type ProductClientRoute
@@ -11,13 +11,13 @@ export type ProductClientRoute
     | 'anthropicMessages'
 
 export type ProductRouteMode = 'direct' | 'unsupported'
-export type ProductMaturity = 'stable' | 'conditional' | 'experimental' | 'unsupported'
+export type ProductMaturity = 'stable' | 'experimental' | 'unsupported'
 
 export interface ProductRouteCapability {
   maturity: ProductMaturity
   mode: ProductRouteMode
-  reasonCode: 'catalog_direct' | 'no_faithful_route' | 'policy_direct' | 'websocket_advertised' | 'websocket_not_advertised'
-  source: 'live-catalog-metadata' | 'bundled-routing-policy' | 'none'
+  reasonCode: 'catalog_direct' | 'no_faithful_route' | 'websocket_advertised' | 'websocket_not_advertised'
+  source: 'live-catalog-metadata' | 'none'
 }
 
 export interface ModelCapabilityFeatures {
@@ -92,12 +92,9 @@ function buildModelCapabilityProfile(model: Model): ModelCapabilityProfile {
   const advertisedEndpoints = Array.isArray(model.supported_endpoints)
     ? model.supported_endpoints.filter((endpoint): endpoint is string => typeof endpoint === 'string')
     : []
-  const hasLiveEndpointMetadata = advertisedEndpoints.length > 0
-  const supportedApis = hasLiveEndpointMetadata
-    ? advertisedEndpoints
-        .map(endpointToBackendApi)
-        .filter((api): api is BackendApiType => api !== undefined)
-    : getBundledModelConfig(model.id).supportedApis
+  const supportedApis = advertisedEndpoints
+    .map(endpointToBackendApi)
+    .filter((api): api is BackendApiType => api !== undefined)
   const uniqueSupportedApis = new Set(supportedApis)
   const limits = model.capabilities?.limits
   const supports = model.capabilities?.supports
@@ -125,20 +122,17 @@ function buildModelCapabilityProfile(model: Model): ModelCapabilityProfile {
     routes: {
       chatCompletions: buildHttpRoute({
         clientApi: 'chat-completions',
-        hasLiveEndpointMetadata,
         model,
         supportedApis: uniqueSupportedApis,
       }),
       responsesHttp: buildHttpRoute({
         clientApi: 'responses',
-        hasLiveEndpointMetadata,
         model,
         supportedApis: uniqueSupportedApis,
       }),
       responsesWebSocket: buildResponsesWebSocketRoute(advertisedEndpoints),
       anthropicMessages: buildHttpRoute({
         clientApi: 'anthropic-messages',
-        hasLiveEndpointMetadata,
         model,
         supportedApis: uniqueSupportedApis,
       }),
@@ -148,21 +142,17 @@ function buildModelCapabilityProfile(model: Model): ModelCapabilityProfile {
 
 function buildHttpRoute(options: {
   clientApi: BackendApiType
-  hasLiveEndpointMetadata: boolean
   model: Model
   supportedApis: Set<BackendApiType>
 }): ProductRouteCapability {
-  const { clientApi, hasLiveEndpointMetadata, model, supportedApis } = options
-  const source = hasLiveEndpointMetadata ? 'live-catalog-metadata' : 'bundled-routing-policy'
+  const { clientApi, model, supportedApis } = options
 
   if (supportedApis.has(clientApi)) {
     return {
       mode: 'direct',
-      maturity: hasLiveEndpointMetadata
-        ? model.preview ? 'experimental' : 'stable'
-        : 'conditional',
-      source,
-      reasonCode: hasLiveEndpointMetadata ? 'catalog_direct' : 'policy_direct',
+      maturity: model.preview ? 'experimental' : 'stable',
+      source: 'live-catalog-metadata',
+      reasonCode: 'catalog_direct',
     }
   }
 
@@ -189,29 +179,6 @@ function buildResponsesWebSocketRoute(supportedEndpoints: Array<string>): Produc
     maturity: 'experimental',
     source: 'live-catalog-metadata',
     reasonCode: 'websocket_advertised',
-  }
-}
-
-function endpointToBackendApi(endpoint: string): BackendApiType | undefined {
-  const normalized = endpoint.trim().toLowerCase()
-  if (/^wss?:/.test(normalized))
-    return undefined
-
-  const normalizedPath = normalized
-    .replace(/^\/v1\//, '/')
-    .replace(/^v1\//, '')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-
-  switch (normalizedPath) {
-    case 'chat/completions':
-      return 'chat-completions'
-    case 'messages':
-      return 'anthropic-messages'
-    case 'responses':
-      return 'responses'
-    default:
-      return undefined
   }
 }
 

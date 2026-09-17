@@ -21,6 +21,25 @@ afterEach(() => {
 })
 
 describe('model inventory refresh', () => {
+  test('failed startup fetch clears a previous initialization snapshot', async () => {
+    state.models = makeModels('previous-run')
+    await expect(cacheModels(async () => {
+      throw new Error('models unavailable')
+    })).rejects.toThrow('models unavailable')
+    expect(state.models).toBeUndefined()
+  })
+
+  test('an empty initial inventory cannot initialize an account', async () => {
+    await expect(cacheModels(async () => ({ object: 'list', data: [] }))).rejects.toThrow('model catalog is empty')
+    expect(state.models).toBeUndefined()
+  })
+
+  test('a successful empty refresh removes models instead of resurrecting a static catalog', async () => {
+    state.models = makeModels('removed-model')
+    expect(await refreshModelsSafely(async () => ({ object: 'list', data: [] }))).toBe(true)
+    expect(state.models?.data).toEqual([])
+  })
+
   test('atomically replaces the model snapshot after a successful refresh', async () => {
     const previous = makeModels('old-model')
     const next = makeModels('new-model')

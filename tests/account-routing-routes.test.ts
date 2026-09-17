@@ -62,6 +62,21 @@ afterEach(() => {
 })
 
 describe('multi-account model routing through real proxy handlers', () => {
+  test('does not borrow a model from another account when the selected catalog lacks it', async () => {
+    const work = state.accounts!.get('work')!
+    work.models = { object: 'list', data: [] }
+    const response = await server.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4', input: 'hello' }),
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: { type: 'invalid_request_error', message: expect.stringContaining('selected account') },
+    })
+    expect(calls).toHaveLength(0)
+  })
+
   test('routes Claude aliases natively and rejects their retired Responses path', async () => {
     for (const path of ['/v1/messages', '/v1/responses']) {
       calls.length = 0
@@ -125,6 +140,7 @@ describe('multi-account model routing through real proxy handlers', () => {
 
   test('keeps Responses helper recovery circuits isolated by effective model', async () => {
     const work = state.accounts!.get('work')!
+    work.models!.data.push(makeModel('model-a', ['/responses']), makeModel('model-b', ['/responses']))
     const refresh = spyOn(work.tokens, 'refreshAfterFailure').mockResolvedValue({
       generation: 1,
       outcome: 'refreshed',

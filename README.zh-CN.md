@@ -42,7 +42,7 @@ bun install --frozen-lockfile
    bun run ./src/main.ts setup openai-sdk
    ```
 
-   setup 会完成认证、选择并探测直连路由，然后输出配置而不写入客户端配置文件。它可能更新 copilot-proxy 自身的认证数据，但不会保存或启动生成的客户端 profile。HTTP 资格以非空的实时 `supported_endpoints` 列表为权威依据，否则可使用代理内置策略回退；WebSocket 始终要求实时明确的 `ws:/responses`。这些资格输入不是实时路由或语义证明，探测结果才是。Codex 还有本机版本和模型 metadata 检查，详见[入门指南](docs/getting-started.zh-CN.md)。
+   setup 会完成认证、选择并探测直连路由，然后输出配置而不写入客户端配置文件。它可能更新 copilot-proxy 自身的认证数据，但不会保存或启动生成的客户端 profile。HTTP 资格要求动态 `supported_endpoints` 声明匹配端点，不使用静态模型策略；WebSocket 始终要求实时明确的 `ws:/responses`。这些资格输入不是实时路由或语义证明，探测结果才是。Codex 还有本机版本和模型 metadata 检查，详见[入门指南](docs/getting-started.zh-CN.md)。
 
 2. 在另一个终端使用 setup 输出的完整命令启动代理。默认源码设置可简写为：
 

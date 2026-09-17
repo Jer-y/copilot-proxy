@@ -42,7 +42,7 @@ bun install --frozen-lockfile
    bun run ./src/main.ts setup openai-sdk
    ```
 
-   Setup authenticates, selects and probes a direct route, then prints configuration without writing client configuration files. It may update copilot-proxy's own authentication data, but it does not save or launch the generated client profile. HTTP eligibility treats a non-empty live `supported_endpoints` list as authoritative and otherwise may use bundled proxy policy; WebSocket always requires explicit live `ws:/responses`. Those eligibility inputs are not live route or semantic proof—the probe is. Codex has additional installed-version and model-metadata checks; see [Getting started](docs/getting-started.md).
+   Setup authenticates, selects and probes a direct route, then prints configuration without writing client configuration files. It may update copilot-proxy's own authentication data, but it does not save or launch the generated client profile. HTTP eligibility requires the matching endpoint in the fetched `supported_endpoints`; no static model policy is used. WebSocket always requires explicit live `ws:/responses`. Those eligibility inputs are not live route or semantic proof—the probe is. Codex has additional installed-version and model-metadata checks; see [Getting started](docs/getting-started.md).
 
 2. Start the proxy in another terminal with the exact command printed by setup. For the default source setup, the equivalent short form is:
 
