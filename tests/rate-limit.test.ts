@@ -11,7 +11,6 @@ type TrackedAbortListener = ((event: Event) => void) | { handleEvent: (event: Ev
 function makeState(overrides?: Partial<State>): State {
   return {
     accountType: 'individual',
-    manualApprove: false,
     rateLimitWait: false,
     showToken: false,
     ...overrides,

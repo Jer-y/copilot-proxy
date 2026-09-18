@@ -5,7 +5,6 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
 import { NATIVE_SERVICE_INSTANCE_HEADER } from '~/daemon/native-service'
-import { withApprovalRequestContext } from '~/lib/approval'
 import { requestLogger } from '~/lib/request-logger'
 import { isRequestHostAllowed, isRequestOriginAllowed, resolveCorsOrigin } from '~/lib/security'
 import { state } from '~/lib/state'
@@ -44,14 +43,7 @@ server.use(async (c, next) => {
     }, 403)
   }
 
-  const requestWithIp = c.req.raw as Request & { ip?: string }
-  await withApprovalRequestContext({
-    method: c.req.method,
-    path: c.req.path,
-    clientAddress: requestWithIp.ip,
-    origin: c.req.header('origin'),
-    userAgent: c.req.header('user-agent'),
-  }, next)
+  await next()
 })
 server.use(cors({
   origin: (origin, c) => resolveCorsOrigin(origin, c.req.path),

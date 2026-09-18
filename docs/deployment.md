@@ -73,7 +73,7 @@ The same circuit state appears on `/readyz`: a globally open recovery circuit ma
 - Add exact non-local browser origins to `COPILOT_PROXY_CORS_ORIGINS` only when they are required.
 - Add exact non-loopback request hostnames to `COPILOT_PROXY_ALLOWED_HOSTS`; do not use it as a substitute for authentication.
 - Never persist `--show-token` output in shared logs.
-- Do not use interactive `--manual` approval in a background service.
+- Per-request terminal approval (`--manual`) has been removed. Old CLI flags and persisted `manual: true` settings fail explicitly; remove the flag or set the old field to `false` only after accepting unattended forwarding. Old `manual: false` settings remain readable and are omitted from newly saved configurations. Authentication and Host/Origin checks are unchanged.
 - Treat `/diagnostics` and the hosted dashboard as visibility tools, not access-control surfaces.
 
 Runtime presets and service lifecycle are documented in [Operations](operations.md). Protocol behavior does not change because a gateway is present; see [Protocol compatibility](protocol-compatibility.md). Review the [Security policy](../SECURITY.md) before exposing any listener.

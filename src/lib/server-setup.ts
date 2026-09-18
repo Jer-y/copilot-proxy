@@ -50,7 +50,6 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   if (options.exposeAccountModels)
     process.env.COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS = '1'
 
-  state.manualApprove = options.manual
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken

@@ -73,7 +73,6 @@ const START_RUN_OPTION_DEFINITIONS: readonly RunOptionDefinition[] = [
   { name: 'preset', type: 'string' },
   { name: 'verbose', short: 'v', type: 'boolean' },
   { name: 'account-type', short: 'a', type: 'string' },
-  { name: 'manual', type: 'boolean' },
   { name: 'rate-limit', short: 'r', type: 'string' },
   { name: 'wait', short: 'w', type: 'boolean' },
   { name: 'max-concurrency', type: 'string' },

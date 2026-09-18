@@ -73,7 +73,7 @@ copilot-proxy start --preset gateway-upstream
 - 仅在确有需要时，将准确的非本地浏览器来源加入 `COPILOT_PROXY_CORS_ORIGINS`。
 - 将准确的非回环请求主机名加入 `COPILOT_PROXY_ALLOWED_HOSTS`；它不能代替认证。
 - 不要把 `--show-token` 输出持久化到共享日志。
-- 后台服务不要使用交互式 `--manual` 审批。
+- 已移除逐请求终端审批（`--manual`）。旧 CLI 参数和持久化的 `manual: true` 会明确报错；只有接受无人值守转发后，才应移除参数或将旧字段设为 `false`。旧 `manual: false` 仍可读取，但新保存的配置不再包含它。认证与 Host/Origin 检查保持不变。
 - 将 `/diagnostics` 和托管状态面板视为可见性工具，而非访问控制入口。
 
 运行预设和服务生命周期见[运维](operations.zh-CN.md)。网关不会改变协议行为，详见[协议兼容性](protocol-compatibility.zh-CN.md)。暴露任何监听器前，请阅读[安全策略（英文）](../SECURITY.md)。

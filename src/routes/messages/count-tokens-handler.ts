@@ -5,7 +5,7 @@ import type { AnthropicMessagesPayload } from '~/lib/anthropic/types'
 import { getAccountRegistry } from '~/lib/account/registry'
 import { selectAccount } from '~/lib/account/router'
 import { throwAnthropicInvalidRequestError } from '~/lib/anthropic/compat'
-import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
+import { checkRateLimit } from '~/lib/rate-limit'
 import { resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
@@ -19,7 +19,7 @@ import { normalizeAnthropicModelName, sanitizeAnthropicBetaHeader } from './mode
  * Handles token counting for Anthropic messages
  */
 export async function handleCountTokens(c: Context) {
-  await enforceRateLimit(state)
+  await checkRateLimit(state)
 
   const anthropicBeta = c.req.header('anthropic-beta')
 
@@ -48,8 +48,6 @@ export async function handleCountTokens(c: Context) {
   // validated payload without generation-only sanitization or document gates.
   // The advisor beta header has no token-count semantics and is stripped
   // separately because Copilot rejects the header while accepting the tool.
-
-  await enforceManualApproval(state)
 
   const result = await createAnthropicCountTokens(anthropicPayload, {
     anthropicBeta: sanitizeAnthropicBetaHeader(anthropicBeta),

@@ -10,13 +10,12 @@ import consola from 'consola'
 
 import { getAccountRegistry } from '~/lib/account/registry'
 import { selectAccount, selectUnmodeledAccount } from '~/lib/account/router'
-import { setApprovalRequestModel, withApprovalRequestContext } from '~/lib/approval'
 import { HTTPError, JSONResponseError, UpstreamTimeoutError } from '~/lib/error'
 import {
   OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE,
   responsesHasExternalImageUrls,
 } from '~/lib/openai-compat'
-import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
+import { checkRateLimit } from '~/lib/rate-limit'
 import { modelSupportsResponsesWebSocket } from '~/lib/routing-policy'
 import { isRequestHostAllowed, isRequestOriginAllowed } from '~/lib/security'
 import { state } from '~/lib/state'
@@ -63,11 +62,9 @@ interface ResponsesWebSocketCreateEvent extends Record<string, unknown> {
 
 interface ResponsesWebSocketContext extends Record<string, unknown> {
   accountId?: string
-  origin?: string
   path: string
   releaseConnectionReservation?: () => void
   session?: ResponsesWebSocketSession
-  userAgent?: string
 }
 
 interface ActiveTurn {
@@ -88,8 +85,7 @@ export interface ResponsesWebSocketSessionDeps {
   ) => Promise<CopilotRequestPermit>
   canPauseUpstream?: boolean
   connect?: typeof connectAuthenticatedCopilotResponsesWebSocket
-  enforceApproval?: typeof enforceManualApproval
-  enforceRateLimit?: typeof enforceRateLimit
+  enforceRateLimit?: typeof checkRateLimit
   maxDurationMs?: number
   maxQueuedBytes?: number
   maxQueuedTurns?: number
@@ -199,10 +195,8 @@ export const responsesWebSocketOptions: WSOptions = {
     return {
       context: {
         ...(requestedAccount && { accountId: requestedAccount }),
-        origin: request.headers.get('origin') ?? undefined,
         path: url.pathname,
         releaseConnectionReservation,
-        userAgent: request.headers.get('user-agent') ?? undefined,
       } satisfies ResponsesWebSocketContext,
     }
   },
@@ -317,8 +311,7 @@ export class ResponsesWebSocketSession {
       acquirePermit: deps.acquirePermit ?? (options => acquireCopilotRequestPermit(this.requirePinnedAccount(), options)),
       canPauseUpstream: deps.canPauseUpstream ?? typeof Bun === 'undefined',
       connect: deps.connect ?? connectAuthenticatedCopilotResponsesWebSocket,
-      enforceApproval: deps.enforceApproval ?? enforceManualApproval,
-      enforceRateLimit: deps.enforceRateLimit ?? enforceRateLimit,
+      enforceRateLimit: deps.enforceRateLimit ?? checkRateLimit,
       maxDurationMs: deps.maxDurationMs ?? RESPONSES_WEBSOCKET_MAX_DURATION_MS,
       maxQueuedBytes: deps.maxQueuedBytes ?? RESPONSES_WEBSOCKET_QUEUE_BYTES_LIMIT,
       maxQueuedTurns: deps.maxQueuedTurns ?? RESPONSES_WEBSOCKET_QUEUE_LIMIT,
@@ -545,19 +538,7 @@ export class ResponsesWebSocketSession {
     let settle: ActiveTurn['settle']
 
     try {
-      const context = this.peer.context as ResponsesWebSocketContext
-      await withApprovalRequestContext({
-        method: 'WS response.create',
-        path: context.path,
-        clientAddress: this.peer.remoteAddress,
-        origin: context.origin,
-        userAgent: context.userAgent,
-        model: requestedModel,
-      }, async () => {
-        setApprovalRequestModel(requestedModel)
-        await this.deps.enforceRateLimit(state, { signal: abortController.signal })
-        await this.deps.enforceApproval(state, { signal: abortController.signal })
-      })
+      await this.deps.enforceRateLimit(state, { signal: abortController.signal })
 
       if (this.draining)
         throw createSessionAbortError('Responses WebSocket server is shutting down')

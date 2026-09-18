@@ -190,7 +190,6 @@ function runOptions(): RunServerOptions {
     host: '127.0.0.1',
     verbose: false,
     accountType: 'individual',
-    manual: false,
     rateLimitWait: false,
     claudeCode: false,
     showToken: false,

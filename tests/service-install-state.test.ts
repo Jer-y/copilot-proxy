@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 
+import { UNBOUNDED_NATIVE_SERVICE_CONFIG } from '~/daemon/config'
 import {
   APPLIED_NATIVE_SERVICE_DATA_DIR_ENV,
   applyInstalledNativeServiceDataDir,
@@ -25,6 +26,37 @@ afterEach(() => {
 })
 
 describe('native service install control state', () => {
+  test('accepts legacy manual:false but omits it from newly saved state', () => {
+    const root = makeTempDir()
+    const filePath = path.join(root, 'control.json')
+    fs.writeFileSync(filePath, JSON.stringify({
+      dataDir: root,
+      config: { ...UNBOUNDED_NATIVE_SERVICE_CONFIG, manual: false },
+    }))
+
+    const loaded = loadNativeServiceInstallState(filePath)!
+    expect(loaded.config).toEqual(UNBOUNDED_NATIVE_SERVICE_CONFIG)
+    expect(Object.hasOwn(loaded.config!, 'manual')).toBe(false)
+    saveNativeServiceInstallState(loaded, filePath)
+    expect(fs.readFileSync(filePath, 'utf8')).not.toContain('manual')
+  })
+
+  test.each([true, 'false', null])('rejects enabled or malformed approval in installed state (manual=%s)', (manual) => {
+    const root = makeTempDir()
+    const filePath = path.join(root, 'control.json')
+    const contents = JSON.stringify({
+      dataDir: root,
+      config: { ...UNBOUNDED_NATIVE_SERVICE_CONFIG, manual },
+    })
+    fs.writeFileSync(filePath, contents)
+
+    expect(() => loadNativeServiceInstallState(filePath)).toThrow(manual === true
+      ? 'Manual request approval has been removed'
+      : 'Native service control state is invalid')
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(contents)
+    expect(applyInstalledNativeServiceDataDir(['disable'], {}, filePath)).toEqual({ ignoredInvalidStatePath: filePath })
+  })
+
   test('uses a stable control path and pins control commands to the installed data dir', () => {
     const home = makeTempDir()
     const filePath = getNativeServiceControlStatePath({}, home)
@@ -195,7 +227,6 @@ describe('native service install control state', () => {
       host: '127.0.0.1',
       verbose: true,
       accountType: 'enterprise',
-      manual: false,
       rateLimit: 9,
       rateLimitWait: true,
       maxConcurrency: 12,
@@ -234,7 +265,6 @@ describe('native service install control state', () => {
         host: '127.0.0.1',
         verbose: false,
         accountType: 'individual',
-        manual: false,
         rateLimitWait: false,
         githubToken: 'must-not-be-persisted',
         showToken: false,
@@ -255,7 +285,6 @@ describe('native service install control state', () => {
         host: '127.0.0.1',
         verbose: false,
         accountType: 'individual',
-        manual: false,
         rateLimitWait: false,
         maxQueue: 10,
         showToken: false,
@@ -276,7 +305,6 @@ describe('native service install control state', () => {
         host: '127.0.0.1',
         verbose: false,
         accountType: 'individual',
-        manual: false,
         rateLimitWait: false,
         headersTimeoutMs: MAX_TIMER_DELAY_MS + 1,
         showToken: false,

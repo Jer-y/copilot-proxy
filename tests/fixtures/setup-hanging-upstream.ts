@@ -82,7 +82,6 @@ async function main(): Promise<void> {
   state.concurrencyLimiter = undefined
   state.copilotToken = 'setup-test-token'
   state.lastRequestTimestamp = undefined
-  state.manualApprove = false
   state.models = { data: models, object: 'list' }
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false

@@ -10,7 +10,7 @@ import { selectAccount } from '~/lib/account/router'
 import { throwAnthropicInvalidRequestError } from '~/lib/anthropic/compat'
 import { isAbortError } from '~/lib/error'
 import { findModelMaxOutputTokens } from '~/lib/model-utils'
-import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
+import { checkRateLimit } from '~/lib/rate-limit'
 import { resolveRoute } from '~/lib/routing-policy'
 import { AnthropicMessagesPayloadSchema } from '~/lib/schemas'
 
@@ -43,15 +43,13 @@ import {
 } from './stream-finalizer'
 
 export async function handleCompletion(c: Context) {
-  await enforceRateLimit(state)
+  await checkRateLimit(state)
 
   const anthropicBeta = c.req.header('anthropic-beta')
   let anthropicPayload = await validateBody<AnthropicMessagesPayload>(c, AnthropicMessagesPayloadSchema)
   if (consola.level >= 4) {
     consola.debug('Anthropic request summary:', summarizeAnthropicPayload(anthropicPayload))
   }
-
-  await enforceManualApproval(state)
 
   const requestedModel = anthropicPayload.model
   const selection = selectAccount({

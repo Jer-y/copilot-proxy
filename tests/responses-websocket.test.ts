@@ -1401,7 +1401,6 @@ function createHarness(overrides: ResponsesWebSocketSessionDeps = {}): Harness {
   const deps: ResponsesWebSocketSessionDeps = {
     acquirePermit: acquirePermit as ResponsesWebSocketSessionDeps['acquirePermit'],
     connect: connect as ResponsesWebSocketSessionDeps['connect'],
-    enforceApproval: async () => {},
     enforceRateLimit: async () => {},
     ...overrides,
   }

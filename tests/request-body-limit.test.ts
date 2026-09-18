@@ -29,7 +29,6 @@ function restoreBodyLimitEnv() {
 
 beforeEach(() => {
   process.env[JSON_BODY_SIZE_LIMIT_ENV] = '192'
-  state.manualApprove = false
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false
   state.lastRequestTimestamp = undefined

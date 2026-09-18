@@ -3,7 +3,6 @@ import type { z } from 'zod'
 
 import process from 'node:process'
 
-import { setApprovalRequestModel } from './approval'
 import { HTTPError } from './error'
 
 export const JSON_BODY_SIZE_LIMIT_ENV = 'COPILOT_PROXY_MAX_JSON_BODY_BYTES'
@@ -58,9 +57,6 @@ export async function validateBody<T>(c: Context, schema: z.ZodType): Promise<T>
       ),
     )
   }
-
-  if (typeof result.data === 'object' && result.data !== null && 'model' in result.data)
-    setApprovalRequestModel(result.data.model)
 
   return result.data as T
 }

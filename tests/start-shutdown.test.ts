@@ -72,7 +72,6 @@ describe('runServer lifecycle', () => {
       accountType: 'individual',
       claudeCode: true,
       host: '127.0.0.1',
-      manual: false,
       port: 4399,
       proxyEnv: false,
       rateLimitWait: false,

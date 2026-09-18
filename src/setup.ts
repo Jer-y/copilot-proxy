@@ -986,7 +986,6 @@ function toRunServerOptions(options: SetupOptions): RunServerOptions {
     host: options.host,
     verbose: false,
     accountType: options.accountType,
-    manual: false,
     rateLimitWait: false,
     maxConcurrency: options.preset.maxConcurrency,
     maxQueue: options.preset.maxQueue,

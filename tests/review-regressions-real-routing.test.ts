@@ -56,7 +56,6 @@ beforeEach(() => {
   state.copilotToken = 'test-copilot-token'
   state.vsCodeVersion = '1.99.0'
   state.accountType = 'individual'
-  state.manualApprove = false
   state.rateLimitWait = false
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = defaultFetchMock

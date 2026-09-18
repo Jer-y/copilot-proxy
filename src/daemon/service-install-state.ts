@@ -8,6 +8,7 @@ import process from 'node:process'
 import { writeOwnerOnlyFileAtomically } from '~/daemon/atomic-file'
 import { findCittyRootCommand, hasCittyRootHelpFlag } from '~/lib/citty-argv'
 import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
+import { MANUAL_APPROVAL_REMOVED_MESSAGE } from '~/lib/constants'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 
 const CONTROL_STATE_FILE = '.copilot-proxy-native-service.json'
@@ -88,7 +89,6 @@ export function toNativeServiceConfig(config: ServiceConfig): NativeServiceConfi
     host: config.host,
     verbose: config.verbose,
     accountType: config.accountType,
-    manual: config.manual,
     ...(config.rateLimit !== undefined && { rateLimit: config.rateLimit }),
     rateLimitWait: config.rateLimitWait,
     ...(config.maxConcurrency !== undefined && { maxConcurrency: config.maxConcurrency }),
@@ -153,6 +153,10 @@ function validateNativeServiceInstallState(
 }
 
 function validateNativeServiceConfig(data: Record<string, unknown>): NativeServiceConfig | undefined {
+  if (data.manual === true)
+    throw new Error(MANUAL_APPROVAL_REMOVED_MESSAGE)
+  if (data.manual !== undefined && data.manual !== false)
+    return undefined
   if (typeof data.port !== 'number' || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535)
     return undefined
   if (typeof data.host !== 'string' || !data.host.trim() || /[\s/]/.test(data.host))
@@ -161,8 +165,7 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
     return undefined
   if (typeof data.accountType !== 'string' || !['individual', 'business', 'enterprise'].includes(data.accountType))
     return undefined
-  if (typeof data.manual !== 'boolean'
-    || typeof data.rateLimitWait !== 'boolean'
+  if (typeof data.rateLimitWait !== 'boolean'
     || typeof data.showToken !== 'boolean'
     || typeof data.proxyEnv !== 'boolean') {
     return undefined
@@ -197,7 +200,6 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
     host: data.host,
     verbose: data.verbose,
     accountType: data.accountType,
-    manual: data.manual,
     ...(typeof data.rateLimit === 'number' && { rateLimit: data.rateLimit }),
     rateLimitWait: data.rateLimitWait,
     ...(typeof data.maxConcurrency === 'number' && { maxConcurrency: data.maxConcurrency }),

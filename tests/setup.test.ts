@@ -603,7 +603,6 @@ describe('runSetup', () => {
       concurrencyLimiter: state.concurrencyLimiter,
       copilotToken: state.copilotToken,
       lastRequestTimestamp: state.lastRequestTimestamp,
-      manualApprove: state.manualApprove,
       models: state.models,
       rateLimitSeconds: state.rateLimitSeconds,
       rateLimitWait: state.rateLimitWait,
@@ -674,7 +673,6 @@ describe('runSetup', () => {
     state.concurrencyLimiter = undefined
     state.copilotToken = 'setup-test-token'
     state.lastRequestTimestamp = undefined
-    state.manualApprove = false
     state.models = { data: [gptModel, claudeModel], object: 'list' }
     state.rateLimitSeconds = undefined
     state.rateLimitWait = false
@@ -715,7 +713,6 @@ describe('runSetup', () => {
       concurrencyLimiter: state.concurrencyLimiter,
       copilotToken: state.copilotToken,
       lastRequestTimestamp: state.lastRequestTimestamp,
-      manualApprove: state.manualApprove,
       models: state.models,
       rateLimitSeconds: state.rateLimitSeconds,
       rateLimitWait: state.rateLimitWait,
@@ -747,7 +744,6 @@ describe('runSetup', () => {
     state.concurrencyLimiter = undefined
     state.copilotToken = 'setup-test-token'
     state.lastRequestTimestamp = undefined
-    state.manualApprove = false
     state.models = { data: [gptModel], object: 'list' }
     state.rateLimitSeconds = undefined
     state.rateLimitWait = false
@@ -776,7 +772,6 @@ describe('runSetup', () => {
       concurrencyLimiter: state.concurrencyLimiter,
       copilotToken: state.copilotToken,
       lastRequestTimestamp: state.lastRequestTimestamp,
-      manualApprove: state.manualApprove,
       models: state.models,
       rateLimitSeconds: state.rateLimitSeconds,
       rateLimitWait: state.rateLimitWait,
@@ -806,7 +801,6 @@ describe('runSetup', () => {
     state.concurrencyLimiter = undefined
     state.copilotToken = 'setup-test-token'
     state.lastRequestTimestamp = undefined
-    state.manualApprove = false
     state.models = { data: [gptModel], object: 'list' }
     state.rateLimitSeconds = undefined
     state.rateLimitWait = false

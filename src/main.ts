@@ -9,6 +9,8 @@ import process from 'node:process'
 
 import { analyzeBootstrapArguments } from './daemon/github-token-argv'
 import { applyInstalledNativeServiceDataDir } from './daemon/service-install-state'
+import { findCittyRootCommand, resolveCittyBooleanOption, START_CITTY_STRING_OPTIONS } from './lib/citty-argv'
+import { MANUAL_APPROVAL_REMOVED_MESSAGE } from './lib/constants'
 import {
   NETWORK_BOOTSTRAPPED_ENV,
   PROXY_ENV_KEYS,
@@ -163,6 +165,12 @@ if (typeof Bun === 'undefined' && !isSupportedNodeVersion(process.versions.node)
 // versions before the CLI could print an actionable compatibility error.
 async function run(): Promise<void> {
   const args = cliArgs
+  const command = bootstrapArguments.command ?? findCittyRootCommand(args)?.command
+  if (!bootstrapArguments.rootHelp
+    && (command === 'start' || command === 'enable')
+    && resolveCittyBooleanOption(args, 'manual', { stringOptions: START_CITTY_STRING_OPTIONS }).value !== undefined) {
+    throw new Error(MANUAL_APPROVAL_REMOVED_MESSAGE)
+  }
   if (bootstrapArguments.misplacedGithubToken && !bootstrapArguments.rootHelp) {
     process.stderr.write(
       'Invalid arguments: --github-token was consumed as another option value. Supply that option\'s value before passing --github-token.\n',

@@ -40,7 +40,6 @@ export interface RunServerOptions {
   host: string
   verbose: boolean
   accountType: string
-  manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
   maxConcurrency?: number
@@ -643,11 +642,6 @@ export const start = defineCommand({
       default: 'individual',
       description: 'Account type to use (individual, business, enterprise)',
     },
-    'manual': {
-      type: 'boolean',
-      default: false,
-      description: 'Enable manual request approval',
-    },
     'rate-limit': {
       alias: 'r',
       type: 'string',
@@ -879,7 +873,6 @@ export const start = defineCommand({
       host,
       verbose: args.verbose,
       accountType: args['account-type'],
-      manual: args.manual,
       rateLimit,
       rateLimitWait: args.wait,
       maxConcurrency,

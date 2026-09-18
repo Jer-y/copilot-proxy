@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
+import { MANUAL_APPROVAL_REMOVED_MESSAGE } from '~/lib/constants'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { PATHS } from '~/lib/paths'
 import { RUN_PRESETS } from '~/lib/run-presets'
@@ -12,7 +13,6 @@ export interface ServiceConfig {
   host: string
   verbose: boolean
   accountType: string
-  manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
   maxConcurrency?: number
@@ -30,7 +30,6 @@ export const UNBOUNDED_NATIVE_SERVICE_CONFIG: ServiceConfig = {
   host: DEFAULT_HOST,
   verbose: false,
   accountType: 'individual',
-  manual: false,
   rateLimitWait: false,
   showToken: false,
   proxyEnv: false,
@@ -75,6 +74,10 @@ function validateLegacyServiceConfig(value: unknown): ServiceConfig | undefined 
     return undefined
 
   const data = value as Record<string, unknown>
+  if (data.manual === true)
+    throw new Error(MANUAL_APPROVAL_REMOVED_MESSAGE)
+  if (data.manual !== undefined && data.manual !== false)
+    return undefined
   const host = data.host ?? DEFAULT_HOST
   if (typeof data.port !== 'number' || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535)
     return undefined
@@ -84,8 +87,7 @@ function validateLegacyServiceConfig(value: unknown): ServiceConfig | undefined 
     return undefined
   if (typeof data.accountType !== 'string' || !['individual', 'business', 'enterprise'].includes(data.accountType))
     return undefined
-  if (typeof data.manual !== 'boolean'
-    || typeof data.rateLimitWait !== 'boolean'
+  if (typeof data.rateLimitWait !== 'boolean'
     || typeof data.showToken !== 'boolean'
     || typeof data.proxyEnv !== 'boolean') {
     return undefined
@@ -120,7 +122,6 @@ function validateLegacyServiceConfig(value: unknown): ServiceConfig | undefined 
     host,
     verbose: data.verbose,
     accountType: data.accountType,
-    manual: data.manual,
     ...(typeof data.rateLimit === 'number' && { rateLimit: data.rateLimit }),
     rateLimitWait: data.rateLimitWait,
     ...(typeof data.maxConcurrency === 'number' && { maxConcurrency: data.maxConcurrency }),

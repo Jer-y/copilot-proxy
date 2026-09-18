@@ -419,6 +419,64 @@ describe('CLI entrypoint', () => {
     expect(result.stdout).not.toContain('--_instance-token')
   })
 
+  test('rejects removed manual approval before authentication or service changes', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-manual-cli-'))
+    const dataDir = path.join(root, 'data')
+    try {
+      for (const entrypoint of [
+        { path: path.resolve('src/main.ts'), runtime: process.execPath },
+        { path: packagedCliEntrypoint(), runtime: 'node' },
+      ]) {
+        for (const args of [
+          ['start', '--manual'],
+          ['start', '--manual=true'],
+          ['start', '--manual=false'],
+          ['start', '--no-manual'],
+          ['--manual', 'start'],
+          ['start', '--_service', '--manual'],
+          ['start', '--manual', '--github-token', 'unused-test-token'],
+          ['enable', '--manual'],
+          ['--manual', 'enable'],
+        ]) {
+          const result = spawnSync(entrypoint.runtime, [entrypoint.path, ...args], {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: { ...process.env, COPILOT_PROXY_DATA_DIR: dataDir, COPILOT_PROXY_TEST_HOME: root },
+            timeout: 10_000,
+          })
+          expect(result.error).toBeUndefined()
+          expect(result.status).toBe(1)
+          expect(`${result.stdout}\n${result.stderr}`).toContain('Manual request approval has been removed')
+          expect(fs.existsSync(dataDir)).toBe(false)
+          expect(fs.existsSync(path.join(root, '.copilot-proxy-native-service.json'))).toBe(false)
+        }
+
+        const help = spawnSync(entrypoint.runtime, [entrypoint.path, 'start', '--help'], {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 10_000,
+        })
+        expect(help.status).toBe(0)
+        expect(help.stdout).not.toContain('--manual')
+
+        for (const args of [['start', '--port', '0', '--host', '--manual'], ['start', '--port', '0', '--', '--manual']]) {
+          const result = spawnSync(entrypoint.runtime, [entrypoint.path, ...args], {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env: process.env,
+            timeout: 10_000,
+          })
+          expect(result.status).toBe(1)
+          expect(`${result.stdout}\n${result.stderr}`).not.toContain('Manual request approval has been removed')
+        }
+      }
+    }
+    finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 60_000)
+
   test('rejects the removed legacy daemon flag with native-service guidance', () => {
     const entrypoints = [
       { path: path.resolve('src/main.ts'), runtime: process.execPath },

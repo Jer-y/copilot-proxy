@@ -22,7 +22,6 @@ const baseConfig: ServiceConfig = {
   host: '127.0.0.1',
   verbose: false,
   accountType: 'individual',
-  manual: false,
   rateLimitWait: false,
   showToken: false,
   proxyEnv: false,
@@ -54,7 +53,6 @@ describe('buildServiceStartArgs', () => {
       host: '0.0.0.0',
       accountType: 'enterprise',
       verbose: true,
-      manual: true,
       rateLimit: 9,
       rateLimitWait: true,
       maxConcurrency: 12,
@@ -83,7 +81,6 @@ describe('buildServiceStartArgs', () => {
       '--_data-dir',
       PATHS.APP_DIR,
       '--verbose',
-      '--manual',
       '--rate-limit',
       '9',
       '--wait',
@@ -115,6 +112,31 @@ describe('buildServiceStartArgs', () => {
 })
 
 describe('resolveNativeServiceEnableConfig', () => {
+  test('loads legacy manual:false without preserving the retired field', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-manual-disabled-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'daemon.json')
+    const contents = JSON.stringify({ ...baseConfig, manual: false })
+    fs.writeFileSync(filePath, contents)
+
+    expect(loadLegacyServiceConfig(filePath)).toEqual(baseConfig)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(contents)
+    expect(buildServiceStartArgs('/tmp/main.js', loadLegacyServiceConfig(filePath)!)).not.toContain('--manual')
+  })
+
+  test.each([true, 'false', null])('rejects enabled or malformed legacy approval settings (manual=%s)', (manual) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-manual-rejected-'))
+    tempDirs.push(dir)
+    const filePath = path.join(dir, 'daemon.json')
+    const contents = JSON.stringify({ ...baseConfig, manual })
+    fs.writeFileSync(filePath, contents)
+
+    expect(() => loadLegacyServiceConfig(filePath)).toThrow(manual === true
+      ? 'Manual request approval has been removed'
+      : 'service config is invalid')
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(contents)
+  })
+
   test('uses the bounded service preset for a first native install', () => {
     expect(resolveNativeServiceEnableConfig({})).toMatchObject({
       host: '127.0.0.1',

@@ -15,7 +15,7 @@ import {
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
 import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
-import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
+import { checkRateLimit } from '~/lib/rate-limit'
 import { resolveRoute } from '~/lib/routing-policy'
 import { ChatCompletionsPayloadSchema } from '~/lib/schemas'
 import { getSetupProbeSignal } from '~/lib/setup-probe-context'
@@ -28,7 +28,7 @@ import {
 } from '~/services/copilot/create-chat-completions'
 
 export async function handleCompletion(c: Context) {
-  await enforceRateLimit(state)
+  await checkRateLimit(state)
 
   let payload = await validateBody<ChatCompletionsPayload>(c, ChatCompletionsPayloadSchema)
   if (consola.level >= 4) {
@@ -50,8 +50,6 @@ export async function handleCompletion(c: Context) {
 
   // Find the selected model
   const selectedModel = findModel(payload.model, selection.ctx.models?.data)
-
-  await enforceManualApproval(state)
 
   payload = normalizeChatCompletionTokenLimit(
     payload,

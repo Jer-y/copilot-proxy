@@ -44,7 +44,6 @@ async function main(): Promise<void> {
   state.copilotToken = 'expired-setup-token'
   state.githubToken = 'setup-github-token'
   state.lastRequestTimestamp = undefined
-  state.manualApprove = false
   state.models = { data: [model], object: 'list' }
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false

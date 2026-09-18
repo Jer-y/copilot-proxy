@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { getAccountRegistry } from '~/lib/account/registry'
 import { selectAccount } from '~/lib/account/router'
 import { forwardError, HTTPError } from '~/lib/error'
-import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
+import { checkRateLimit } from '~/lib/rate-limit'
 import { EmbeddingRequestSchema } from '~/lib/schemas'
 import { state } from '~/lib/state'
 import { forwardUpstreamHeaders } from '~/lib/upstream-headers'
@@ -17,10 +17,9 @@ export const embeddingRoutes = new Hono()
 
 embeddingRoutes.post('/', async (c) => {
   try {
-    await enforceRateLimit(state)
+    await checkRateLimit(state)
 
     const payload = await validateBody<EmbeddingRequest>(c, EmbeddingRequestSchema)
-    await enforceManualApproval(state)
 
     const selection = selectAccount({
       registry: getAccountRegistry(),

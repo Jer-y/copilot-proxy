@@ -57,8 +57,6 @@ export function buildServiceStartArgs(
 
   if (config.verbose)
     args.push('--verbose')
-  if (config.manual)
-    args.push('--manual')
   if (config.rateLimit !== undefined)
     args.push('--rate-limit', String(config.rateLimit))
   if (config.rateLimitWait)
@@ -446,10 +444,6 @@ export const enable = defineCommand({
     }
     if (config.showToken) {
       consola.error('Cannot enable auto-start while --show-token is persisted in native service state. Run `enable` again without that setting.')
-      process.exit(1)
-    }
-    if (config.manual) {
-      consola.error('Cannot enable auto-start with manual approval enabled because native services have no interactive TTY. Disable manual mode before enabling the service.')
       process.exit(1)
     }
     const hostEnvironmentError = nativeServiceHostEnvironmentError(config.host)

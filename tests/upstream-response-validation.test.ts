@@ -50,7 +50,6 @@ beforeEach(() => {
   state.copilotToken = 'test-token'
   state.vsCodeVersion = '1.0.0'
   state.accountType = 'individual'
-  state.manualApprove = false
   state.rateLimitWait = false
   fetchMock.mockClear()
   responseFactory = () => {

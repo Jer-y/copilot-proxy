@@ -17,7 +17,6 @@ export interface State {
   modelCatalogLifecycle?: ModelCatalogLifecycle
   vsCodeVersion?: string
 
-  manualApprove: boolean
   rateLimitWait: boolean
   showToken: boolean
 
@@ -89,7 +88,6 @@ export const state: RuntimeState = {
   set modelCatalogLifecycle(value) {
     defaultAccount.modelCatalogLifecycle = value
   },
-  manualApprove: false,
   rateLimitWait: false,
   showToken: false,
 }

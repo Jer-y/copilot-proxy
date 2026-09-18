@@ -16,7 +16,7 @@ import {
   throwOpenAIInvalidRequestError,
 } from '~/lib/openai-compat'
 import { writeOpenAIStreamError } from '~/lib/openai-stream-error'
-import { enforceManualApproval, enforceRateLimit } from '~/lib/request-policy'
+import { checkRateLimit } from '~/lib/rate-limit'
 import { resolveRoute } from '~/lib/routing-policy'
 import { ResponsesPayloadSchema } from '~/lib/schemas'
 import { getSetupProbeSignal } from '~/lib/setup-probe-context'
@@ -32,7 +32,7 @@ type ResponsesStreamBody = Extract<
 >
 
 export async function handleResponses(c: Context) {
-  await enforceRateLimit(state)
+  await checkRateLimit(state)
 
   const payload = await validateBody<ResponsesPayload>(c, ResponsesPayloadSchema)
   consola.debug('Responses API request summary:', {
@@ -43,8 +43,6 @@ export async function handleResponses(c: Context) {
   if (responsesHasExternalImageUrls(payload)) {
     throwOpenAIInvalidRequestError(OPENAI_EXTERNAL_IMAGE_URLS_UNSUPPORTED_MESSAGE)
   }
-
-  await enforceManualApproval(state)
 
   if (payload.conversation != null) {
     throwInvalidResponsesRequest(
@@ -76,9 +74,7 @@ export async function handleResponsesPassthrough(
   method: 'GET' | 'POST' | 'DELETE',
   options: { modelInBody?: boolean } = {},
 ) {
-  await enforceRateLimit(state)
-
-  await enforceManualApproval(state)
+  await checkRateLimit(state)
 
   const url = new URL(c.req.url)
   let body = method === 'GET' ? undefined : await readJsonBodyText(c)
