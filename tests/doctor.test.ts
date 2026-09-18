@@ -15,6 +15,8 @@ import { fetch as undiciFetch } from 'undici'
 
 import { configureDoctorNetwork, runDoctor } from '~/doctor'
 
+import { createPackagedCliFixture } from './helpers/packaged-cli-fixture'
+
 const directFetch: NonNullable<DoctorDependencies['fetch']> = (input, init) =>
   undiciFetch(input, init as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>
 
@@ -660,120 +662,36 @@ describe('doctor command', () => {
     expect(result.exitCodes).toEqual([0])
   })
 
-  test('falls back to explicit legacy partial probes on diagnostics 404', async () => {
+  test.each([false, true])('fails diagnostics 404 without legacy probes (json=%s)', async (json) => {
     const calls: string[] = []
     const result = await executeDoctor({
       client: 'codex',
+      json,
       fetch: async (input) => {
         const pathname = new URL(input).pathname
         calls.push(pathname)
-        switch (pathname) {
-          case '/diagnostics':
-            return Response.json({ error: 'not found' }, { status: 404 })
-          case '/livez':
-            return Response.json({ status: 'ok' })
-          case '/readyz':
-            return Response.json(successDiagnostics().readiness)
-          case '/v1/models':
-            return Response.json({ object: 'list', data: [{ id: 'gpt-5.4' }] })
-          case '/usage':
-            return Response.json({ quota_snapshots: {} })
-          default:
-            throw new Error(`Unexpected path: ${pathname}`)
-        }
+        return Response.json({ error: '404-body-must-not-print' }, { status: 404 })
       },
     })
 
-    expect(calls).toEqual([
-      '/diagnostics',
-      '/livez',
-      '/readyz',
-      '/v1/models',
-      '/usage',
-    ])
+    expect(calls).toEqual(['/diagnostics'])
     expect(result.report).toMatchObject({
-      status: 'warn',
-      mode: 'legacy-partial',
-      summary: { fail: 0 },
+      status: 'fail',
+      mode: 'full',
+      summary: { pass: 0 },
     })
-    expect(findCheck(result, 'diagnostics')).toMatchObject({ status: 'warn' })
-    expect(findCheck(result, 'service')).toMatchObject({ status: 'pass' })
-    expect(findCheck(result, 'client.codex')).toMatchObject({ status: 'warn' })
-    expect(result.output).toContain('Mode: legacy/partial probes')
-    expect(result.exitCodes).toEqual([0])
-  })
-
-  test('fails malformed token lifecycle data from the legacy readyz endpoint', async () => {
-    const readiness = successDiagnostics().readiness
-    readiness.token.refreshInFlight = 'legacy-refresh-value-must-not-print'
-    delete readiness.token.generation
-
-    const result = await executeDoctor({
-      client: 'codex',
-      fetch: async (input) => {
-        switch (new URL(input).pathname) {
-          case '/diagnostics':
-            return Response.json({ error: 'not found' }, { status: 404 })
-          case '/livez':
-            return Response.json({ status: 'ok' })
-          case '/readyz':
-            return Response.json(readiness)
-          case '/v1/models':
-            return Response.json({ object: 'list', data: [{ id: 'gpt-5.4' }] })
-          case '/usage':
-            return Response.json({ quota_snapshots: {} })
-          default:
-            throw new Error(`Unexpected URL: ${input}`)
-        }
-      },
-    })
-
-    expect(result.report.mode).toBe('legacy-partial')
-    const authCheck = findCheck(result, 'auth')
-    expect(authCheck?.status).toBe('fail')
-    expect(authCheck?.message).toMatch(/generation/)
-    expect(authCheck?.message).toMatch(/refreshInFlight/)
-    expect(result.report.status).toBe('fail')
-    expect(result.output).not.toContain('legacy-refresh-value-must-not-print')
-    expect(result.exitCodes).toEqual([1])
-  })
-
-  test.each(['o3-mini', 'o4-mini'])('does not guess endpoints for legacy Codex model %s', async (modelId) => {
-    const result = await executeDoctor({
-      client: 'codex',
-      fetch: legacyDoctorFetch([{ id: modelId }]),
-    })
-
-    expect(findCheck(result, 'models')).toMatchObject({ status: 'pass' })
-    expect(findCheck(result, 'client.codex')).toMatchObject({ status: 'warn' })
-    expect(findCheck(result, 'client.codex')?.message).toContain('does not advertise an endpoint')
-    expect(result.report.status).toBe('warn')
-    expect(result.exitCodes).toEqual([0])
-  })
-
-  test('reports unknown legacy Codex compatibility without a false hard failure', async () => {
-    const result = await executeDoctor({
-      client: 'codex',
-      fetch: legacyDoctorFetch([{ id: 'future-unknown-model' }]),
-    })
-
-    expect(findCheck(result, 'models')).toMatchObject({ status: 'pass' })
-    expect(findCheck(result, 'client.codex')).toMatchObject({ status: 'warn' })
-    expect(findCheck(result, 'client.codex')?.message).toContain('compatibility cannot be determined from model names')
-    expect(result.report.status).toBe('warn')
-    expect(result.exitCodes).toEqual([0])
-  })
-
-  test('keeps an empty legacy catalog as a hard failure', async () => {
-    const result = await executeDoctor({
-      client: 'codex',
-      fetch: legacyDoctorFetch([]),
-    })
-
+    expect(findCheck(result, 'service')).toMatchObject({ status: 'fail' })
+    expect(findCheck(result, 'service')?.message).toContain('HTTP 404')
+    expect(findCheck(result, 'service')?.message).toContain('service base URL and reverse-proxy routing')
+    expect(findCheck(result, 'service')?.message).toContain('upgrade the server')
+    expect(findCheck(result, 'readiness')).toMatchObject({ status: 'fail' })
     expect(findCheck(result, 'models')).toMatchObject({ status: 'fail' })
     expect(findCheck(result, 'client.codex')).toMatchObject({ status: 'fail' })
-    expect(findCheck(result, 'client.codex')?.message).toContain('legacy catalog is empty')
-    expect(result.report.status).toBe('fail')
+    expect(result.output).not.toContain('404-body-must-not-print')
+    if (json)
+      expect(JSON.parse(result.output)).toEqual(result.report)
+    else
+      expect(result.output).toContain('Summary: FAIL')
     expect(result.exitCodes).toEqual([1])
   })
 
@@ -827,46 +745,67 @@ describe('doctor command', () => {
     }
   })
 
-  test('applies the same timeout to all real hanging legacy probes', async () => {
+  test('real source and packaged CLI preserve full diagnostics and never fall back on 404', async () => {
+    const fixture = createPackagedCliFixture()
+    const calls: string[] = []
+    let status = 200
     const server = createServer((request, response) => {
-      if (request.url === '/diagnostics') {
-        response.writeHead(404, { 'Content-Type': 'application/json' })
-        response.end('{}')
-      }
-      // Every legacy endpoint deliberately leaves the request pending.
+      calls.push(request.url ?? '')
+      response.writeHead(request.url === '/diagnostics' ? status : 200, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify(status === 200 ? successDiagnostics() : { error: '404-body-must-not-print' }))
     })
-    await listenOnLoopback(server)
 
     try {
-      const startedAt = Date.now()
-      const result = await executeDoctor({
-        client: 'codex',
-        endpoint: serverEndpoint(server),
-        fetch: directFetch,
-        timeoutMs: 75,
-      })
-
-      expect(Date.now() - startedAt).toBeLessThan(2_000)
-      expect(result.report.mode).toBe('legacy-partial')
-      expect(findCheck(result, 'service')?.message).toBe(
-        'The legacy liveness probe timed out after 75ms.',
-      )
-      expect(findCheck(result, 'readiness')?.message).toBe(
-        'The legacy readiness probe timed out after 75ms.',
-      )
-      expect(findCheck(result, 'models')?.message).toBe(
-        'The legacy model catalog probe timed out after 75ms.',
-      )
-      expect(findCheck(result, 'usage')?.message).toBe(
-        'The legacy usage probe timed out after 75ms.',
-      )
-      expect(result.report.status).toBe('fail')
-      expect(result.exitCodes).toEqual([1])
+      await listenOnLoopback(server)
+      const endpoint = serverEndpoint(server)
+      for (const entrypoint of [
+        { path: path.resolve('src/main.ts'), runtime: process.execPath },
+        { path: fixture.entrypoint, runtime: 'node' },
+      ]) {
+        for (status of [200, 404]) {
+          for (const json of [false, true]) {
+            calls.length = 0
+            const result = await runDoctorCli([
+              '--endpoint',
+              endpoint,
+              '--client',
+              'all',
+              ...(json ? ['--json'] : []),
+            ], entrypoint)
+            expect(result.error).toBeUndefined()
+            expect(result.status).toBe(status === 200 ? 0 : 1)
+            expect(calls).toEqual(['/diagnostics'])
+            if (json) {
+              const report = JSON.parse(result.stdout) as Record<string, unknown>
+              expect(Object.keys(report).sort()).toEqual(['checks', 'client', 'endpoint', 'mode', 'status', 'summary'])
+              expect(report).toMatchObject({
+                status: status === 200 ? 'pass' : 'fail',
+                mode: 'full',
+                endpoint,
+                client: 'all',
+              })
+            }
+            else {
+              expect(result.stdout).toContain('Mode: full diagnostics')
+              expect(result.stdout).toContain(status === 200 ? 'Summary: PASS' : 'Summary: FAIL')
+            }
+            if (status === 404)
+              expect(result.stdout).toContain('Diagnostics endpoint /diagnostics returned HTTP 404')
+            expect(`${result.stdout}\n${result.stderr}`).not.toContain('404-body-must-not-print')
+          }
+        }
+      }
     }
     finally {
-      await closeServer(server)
+      try {
+        if (server.listening)
+          await closeServer(server)
+      }
+      finally {
+        fixture.cleanup()
+      }
     }
-  })
+  }, 60_000)
 
   test('emits a safe machine-readable JSON report', async () => {
     const diagnostics = successDiagnostics() as ReturnType<typeof successDiagnostics> & {
@@ -979,7 +918,10 @@ describe('doctor command', () => {
   }, 15_000)
 })
 
-async function runDoctorCli(args: string[]): Promise<{
+async function runDoctorCli(args: string[], entrypoint = {
+  path: path.resolve('src/main.ts'),
+  runtime: process.execPath,
+}): Promise<{
   error?: Error
   status: number | null
   stderr: string
@@ -987,8 +929,8 @@ async function runDoctorCli(args: string[]): Promise<{
 }> {
   return await new Promise((resolve) => {
     const child = spawn(
-      process.execPath,
-      [path.resolve('src/main.ts'), 'doctor', ...args],
+      entrypoint.runtime,
+      [entrypoint.path, 'doctor', ...args],
       {
         cwd: path.resolve('.'),
         env: removeProxyVariables(process.env),
@@ -1039,25 +981,6 @@ function inMemoryJsonResponse(body: unknown): Response {
     ok: true,
     status: 200,
   } as Response
-}
-
-function legacyDoctorFetch(models: Array<{ id: string }>): NonNullable<DoctorDependencies['fetch']> {
-  return async (input) => {
-    switch (new URL(input).pathname) {
-      case '/diagnostics':
-        return Response.json({ error: 'not found' }, { status: 404 })
-      case '/livez':
-        return Response.json({ status: 'ok' })
-      case '/readyz':
-        return Response.json(successDiagnostics().readiness)
-      case '/v1/models':
-        return Response.json({ object: 'list', data: models })
-      case '/usage':
-        return Response.json({ quota_snapshots: {} })
-      default:
-        throw new Error(`Unexpected URL: ${input}`)
-    }
-  }
 }
 
 async function executeDoctor(options: {

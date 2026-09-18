@@ -4,7 +4,6 @@ import { defineCommand } from 'citty'
 import consola from 'consola'
 
 import { assertProxyEndpointAvailable } from '~/daemon/service-env'
-import { endpointToBackendApi } from '~/lib/backend-api'
 import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
 import { initializeNodeHttpClient } from '~/lib/proxy'
 
@@ -31,7 +30,7 @@ export interface DoctorCheck {
 
 export interface DoctorReport {
   status: DoctorCheckStatus
-  mode: 'full' | 'legacy-partial'
+  mode: 'full'
   endpoint: string
   client: DoctorClient
   checks: DoctorCheck[]
@@ -57,7 +56,6 @@ interface JsonProbe {
   response?: Response
   body?: unknown
   failure?: 'timeout' | 'unavailable'
-  timeoutMs?: number
 }
 
 interface JsonProbeOptions {
@@ -126,11 +124,10 @@ export async function runDoctor(
     report = buildUnavailableReport(endpoint, options.client, message)
   }
   else if (probe.response.status === 404) {
-    report = await buildLegacyReport(
+    report = buildUnavailableReport(
       endpoint,
       options.client,
-      fetchImpl,
-      probeOptions,
+      'Diagnostics endpoint /diagnostics returned HTTP 404. Check the service base URL and reverse-proxy routing, or upgrade the server to a version that provides /diagnostics. Legacy partial probes are no longer supported.',
     )
   }
   else if (!probe.response.ok) {
@@ -195,68 +192,11 @@ function buildFullReport(
     profiles.length > 0
       ? check('models', 'Model availability', 'pass', `${profiles.length} model profile(s) are available. Catalog metadata is routing evidence, not semantic proof.`)
       : check('models', 'Model availability', 'fail', 'No model profiles are available.'),
-    ...buildClientChecks(client, profiles, false),
+    ...buildClientChecks(client, profiles),
     buildUsageCheck(diagnostics.usage),
   ]
 
-  return createReport(endpoint, client, 'full', checks)
-}
-
-async function buildLegacyReport(
-  endpoint: string,
-  client: DoctorClient,
-  fetchImpl: NonNullable<DoctorDependencies['fetch']>,
-  probeOptions: JsonProbeOptions,
-): Promise<DoctorReport> {
-  const [liveness, readinessProbe, modelsProbe, usageProbe] = await Promise.all([
-    getJson(fetchImpl, endpointUrl(endpoint, '/livez'), probeOptions),
-    getJson(fetchImpl, endpointUrl(endpoint, '/readyz'), probeOptions),
-    getJson(fetchImpl, endpointUrl(endpoint, '/v1/models'), probeOptions),
-    getJson(fetchImpl, endpointUrl(endpoint, '/usage'), probeOptions),
-  ])
-  const readiness = isRecord(readinessProbe.body) ? readinessProbe.body : undefined
-  const models = extractModelProfiles(
-    isRecord(modelsProbe.body) ? modelsProbe.body.data : undefined,
-  )
-  const checks: DoctorCheck[] = [
-    check(
-      'diagnostics',
-      'Diagnostics mode',
-      'warn',
-      'The server has no /diagnostics endpoint; results use legacy partial probes.',
-    ),
-    liveness.response?.ok
-      ? check('service', 'Service', 'pass', 'Legacy liveness endpoint is reachable.')
-      : check(
-          'service',
-          'Service',
-          'fail',
-          legacyProbeFailureMessage(liveness, 'liveness', 'Legacy liveness probe failed.'),
-        ),
-    buildLegacyReadinessCheck(readinessProbe, readiness),
-    buildAuthCheck(readiness?.token),
-    buildRecoveryCheck(readiness?.recovery),
-    buildConcurrencyCheck(readiness?.concurrency),
-    modelsProbe.response?.ok && models.length > 0
-      ? check('models', 'Model availability', 'pass', `${models.length} model(s) are listed by the legacy catalog.`)
-      : check(
-          'models',
-          'Model availability',
-          'fail',
-          legacyProbeFailureMessage(modelsProbe, 'model catalog', 'The legacy model catalog is unavailable or empty.'),
-        ),
-    ...buildClientChecks(client, models, true),
-    usageProbe.response?.ok
-      ? check('usage', 'Usage', 'pass', 'The legacy usage endpoint is available.')
-      : check(
-          'usage',
-          'Usage',
-          'warn',
-          legacyProbeFailureMessage(usageProbe, 'usage', 'Usage information is unavailable.'),
-        ),
-  ]
-
-  return createReport(endpoint, client, 'legacy-partial', checks)
+  return createReport(endpoint, client, checks)
 }
 
 function buildUnavailableReport(
@@ -280,7 +220,7 @@ function buildUnavailableReport(
     check('usage', 'Usage', 'warn', 'Usage information was not checked.'),
   ]
 
-  return createReport(endpoint, client, 'full', checks)
+  return createReport(endpoint, client, checks)
 }
 
 function buildReadinessCheck(
@@ -307,27 +247,6 @@ function buildReadinessCheck(
   }
 
   return check('readiness', 'Readiness', 'warn', 'The diagnostics response did not include readiness status.')
-}
-
-function buildLegacyReadinessCheck(
-  probe: JsonProbe,
-  readiness: Record<string, unknown> | undefined,
-): DoctorCheck {
-  if (!probe.response) {
-    return check(
-      'readiness',
-      'Readiness',
-      'fail',
-      legacyProbeFailureMessage(probe, 'readiness', 'The legacy readiness endpoint is unreachable.'),
-    )
-  }
-  if (!probe.response.ok)
-    return buildReadinessCheck(readiness, 'degraded')
-  if (readiness?.status === 'degraded')
-    return buildReadinessCheck(readiness, 'degraded')
-  if (readiness?.status === 'ready')
-    return buildReadinessCheck(readiness, 'ready')
-  return check('readiness', 'Readiness', 'pass', 'The legacy readiness endpoint responded successfully.')
 }
 
 function buildAuthCheck(value: unknown): DoctorCheck {
@@ -642,35 +561,8 @@ function summarizeAccountConcurrency(value: unknown): {
 function buildClientChecks(
   client: DoctorClient,
   profiles: Array<Record<string, unknown>>,
-  legacy: boolean,
 ): DoctorCheck[] {
   return selectedClients(client).map((selected) => {
-    if (legacy) {
-      const count = countLegacyClientCandidates(profiles, selected)
-      if (profiles.length === 0) {
-        return check(
-          `client.${selected}`,
-          `Client: ${selected}`,
-          'fail',
-          `The legacy catalog is empty, so model availability for ${selected} cannot be verified.`,
-        )
-      }
-      if (count === 0) {
-        return check(
-          `client.${selected}`,
-          `Client: ${selected}`,
-          'warn',
-          `The legacy catalog lists ${profiles.length} model(s), but does not advertise an endpoint for ${selected}; compatibility cannot be determined from model names.`,
-        )
-      }
-      return check(
-        `client.${selected}`,
-        `Client: ${selected}`,
-        'warn',
-        `${count} candidate model(s) were found, but the legacy catalog cannot verify route mode or maturity.`,
-      )
-    }
-
     const summary = summarizeClientModels(profiles, selected)
     if (summary.stableDirect.length > 0) {
       return check(
@@ -749,24 +641,6 @@ function summarizeClientModels(
   }
 }
 
-function countLegacyClientCandidates(
-  models: Array<Record<string, unknown>>,
-  client: Exclude<DoctorClient, 'all'>,
-): number {
-  return models.filter((model) => {
-    const summary = summarizeClientModels([model], client)
-    if (summary.stableDirect.length + summary.conditional.length + summary.experimental.length > 0)
-      return true
-    const endpoints = Array.isArray(model.supported_endpoints) ? model.supported_endpoints : []
-    const supportedApis = endpoints.filter((value): value is string => typeof value === 'string').map(endpointToBackendApi)
-    if (client === 'claude')
-      return supportedApis.includes('anthropic-messages')
-    if (client === 'codex')
-      return supportedApis.includes('responses')
-    return supportedApis.includes('chat-completions') || supportedApis.includes('responses')
-  }).length
-}
-
 function safeModelId(value: unknown): string | undefined {
   if (typeof value !== 'string')
     return undefined
@@ -794,7 +668,6 @@ function extractModelProfiles(value: unknown): Array<Record<string, unknown>> {
 function createReport(
   endpoint: string,
   client: DoctorClient,
-  mode: DoctorReport['mode'],
   checks: DoctorCheck[],
 ): DoctorReport {
   const summary = {
@@ -808,17 +681,16 @@ function createReport(
       ? 'warn'
       : 'pass'
 
-  return { status, mode, endpoint, client, checks, summary }
+  return { status, mode: 'full', endpoint, client, checks, summary }
 }
 
 function renderPlainReport(report: DoctorReport): string {
-  const mode = report.mode === 'full' ? 'full diagnostics' : 'legacy/partial probes'
   const lines = [
     'copilot-proxy doctor',
     '',
     `Endpoint: ${report.endpoint}`,
     `Client: ${report.client}`,
-    `Mode: ${mode}`,
+    'Mode: full diagnostics',
     '',
     ...report.checks.map(item => `[${item.status.toUpperCase()}] ${item.label}: ${item.message}`),
     '',
@@ -868,19 +740,9 @@ async function getJson(
   }
   catch {
     return timeoutSignal.aborted && !options.signal?.aborted
-      ? { failure: 'timeout', timeoutMs: options.timeoutMs }
+      ? { failure: 'timeout' }
       : { failure: 'unavailable' }
   }
-}
-
-function legacyProbeFailureMessage(
-  probe: JsonProbe,
-  label: string,
-  fallback: string,
-): string {
-  return probe.failure === 'timeout'
-    ? `The legacy ${label} probe timed out after ${probe.timeoutMs}ms.`
-    : fallback
 }
 
 function normalizeDoctorTimeoutMs(value: number | undefined): number {

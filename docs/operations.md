@@ -98,7 +98,7 @@ copilot-proxy doctor \
 
 Doctor checks reachability, readiness, token lifecycle, recovery state, concurrency, model availability, client candidates, and usage availability. Pass the service base URL rather than the `/diagnostics` path. Use `--client claude`, `codex`, or `openai-sdk` to narrow model checks and `--json` for automation. Each diagnostics request has a 10-second deadline by default; use `--timeout-ms <ms>` to select another positive bounded deadline.
 
-A failed check produces a nonzero exit status. When an older server has no `/diagnostics` endpoint, doctor labels its fallback result as legacy and partial rather than treating it as complete evidence.
+A failed check produces a nonzero exit status. Doctor requires `/diagnostics`; an HTTP 404 produces a failed report and exit status 1. Check the service base URL and reverse-proxy routing, or upgrade a server that lacks this endpoint. Doctor no longer falls back to separate `/livez`, `/readyz`, `/v1/models`, or `/usage` probes. JSON reports retain `mode: "full"`; this identifies the report format, not a successful check. These server endpoints and the dashboard's legacy usage links are unchanged.
 
 ## Diagnostics and dashboard
 
