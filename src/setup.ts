@@ -990,7 +990,6 @@ function toRunServerOptions(options: SetupOptions): RunServerOptions {
     maxConcurrency: options.preset.maxConcurrency,
     maxQueue: options.preset.maxQueue,
     queueTimeoutMs: options.preset.queueTimeoutMs,
-    claudeCode: false,
     showToken: false,
     proxyEnv: options.proxyEnv,
   }

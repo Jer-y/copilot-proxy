@@ -2,7 +2,6 @@ import type { ServerWithWSOptions } from 'crossws'
 import type { IncomingMessage } from 'node:http'
 import type { Server } from 'srvx'
 import type { AccountsConfiguration } from '~/lib/account/types'
-import type { Model } from '~/services/copilot/get-models'
 
 import fs from 'node:fs'
 import { get as httpGet } from 'node:http'
@@ -37,7 +36,7 @@ test('start proxy preflight uses every configured account type instead of the CL
 })
 
 describe('runServer lifecycle', () => {
-  test('closes a post-ready listener before releasing the runtime lock', async () => {
+  test('closes a listener when readiness fails before releasing the runtime lock', async () => {
     fs.rmSync(PATHS.RUNTIME_LOCK, { force: true, recursive: true })
     const events: string[] = []
     const close = mock(async () => {
@@ -47,30 +46,12 @@ describe('runServer lifecycle', () => {
     const appServer = {
       close,
       ready: async () => {
-        events.push('listener:ready')
+        events.push('listener:ready-error')
+        throw new Error('listener readiness failed')
       },
     } as unknown as Server
-    const claudeModel: Model = {
-      id: 'claude-lifecycle-test',
-      name: 'Claude lifecycle test',
-      vendor: 'Anthropic',
-      version: '1',
-      object: 'model',
-      preview: false,
-      model_picker_enabled: true,
-      supported_endpoints: ['/v1/messages'],
-      capabilities: {
-        family: 'claude-lifecycle-test',
-        object: 'model_capabilities',
-        supports: {},
-        tokenizer: 'test',
-        type: 'chat',
-      },
-    }
-
     await expect(runServer({
       accountType: 'individual',
-      claudeCode: true,
       host: '127.0.0.1',
       port: 4399,
       proxyEnv: false,
@@ -81,16 +62,10 @@ describe('runServer lifecycle', () => {
       createAppServer: () => appServer,
       initialize: async () => {},
       keepAlive: async () => {},
-      models: () => [claudeModel],
-      promptForClaudeCodeLaunchCommand: async () => {
-        events.push('post-ready:error')
-        throw new Error('prompt failed after ready')
-      },
-    })).rejects.toThrow('prompt failed after ready')
+    })).rejects.toThrow('listener readiness failed')
 
     expect(events).toEqual([
-      'listener:ready',
-      'post-ready:error',
+      'listener:ready-error',
       'listener:closed',
     ])
     expect(close).toHaveBeenCalledWith(false)

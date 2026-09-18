@@ -70,15 +70,6 @@ export function selectableModelIdsForRoute(
     .map(profile => profile.id)
 }
 
-export function selectableDirectModelIdsForRoute(
-  models: Array<Model>,
-  route: ProductClientRoute,
-): string[] {
-  return buildModelCapabilityProfiles(models)
-    .filter(profile => profile.routes[route].mode === 'direct')
-    .map(profile => profile.id)
-}
-
 export function buildModelCapabilitySnapshot(models: Array<Model>): ModelCapabilitySnapshot {
   const selectableModels = models.filter(model => model.model_picker_enabled !== false)
 

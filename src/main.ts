@@ -171,6 +171,14 @@ async function run(): Promise<void> {
     && resolveCittyBooleanOption(args, 'manual', { stringOptions: START_CITTY_STRING_OPTIONS }).value !== undefined) {
     throw new Error(MANUAL_APPROVAL_REMOVED_MESSAGE)
   }
+  if (!bootstrapArguments.rootHelp
+    && command === 'start'
+    && resolveCittyBooleanOption(args, 'claude-code', {
+      shortName: 'c',
+      stringOptions: START_CITTY_STRING_OPTIONS,
+    }).value !== undefined) {
+    throw new Error('start --claude-code (-c) has been removed. Run `copilot-proxy setup claude` to generate client configuration, then use the printed start command. Add --copy to setup only if clipboard output is wanted.')
+  }
   if (bootstrapArguments.misplacedGithubToken && !bootstrapArguments.rootHelp) {
     process.stderr.write(
       'Invalid arguments: --github-token was consumed as another option value. Supply that option\'s value before passing --github-token.\n',

@@ -91,6 +91,8 @@ bun run ./src/main.ts start --preset personal
 
 保持此前台进程运行，在另一个终端应用生成的配置并启动客户端。
 
+已移除 `start --claude-code` / `start -c`。请先运行 `setup claude`，再按输出的命令启动代理和客户端。`start` 不再询问客户端模型或复制启动命令；仅在需要剪贴板输出时，为 setup 添加 `--copy`。旧 start 参数会在认证或持久化 token 之前明确报错。
+
 如需由操作系统管理进程，请参阅[原生服务管理](operations.zh-CN.md#原生服务管理)。
 
 ## 4. 检查模型并诊断服务

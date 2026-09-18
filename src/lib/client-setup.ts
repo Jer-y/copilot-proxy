@@ -288,7 +288,7 @@ export function assertSetupProbeSucceeded(api: SetupProbeApi, response: unknown)
     throw new Error(`The setup probe completed without the required ${SETUP_SENTINEL} response.`)
 }
 
-export function buildClaudeLaunchCommand(options: {
+function buildClaudeLaunchCommand(options: {
   baseUrl: string
   model: string
   shell?: ShellName

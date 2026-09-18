@@ -477,6 +477,80 @@ describe('CLI entrypoint', () => {
     }
   }, 60_000)
 
+  test('rejects retired Claude setup flags before authentication or token persistence', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-proxy-claude-cli-'))
+    const dataDir = path.join(root, 'data')
+    const env = { ...process.env, COPILOT_PROXY_DATA_DIR: dataDir, COPILOT_PROXY_TEST_HOME: root }
+    try {
+      for (const entrypoint of [
+        { path: path.resolve('src/main.ts'), runtime: process.execPath },
+        { path: packagedCliEntrypoint(), runtime: 'node' },
+      ]) {
+        for (const args of [
+          ['start', '--claude-code'],
+          ['start', '--claude-code=true'],
+          ['start', '--claude-code=false'],
+          ['start', '--no-claude-code'],
+          ['start', '--claudeCode'],
+          ['start', '--no-claudeCode'],
+          ['start', '-c'],
+          ['start', '-vc'],
+          ['start', '-cp0'],
+          ['--claude-code', 'start'],
+          ['-c', 'start'],
+          ['start', '--_service', '-c'],
+          ['start', '-c', '--github-token', 'unused-test-token'],
+        ]) {
+          const result = spawnSync(entrypoint.runtime, [entrypoint.path, ...args], {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env,
+            timeout: 10_000,
+          })
+          expect(result.error).toBeUndefined()
+          expect(result.status).toBe(1)
+          const output = `${result.stdout}\n${result.stderr}`
+          expect(output).toContain('start --claude-code (-c) has been removed')
+          expect(output).toContain('copilot-proxy setup claude')
+          expect(output).not.toContain('unused-test-token')
+          expect(fs.existsSync(dataDir)).toBe(false)
+          expect(fs.existsSync(path.join(root, '.copilot-proxy-native-service.json'))).toBe(false)
+        }
+
+        for (const args of [
+          ['start', '--port', '0', '--host', '--claude-code'],
+          ['start', '--port', '0', '-H-c'],
+          ['start', '--port', '0', '--', '-c'],
+        ]) {
+          const result = spawnSync(entrypoint.runtime, [entrypoint.path, ...args], {
+            cwd: path.resolve('.'),
+            encoding: 'utf8',
+            env,
+            timeout: 10_000,
+          })
+          expect(result.error).toBeUndefined()
+          expect(result.status).toBe(1)
+          expect(`${result.stdout}\n${result.stderr}`).not.toContain('start --claude-code (-c) has been removed')
+          expect(fs.existsSync(dataDir)).toBe(false)
+        }
+
+        const help = spawnSync(entrypoint.runtime, [entrypoint.path, 'start', '-c', '--help'], {
+          cwd: path.resolve('.'),
+          encoding: 'utf8',
+          env,
+          timeout: 10_000,
+        })
+        expect(help.error).toBeUndefined()
+        expect(help.status).toBe(0)
+        expect(help.stdout).not.toContain('--claude-code')
+        expect(fs.existsSync(dataDir)).toBe(false)
+      }
+    }
+    finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 60_000)
+
   test('rejects the removed legacy daemon flag with native-service guidance', () => {
     const entrypoints = [
       { path: path.resolve('src/main.ts'), runtime: process.execPath },

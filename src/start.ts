@@ -3,30 +3,24 @@
 import type { Server, ServerHandler } from 'srvx'
 import type { AccountsConfiguration } from '~/lib/account/types'
 import type { AccountType } from '~/lib/cli-validators'
-import type { Model } from '~/services/copilot/get-models'
 import fs from 'node:fs'
 import process from 'node:process'
 import { defineCommand } from 'citty'
-import clipboard from 'clipboardy'
 import consola from 'consola'
 import { serve } from 'crossws/server'
 
 import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
 import { readAccountsConfiguration, resolveConfiguredAccountTypes } from './lib/account/store'
 import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
-import { buildClaudeLaunchCommand } from './lib/client-setup'
 import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
 import { PATHS } from './lib/paths'
 import { exitWithPortInUse, isPortInUseError } from './lib/port'
-import { selectableDirectModelIdsForRoute } from './lib/product-capabilities'
 import { gatewayPresetEnvironmentError, isRunPresetName, resolveRunPreset, RUN_PRESET_NAMES, selectStartPreset, wasRunOptionPassed } from './lib/run-presets'
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { state } from './lib/state'
 import { stopCopilotTokenRefresh } from './lib/token'
 import { stopModelRefresh } from './lib/utils'
-import { toClaudeCodeModelName } from './routes/messages/model-normalization'
-import { buildBoundModelCatalog } from './routes/models/route'
 import {
   closeResponsesWebSocketsGracefully,
   forceCloseResponsesWebSockets,
@@ -49,7 +43,6 @@ export interface RunServerOptions {
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
   githubToken?: string
-  claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
   exitOnPortInUse?: boolean
@@ -74,8 +67,6 @@ export interface RunServerDependencies {
   createAppServer: typeof createAppServer
   initialize: typeof initializeServer
   keepAlive: () => Promise<void>
-  models: () => Model[]
-  promptForClaudeCodeLaunchCommand: typeof promptForClaudeCodeLaunchCommand
 }
 
 const defaultAppServerDependencies: AppServerDependencies = {
@@ -93,8 +84,6 @@ const defaultRunServerDependencies: RunServerDependencies = {
   createAppServer,
   initialize: initializeServer,
   keepAlive: async () => await new Promise(() => {}),
-  models: buildBoundModelCatalog,
-  promptForClaudeCodeLaunchCommand,
 }
 
 const HOSTED_DIAGNOSTICS_DASHBOARD_URL = 'https://jer-y.github.io/copilot-proxy'
@@ -233,55 +222,6 @@ export function buildDiagnosticsDashboardUrl(serverUrl: string): string {
   return dashboardUrl.toString()
 }
 
-type ClaudeCodeModelPrompt = (
-  message: string,
-  modelIds: string[],
-) => Promise<string>
-
-const defaultClaudeCodeModelPrompt: ClaudeCodeModelPrompt = async (message, modelIds) => await consola.prompt(
-  message,
-  {
-    type: 'select',
-    options: modelIds,
-  },
-) as string
-
-export async function promptForClaudeCodeLaunchCommand(
-  serverUrl: string,
-  modelIds: string[],
-  prompt: ClaudeCodeModelPrompt = defaultClaudeCodeModelPrompt,
-): Promise<string> {
-  const selectedModel = await prompt(
-    'Select a model to use with Claude Code',
-    modelIds,
-  )
-  const selectedSmallModel = await prompt(
-    'Select a small model to use with Claude Code',
-    modelIds,
-  )
-
-  return buildClaudeLaunchCommand({
-    baseUrl: serverUrl,
-    model: toClaudeCodeModelName(selectedModel),
-    smallModel: toClaudeCodeModelName(selectedSmallModel),
-  })
-}
-
-export function selectClaudeCodeModelIds(models: Model[]): string[] {
-  const modelIds = selectableDirectModelIdsForRoute(models, 'anthropicMessages')
-  if (modelIds.length === 0) {
-    throw new Error('No current Copilot model can serve Claude Code through a faithful direct Messages route.')
-  }
-  const modelsById = new Map(models.map(model => [model.id, model]))
-  return modelIds.map((modelId) => {
-    const model = modelsById.get(modelId)
-    return toClaudeCodeModelName(
-      modelId,
-      model?.capabilities?.limits?.max_context_window_tokens,
-    )
-  })
-}
-
 export async function runServer(
   options: RunServerOptions,
   dependencies: RunServerDependencies = defaultRunServerDependencies,
@@ -305,9 +245,6 @@ export async function runServer(
 
     const serverUrl = `http://${formatHostForUrl(options.host)}:${options.port}`
     const dashboardUrl = buildDiagnosticsDashboardUrl(serverUrl)
-    const claudeCodeModelIds = options.claudeCode
-      ? selectClaudeCodeModelIds(dependencies.models())
-      : []
 
     appServer = dependencies.createAppServer(options)
 
@@ -328,24 +265,6 @@ export async function runServer(
     consola.box(
       `🌐 Diagnostics Dashboard: ${dashboardUrl}`,
     )
-
-    if (options.claudeCode) {
-      const command = await dependencies.promptForClaudeCodeLaunchCommand(
-        serverUrl,
-        claudeCodeModelIds,
-      )
-
-      try {
-        clipboard.writeSync(command)
-        consola.success('Copied Claude Code command to clipboard!')
-      }
-      catch {
-        consola.warn(
-          'Failed to copy to clipboard. Here is the Claude Code command:',
-        )
-        consola.log(command)
-      }
-    }
   }
   catch (error) {
     uninstallShutdownHandlers?.()
@@ -684,13 +603,6 @@ export const start = defineCommand({
       description:
         'Persist a GitHub token securely, then exit; rerun start without this flag',
     },
-    'claude-code': {
-      alias: 'c',
-      type: 'boolean',
-      default: false,
-      description:
-        'Generate a command to launch Claude Code with a direct Copilot Messages model',
-    },
     'show-token': {
       type: 'boolean',
       default: false,
@@ -882,7 +794,6 @@ export const start = defineCommand({
       bodyTimeoutMs,
       connectTimeoutMs,
       githubToken: args['github-token'],
-      claudeCode: args['claude-code'],
       showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
       nativeService: args._service,

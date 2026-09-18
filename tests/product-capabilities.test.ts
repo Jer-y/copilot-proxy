@@ -1,7 +1,7 @@
 import type { Model, ModelsResponse } from '~/services/copilot/get-models'
 import { describe, expect, test } from 'bun:test'
 
-import { buildModelCapabilityProfiles, selectableDirectModelIdsForRoute, selectableModelIdsForRoute } from '~/lib/product-capabilities'
+import { buildModelCapabilityProfiles, selectableModelIdsForRoute } from '~/lib/product-capabilities'
 import { state } from '~/lib/state'
 
 describe('product capability profiles', () => {
@@ -206,7 +206,7 @@ describe('product capability profiles', () => {
     expect(profiles.map(profile => profile.id)).toEqual(['gpt-visible'])
   })
 
-  test('only exposes native Messages models to both selection helpers', () => {
+  test('only exposes native Messages models to the selection helper', () => {
     const models = [
       makeModel('claude-direct', { supportedEndpoints: ['/v1/messages'] }),
       makeModel('gpt-responses-only', { supportedEndpoints: ['/responses'] }),
@@ -218,9 +218,6 @@ describe('product capability profiles', () => {
     ]
 
     expect(selectableModelIdsForRoute(models, 'anthropicMessages')).toEqual([
-      'claude-direct',
-    ])
-    expect(selectableDirectModelIdsForRoute(models, 'anthropicMessages')).toEqual([
       'claude-direct',
     ])
   })

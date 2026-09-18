@@ -91,6 +91,8 @@ bun run ./src/main.ts start --preset personal
 
 Keep that foreground process running, then apply the generated configuration and launch the client in another terminal.
 
+`start --claude-code` / `start -c` has been removed. Use `setup claude` before starting the proxy, then follow its printed start and client commands. `start` no longer prompts for client models or copies launch commands; add `--copy` to setup only when clipboard output is wanted. Old start flags fail explicitly before authentication or token persistence.
+
 For an operating-system-managed process, follow [Native service management](operations.md#native-service-management).
 
 ## 4. Inspect models and diagnose the service

@@ -1211,14 +1211,19 @@ describe('runSetup', () => {
   })
 
   test('prompts for primary and small Claude models in interactive mode', async () => {
-    const selections = ['claude-setup', 'claude-setup']
-    const chooseModel = mock(async () => selections.shift()!)
+    const secondary = model('claude-secondary', ['/v1/messages'])
+    const selections = ['claude-setup', secondary.id]
+    const chooseModel = mock(async (_message: string, choices: Model[]) => {
+      expect(choices.map(choice => choice.id)).toEqual(['claude-setup', secondary.id])
+      return selections.shift()!
+    })
+    const copy = mock(() => {})
     const result = await runSetup(options({ client: 'claude', model: undefined }), {
       chooseModel,
-      copy: () => {},
+      copy,
       initialize: async () => {},
       isInteractive: () => true,
-      models: () => MODELS,
+      models: () => [...MODELS, secondary],
       probe: async () => probeOutcome('/v1/messages', 'not-applicable', false),
       writeJson: () => {},
       writeLine: () => {},
@@ -1226,7 +1231,11 @@ describe('runSetup', () => {
 
     expect(chooseModel).toHaveBeenCalledTimes(2)
     expect(result.model).toBe('claude-setup')
-    expect(result.smallModel).toBe('claude-setup')
+    expect(result.smallModel).toBe(secondary.id)
+    expect(result.artifact.content).toContain('"ANTHROPIC_MODEL":"claude-setup"')
+    expect(result.artifact.content).toContain('"ANTHROPIC_SMALL_FAST_MODEL":"claude-secondary"')
+    expect(result.startCommands.installed).not.toContain('--claude-code')
+    expect(copy).not.toHaveBeenCalled()
   })
 
   test('cleans initialized runtime when model selection fails before the disposable probe', async () => {

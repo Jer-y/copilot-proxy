@@ -82,7 +82,6 @@ const START_RUN_OPTION_DEFINITIONS: readonly RunOptionDefinition[] = [
   { name: 'body-timeout-ms', type: 'string' },
   { name: 'connect-timeout-ms', type: 'string' },
   { name: 'github-token', short: 'g', type: 'string' },
-  { name: 'claude-code', short: 'c', type: 'boolean' },
   { name: 'show-token', type: 'boolean' },
   { name: 'proxy-env', type: 'boolean' },
   { name: 'daemon', short: 'd', type: 'boolean' },
