@@ -191,7 +191,6 @@ function runOptions(): RunServerOptions {
     verbose: false,
     accountType: 'individual',
     rateLimitWait: false,
-    showToken: false,
     proxyEnv: false,
   }
 }

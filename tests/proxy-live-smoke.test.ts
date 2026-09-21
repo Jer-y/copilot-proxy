@@ -22,7 +22,6 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
-import { EXPOSE_TOKEN_ENV } from '~/lib/security'
 import { state } from '~/lib/state'
 import { setupCopilotToken, setupGitHubToken } from '~/lib/token'
 import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
@@ -596,23 +595,24 @@ describeLive('Proxy live smoke', () => {
       expect((data[0].embedding as Array<unknown>).length).toBeGreaterThan(0)
     }, TIMEOUT)
 
-    test('/token → returns current Copilot token', async () => {
-      const previousExposure = process.env[EXPOSE_TOKEN_ENV]
+    test('/token → never returns the current Copilot token', async () => {
+      const previousExposure = process.env.COPILOT_PROXY_EXPOSE_TOKEN
       let res: Response
       try {
-        process.env[EXPOSE_TOKEN_ENV] = '1'
+        process.env.COPILOT_PROXY_EXPOSE_TOKEN = '1'
         res = await server.fetch(requestWithIp('http://127.0.0.1/token', '127.0.0.1'))
       }
       finally {
         if (previousExposure === undefined)
-          delete process.env[EXPOSE_TOKEN_ENV]
+          delete process.env.COPILOT_PROXY_EXPOSE_TOKEN
         else
-          process.env[EXPOSE_TOKEN_ENV] = previousExposure
+          process.env.COPILOT_PROXY_EXPOSE_TOKEN = previousExposure
       }
 
-      expect(res.status).toBe(200)
+      expect(res.status).toBe(410)
       const body = await parseJson<Record<string, unknown>>(res)
-      expect(body.token).toBe(state.copilotToken)
+      expect(body).not.toHaveProperty('token')
+      expect(JSON.stringify(body)).not.toContain(state.copilotToken!)
     }, TIMEOUT)
 
     test('/usage → returns only public Copilot quota fields', async () => {

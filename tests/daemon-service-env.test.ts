@@ -24,6 +24,18 @@ afterEach(() => {
 })
 
 describe('native service environment', () => {
+  test.each([false, true])('drops old token exposure from snapshots without rewriting them (versioned=%s)', (versioned) => {
+    const filePath = makeFilePath()
+    const environment = { COPILOT_PROXY_EXPOSE_TOKEN: '1', COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal' }
+    const contents = JSON.stringify(versioned ? { version: 1, environment } : environment)
+    fs.writeFileSync(filePath, contents)
+    const saved = readNativeServiceEnvironment(filePath)
+    expect(saved).toEqual({ COPILOT_PROXY_ALLOWED_HOSTS: 'proxy.internal' })
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(contents)
+    saveNativeServiceEnvironment({ proxyEnv: false, filePath, sourceEnv: saved })
+    expect(fs.readFileSync(filePath, 'utf8')).not.toContain('COPILOT_PROXY_EXPOSE_TOKEN')
+  })
+
   test('persists the explicit service-runtime schema with owner-only permissions and no tokens', () => {
     const filePath = makeFilePath()
     saveNativeServiceEnvironment({
@@ -50,7 +62,7 @@ describe('native service environment', () => {
     expect(parsed.version).toBe(NATIVE_SERVICE_ENV_SCHEMA_VERSION)
     expect(raw).toContain('COPILOT_PROXY_ALLOWED_HOSTS')
     expect(raw).toContain('COPILOT_PROXY_CORS_ORIGINS')
-    expect(raw).toContain('COPILOT_PROXY_EXPOSE_TOKEN')
+    expect(raw).not.toContain('COPILOT_PROXY_EXPOSE_TOKEN')
     expect(raw).toContain('COPILOT_PROXY_MAX_JSON_BODY_BYTES')
     expect(raw).toContain('NODE_EXTRA_CA_CERTS')
     expect(raw).not.toContain('HTTP_PROXY')

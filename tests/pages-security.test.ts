@@ -39,7 +39,7 @@ describe('hosted diagnostics dashboard security', () => {
     expect(html).toContain('function parseEndpointUrl(value)')
     expect(html).toContain('endpoint.protocol !== "http:"')
     expect(html).toContain('endpoint.username || endpoint.password')
-    expect(html).toContain('["/diagnostics", "/diagnostics/", "/usage", "/usage/"]')
+    expect(html).toContain('["/diagnostics", "/diagnostics/"]')
     expect(html).toContain('rawEndpoint.includes("?") || rawEndpoint.includes("#")')
     expect(html).toContain('credentials: "omit"')
     expect(html).toContain('redirect: "error"')

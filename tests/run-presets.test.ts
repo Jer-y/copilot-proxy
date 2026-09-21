@@ -85,7 +85,6 @@ describe('run presets', () => {
       { alias: 'bodyTimeoutMs', expected: '0', longName: 'body-timeout-ms' },
       { alias: 'connectTimeoutMs', expected: '0', longName: 'connect-timeout-ms' },
       { alias: 'githubToken', expected: 'ghu_alias_value', longName: 'github-token' },
-      { alias: 'showToken', expected: true, longName: 'show-token' },
       { alias: 'proxyEnv', expected: true, longName: 'proxy-env' },
       { alias: 'service', expected: true, longName: '_service' },
       { alias: 'logFile', expected: true, longName: '_log-file' },

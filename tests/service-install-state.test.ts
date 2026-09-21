@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 
-import { UNBOUNDED_NATIVE_SERVICE_CONFIG } from '~/daemon/config'
+import { loadLegacyServiceConfig, UNBOUNDED_NATIVE_SERVICE_CONFIG } from '~/daemon/config'
 import {
   APPLIED_NATIVE_SERVICE_DATA_DIR_ENV,
   applyInstalledNativeServiceDataDir,
@@ -26,6 +26,71 @@ afterEach(() => {
 })
 
 describe('native service install control state', () => {
+  test.each([undefined, false, true])('normalizes retired showToken=%s without rewriting either input', (showToken) => {
+    const root = makeTempDir()
+    const config = { ...UNBOUNDED_NATIVE_SERVICE_CONFIG, showToken }
+    const legacyPath = path.join(root, 'daemon.json')
+    const nativePath = path.join(root, 'control.json')
+    const legacyText = JSON.stringify(config)
+    const nativeText = JSON.stringify({ dataDir: root, config })
+    fs.writeFileSync(legacyPath, legacyText)
+    fs.writeFileSync(nativePath, nativeText)
+    expect(loadLegacyServiceConfig(legacyPath)).toEqual(UNBOUNDED_NATIVE_SERVICE_CONFIG)
+    const loaded = loadNativeServiceInstallState(nativePath)!
+    expect(loaded.config).toEqual(UNBOUNDED_NATIVE_SERVICE_CONFIG)
+    expect(fs.readFileSync(legacyPath, 'utf8')).toBe(legacyText)
+    expect(fs.readFileSync(nativePath, 'utf8')).toBe(nativeText)
+    saveNativeServiceInstallState(loaded, nativePath)
+    expect(fs.readFileSync(nativePath, 'utf8')).not.toContain('showToken')
+  })
+
+  test.each([
+    { port: 0 },
+    { port: 65536 },
+    { host: '' },
+    { host: 'bad/host' },
+    { accountType: 'invalid' },
+    { verbose: 'false' },
+    { proxyEnv: 'false' },
+    { rateLimitWait: 'false' },
+    { rateLimit: 0 },
+    { rateLimit: 86401 },
+    { maxConcurrency: -1 },
+    { maxQueue: -1 },
+    { queueTimeoutMs: -1 },
+    { headersTimeoutMs: -1 },
+    { bodyTimeoutMs: MAX_TIMER_DELAY_MS + 1 },
+    { connectTimeoutMs: 1.5 },
+    { showToken: 'false' },
+    { showToken: null },
+  ])('preserves shared rejection rules for %j', (overrides) => {
+    const root = makeTempDir()
+    const config = { ...UNBOUNDED_NATIVE_SERVICE_CONFIG, ...overrides }
+    const legacyPath = path.join(root, 'daemon.json')
+    const nativePath = path.join(root, 'control.json')
+    fs.writeFileSync(legacyPath, JSON.stringify(config))
+    fs.writeFileSync(nativePath, JSON.stringify({ dataDir: root, config }))
+    expect(() => loadLegacyServiceConfig(legacyPath)).toThrow('service config is invalid')
+    expect(() => loadNativeServiceInstallState(nativePath)).toThrow('control state is invalid')
+  })
+
+  test('defaults only the legacy host and preserves native envelope checks', () => {
+    const root = makeTempDir()
+    const { host: _host, ...config } = UNBOUNDED_NATIVE_SERVICE_CONFIG
+    const legacyPath = path.join(root, 'daemon.json')
+    fs.writeFileSync(legacyPath, JSON.stringify(config))
+    expect(loadLegacyServiceConfig(legacyPath)?.host).toBe('127.0.0.1')
+    const nativePath = path.join(root, 'control.json')
+    for (const entry of [
+      { dataDir: root, config },
+      { dataDir: root, config: { ...UNBOUNDED_NATIVE_SERVICE_CONFIG, githubToken: 'sentinel' } },
+      { dataDir: root, proxyEnv: true, config: UNBOUNDED_NATIVE_SERVICE_CONFIG },
+    ]) {
+      fs.writeFileSync(nativePath, JSON.stringify(entry))
+      expect(() => loadNativeServiceInstallState(nativePath)).toThrow('control state is invalid')
+    }
+  })
+
   test('accepts legacy manual:false but omits it from newly saved state', () => {
     const root = makeTempDir()
     const filePath = path.join(root, 'control.json')
@@ -235,7 +300,6 @@ describe('native service install control state', () => {
       headersTimeoutMs: 600_000,
       bodyTimeoutMs: 900_000,
       connectTimeoutMs: 15_000,
-      showToken: false,
       proxyEnv: true,
     })
 
@@ -267,7 +331,6 @@ describe('native service install control state', () => {
         accountType: 'individual',
         rateLimitWait: false,
         githubToken: 'must-not-be-persisted',
-        showToken: false,
         proxyEnv: false,
       },
     }))
@@ -287,7 +350,6 @@ describe('native service install control state', () => {
         accountType: 'individual',
         rateLimitWait: false,
         maxQueue: 10,
-        showToken: false,
         proxyEnv: false,
       },
     }))
@@ -307,7 +369,6 @@ describe('native service install control state', () => {
         accountType: 'individual',
         rateLimitWait: false,
         headersTimeoutMs: MAX_TIMER_DELAY_MS + 1,
-        showToken: false,
         proxyEnv: false,
       },
     }))

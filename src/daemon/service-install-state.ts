@@ -97,7 +97,6 @@ export function toNativeServiceConfig(config: ServiceConfig): NativeServiceConfi
     ...(config.headersTimeoutMs !== undefined && { headersTimeoutMs: config.headersTimeoutMs }),
     ...(config.bodyTimeoutMs !== undefined && { bodyTimeoutMs: config.bodyTimeoutMs }),
     ...(config.connectTimeoutMs !== undefined && { connectTimeoutMs: config.connectTimeoutMs }),
-    showToken: config.showToken,
     proxyEnv: config.proxyEnv,
   }
 }
@@ -134,7 +133,7 @@ function validateNativeServiceInstallState(
       || 'githubToken' in state.config) {
       throw invalid()
     }
-    const validatedConfig = validateNativeServiceConfig(state.config as Record<string, unknown>)
+    const validatedConfig = validateServiceConfig(state.config as Record<string, unknown>)
     if (!validatedConfig)
       throw invalid()
     config = validatedConfig
@@ -152,7 +151,7 @@ function validateNativeServiceInstallState(
   }
 }
 
-function validateNativeServiceConfig(data: Record<string, unknown>): NativeServiceConfig | undefined {
+export function validateServiceConfig(data: Record<string, unknown>): NativeServiceConfig | undefined {
   if (data.manual === true)
     throw new Error(MANUAL_APPROVAL_REMOVED_MESSAGE)
   if (data.manual !== undefined && data.manual !== false)
@@ -166,7 +165,7 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
   if (typeof data.accountType !== 'string' || !['individual', 'business', 'enterprise'].includes(data.accountType))
     return undefined
   if (typeof data.rateLimitWait !== 'boolean'
-    || typeof data.showToken !== 'boolean'
+    || (data.showToken !== undefined && typeof data.showToken !== 'boolean')
     || typeof data.proxyEnv !== 'boolean') {
     return undefined
   }
@@ -195,6 +194,9 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
     }
   }
 
+  if (data.showToken === true)
+    process.stderr.write('Warning: persisted showToken has been removed and is ignored; tokens are never printed.\n')
+
   return {
     port: data.port,
     host: data.host,
@@ -208,7 +210,6 @@ function validateNativeServiceConfig(data: Record<string, unknown>): NativeServi
     ...(typeof data.headersTimeoutMs === 'number' && { headersTimeoutMs: data.headersTimeoutMs }),
     ...(typeof data.bodyTimeoutMs === 'number' && { bodyTimeoutMs: data.bodyTimeoutMs }),
     ...(typeof data.connectTimeoutMs === 'number' && { connectTimeoutMs: data.connectTimeoutMs }),
-    showToken: data.showToken,
     proxyEnv: data.proxyEnv,
   }
 }

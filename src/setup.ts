@@ -23,6 +23,7 @@ import WebSocket from 'ws'
 
 import { assertProxyEndpointAvailable } from './daemon/service-env'
 import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
+import { buildAccountNetworkTargets } from './lib/account/proxy-targets'
 import { readAccountsConfiguration, resolveConfiguredAccountTypes } from './lib/account/store'
 import { validateAccountType, validateHost, validatePort } from './lib/cli-validators'
 import { assertCodexClientModelMetadata, assertSetupProbeSucceeded, buildClientSetupArtifact, buildSetupProbeRequest, compatibleModelsForClient, inspectCodexClientCatalog, isSetupClient, resolveCodexProfilePaths, selectSetupModel, SETUP_CLIENTS } from './lib/client-setup'
@@ -413,15 +414,12 @@ export function setupProxyRequiredTargets(
   fallbackAccountType: AccountType,
   configuration: AccountsConfiguration | undefined = readAccountsConfiguration(),
 ): string[] {
-  const copilotOrigins = resolveConfiguredAccountTypes(fallbackAccountType, configuration)
-    .map(accountType => accountType === 'individual'
-      ? 'https://api.githubcopilot.com'
-      : `https://api.${accountType}.githubcopilot.com`)
   return [
-    'https://github.com',
-    'https://api.github.com',
-    ...copilotOrigins,
-    'https://update.code.visualstudio.com',
+    ...buildAccountNetworkTargets({
+      accountTypes: resolveConfiguredAccountTypes(fallbackAccountType, configuration),
+      deviceFlow: true,
+      vsCode: true,
+    }),
     'https://raw.githubusercontent.com',
   ]
 }
@@ -990,7 +988,6 @@ function toRunServerOptions(options: SetupOptions): RunServerOptions {
     maxConcurrency: options.preset.maxConcurrency,
     maxQueue: options.preset.maxQueue,
     queueTimeoutMs: options.preset.queueTimeoutMs,
-    showToken: false,
     proxyEnv: options.proxyEnv,
   }
 }

@@ -13,14 +13,12 @@ import { AccountRegistry } from './lib/account/registry'
 import { hardenAccountStoragePaths, readAccountsConfiguration, readAccountToken } from './lib/account/store'
 import { ensurePaths, PATHS } from './lib/paths'
 import { initializeNodeHttpClient } from './lib/proxy'
-import { state } from './lib/state'
 import { setupGitHubToken, writeGithubTokenFile } from './lib/token'
 
 interface RunAuthOptions {
   account?: string
   ifNeeded: boolean
   verbose: boolean
-  showToken: boolean
   proxyEnv: boolean
   tokenStdin?: boolean
 }
@@ -31,7 +29,6 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
     consola.info('Verbose logging enabled')
   }
 
-  state.showToken = options.showToken
   if (options.account !== undefined && !options.account.trim()) {
     process.exitCode = 1
     consola.error('--account must contain an account id.')
@@ -149,11 +146,6 @@ export const auth = defineCommand({
       default: false,
       description: 'Enable verbose logging',
     },
-    'show-token': {
-      type: 'boolean',
-      default: false,
-      description: 'Show GitHub token on auth',
-    },
     'proxy-env': {
       type: 'boolean',
       default: false,
@@ -184,7 +176,6 @@ export const auth = defineCommand({
       ifNeeded: args['_if-needed'],
       account: args.account,
       verbose: args.verbose,
-      showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
       tokenStdin: args['token-stdin'],
     })

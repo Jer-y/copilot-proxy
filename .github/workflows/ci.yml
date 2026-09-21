@@ -178,7 +178,7 @@ jobs:
             grep -Fq '<meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />' "$page_file" &&
               grep -Fq 'content="diagnostics exact-endpoints redirect-error credentials-omit"' "$page_file" &&
               grep -Fq '<title>Copilot Proxy Diagnostics</title>' "$page_file" &&
-              grep -Fq '["/diagnostics", "/diagnostics/", "/usage", "/usage/"]' "$page_file" &&
+              grep -Fq '["/diagnostics", "/diagnostics/"]' "$page_file" &&
               grep -Fq 'credentials: "omit"' "$page_file" &&
               grep -Fq 'redirect: "error"' "$page_file"
           }

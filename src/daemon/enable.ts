@@ -442,10 +442,6 @@ export const enable = defineCommand({
         ? 'The existing native service predates persisted control state; preserving its unbounded concurrency behavior.'
         : 'Using default native service config.')
     }
-    if (config.showToken) {
-      consola.error('Cannot enable auto-start while --show-token is persisted in native service state. Run `enable` again without that setting.')
-      process.exit(1)
-    }
     const hostEnvironmentError = nativeServiceHostEnvironmentError(config.host)
     if (hostEnvironmentError) {
       consola.error(hostEnvironmentError)

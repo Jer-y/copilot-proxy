@@ -22,11 +22,12 @@ required.
 
 Browser Origins and request Hosts are allowlisted separately. Cross-origin
 requests are rejected before route execution, and JSON routes require a JSON
-Content-Type. The `/token` endpoint is disabled unless
-`COPILOT_PROXY_EXPOSE_TOKEN=1` is explicitly set, and remains restricted to
-loopback, same-origin access when enabled. That environment variable may be
-persisted in native-service state, so remove it from the service environment
-rather than assuming the exposure ends with the current shell. `/usage`
+Content-Type. Plaintext token diagnostics have been removed: `/token` returns
+410 after the normal Host/Origin checks, and `--show-token` is rejected before
+authentication or token persistence. The retired `COPILOT_PROXY_EXPOSE_TOKEN`
+variable and historical `showToken` booleans are ignored; enabled settings warn
+without exposing values. Reading old service state does not rewrite it; the
+retired fields are omitted on the next normal save. `/usage`
 returns a minimal quota summary rather than the full upstream Copilot user
 payload.
 

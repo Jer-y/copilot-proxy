@@ -112,7 +112,7 @@ describe('CI workflow platform coverage', () => {
       '<meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />',
       'content="diagnostics exact-endpoints redirect-error credentials-omit"',
       '<title>Copilot Proxy Diagnostics</title>',
-      '["/diagnostics", "/diagnostics/", "/usage", "/usage/"]',
+      '["/diagnostics", "/diagnostics/"]',
       'credentials: "omit"',
       'redirect: "error"',
     ]

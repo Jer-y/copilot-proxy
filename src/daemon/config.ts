@@ -1,9 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
-import { MANUAL_APPROVAL_REMOVED_MESSAGE } from '~/lib/constants'
-import { MAX_TIMER_DELAY_MS } from '~/lib/http-timeouts'
+import { validateServiceConfig } from '~/daemon/service-install-state'
 import { PATHS } from '~/lib/paths'
 import { RUN_PRESETS } from '~/lib/run-presets'
 import { DEFAULT_HOST } from '~/lib/security'
@@ -21,7 +19,6 @@ export interface ServiceConfig {
   headersTimeoutMs?: number
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
-  showToken: boolean
   proxyEnv: boolean
 }
 
@@ -31,7 +28,6 @@ export const UNBOUNDED_NATIVE_SERVICE_CONFIG: ServiceConfig = {
   verbose: false,
   accountType: 'individual',
   rateLimitWait: false,
-  showToken: false,
   proxyEnv: false,
 }
 
@@ -74,63 +70,5 @@ function validateLegacyServiceConfig(value: unknown): ServiceConfig | undefined 
     return undefined
 
   const data = value as Record<string, unknown>
-  if (data.manual === true)
-    throw new Error(MANUAL_APPROVAL_REMOVED_MESSAGE)
-  if (data.manual !== undefined && data.manual !== false)
-    return undefined
-  const host = data.host ?? DEFAULT_HOST
-  if (typeof data.port !== 'number' || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535)
-    return undefined
-  if (typeof host !== 'string' || !host.trim() || /[\s/]/.test(host))
-    return undefined
-  if (typeof data.verbose !== 'boolean')
-    return undefined
-  if (typeof data.accountType !== 'string' || !['individual', 'business', 'enterprise'].includes(data.accountType))
-    return undefined
-  if (typeof data.rateLimitWait !== 'boolean'
-    || typeof data.showToken !== 'boolean'
-    || typeof data.proxyEnv !== 'boolean') {
-    return undefined
-  }
-  if (data.rateLimit !== undefined
-    && (typeof data.rateLimit !== 'number' || !Number.isInteger(data.rateLimit) || data.rateLimit <= 0 || data.rateLimit > 86400)) {
-    return undefined
-  }
-  try {
-    resolveConcurrencyLimitConfig({
-      maxConcurrency: data.maxConcurrency as number | undefined,
-      maxQueue: data.maxQueue as number | undefined,
-      queueTimeoutMs: data.queueTimeoutMs as number | undefined,
-    })
-  }
-  catch {
-    return undefined
-  }
-  for (const key of ['headersTimeoutMs', 'bodyTimeoutMs', 'connectTimeoutMs'] as const) {
-    const timeout = data[key]
-    if (timeout !== undefined
-      && (typeof timeout !== 'number'
-        || !Number.isInteger(timeout)
-        || timeout < 0
-        || timeout > MAX_TIMER_DELAY_MS)) {
-      return undefined
-    }
-  }
-
-  return {
-    port: data.port,
-    host,
-    verbose: data.verbose,
-    accountType: data.accountType,
-    ...(typeof data.rateLimit === 'number' && { rateLimit: data.rateLimit }),
-    rateLimitWait: data.rateLimitWait,
-    ...(typeof data.maxConcurrency === 'number' && { maxConcurrency: data.maxConcurrency }),
-    ...(typeof data.maxQueue === 'number' && { maxQueue: data.maxQueue }),
-    ...(typeof data.queueTimeoutMs === 'number' && { queueTimeoutMs: data.queueTimeoutMs }),
-    ...(typeof data.headersTimeoutMs === 'number' && { headersTimeoutMs: data.headersTimeoutMs }),
-    ...(typeof data.bodyTimeoutMs === 'number' && { bodyTimeoutMs: data.bodyTimeoutMs }),
-    ...(typeof data.connectTimeoutMs === 'number' && { connectTimeoutMs: data.connectTimeoutMs }),
-    showToken: data.showToken,
-    proxyEnv: data.proxyEnv,
-  }
+  return validateServiceConfig({ ...data, host: data.host ?? DEFAULT_HOST })
 }

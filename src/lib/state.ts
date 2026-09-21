@@ -18,7 +18,6 @@ export interface State {
   vsCodeVersion?: string
 
   rateLimitWait: boolean
-  showToken: boolean
 
   // Rate limiting configuration
   rateLimitSeconds?: number
@@ -89,14 +88,8 @@ export const state: RuntimeState = {
     defaultAccount.modelCatalogLifecycle = value
   },
   rateLimitWait: false,
-  showToken: false,
 }
-
-defaultAccount.tokens.configure({
-  showToken: () => state.showToken,
-})
 
 export function setDefaultAccountContext(ctx: AccountContext): void {
   state.defaultAccount = ctx
-  ctx.tokens.configure({ showToken: () => state.showToken })
 }

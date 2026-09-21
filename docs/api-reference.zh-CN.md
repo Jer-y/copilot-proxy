@@ -23,7 +23,7 @@ OpenAI 兼容 base URL 使用 `http://127.0.0.1:4399/v1`，Anthropic base URL �
 | `/livez`、`/readyz` | `GET` | 存活与就绪状态 |
 | `/diagnostics` | `GET` | 运行状态、模型路由与用量摘要 |
 | `/usage` | `GET` | 最小 Copilot 配额摘要；不会暴露完整的上游用户 payload |
-| `/token` | `GET` | 默认关闭的本地 token 诊断 |
+| `/token` | `GET` | 已退役；通过全局安全检查后返回 410，不读取或返回凭据 |
 
 OpenAI 路由也接受对应的不带 `/v1` 前缀路径。Anthropic Messages 仍只位于 `/v1/messages`。
 
@@ -44,7 +44,7 @@ OpenAI 路由也接受对应的不带 `/v1` 前缀路径。Anthropic Messages �
 | `COPILOT_PROXY_ALLOWED_HOSTS` | 精确的非 loopback Host allowlist |
 | `COPILOT_PROXY_CORS_ORIGINS` | 额外允许的精确浏览器 origin |
 | `COPILOT_PROXY_MAX_JSON_BODY_BYTES` | 正整数 JSON body 限制；默认 32 MiB |
-| `COPILOT_PROXY_EXPOSE_TOKEN=1` | 在 loopback 与同源限制下启用 `/token`，直到移除该变量；原生服务环境可以让它跨重启持续生效 |
+| `COPILOT_PROXY_EXPOSE_TOKEN` | 已退役并忽略；旧开启值会警告，不再保存或恢复 |
 | `COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY=1` | 在账号健康数据中加入 GitHub login 与数值 user ID；默认关闭 |
 | `COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS=1` | 为非 Codex `/models` 响应增加 `<account>/<model>` 别名 |
 

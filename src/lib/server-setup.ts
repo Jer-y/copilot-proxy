@@ -52,7 +52,6 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
 
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
-  state.showToken = options.showToken
   const concurrencyConfig = resolveConcurrencyLimitConfig({
     maxConcurrency: options.maxConcurrency,
     maxQueue: options.maxQueue,

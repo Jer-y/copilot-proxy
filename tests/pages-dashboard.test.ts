@@ -48,38 +48,19 @@ describe('hosted diagnostics dashboard behavior', () => {
     expect(startSource).not.toContain('`🌐 Diagnostics: $' + '{serverUrl}/diagnostics`')
   })
 
-  test('renders a legacy /usage payload as quota-only data without claiming readiness', async () => {
-    const dashboard = await createDashboard(
-      async () => Response.json(createLegacyUsage('individual', 75)),
-      'http://old-proxy.example/usage/',
-    )
-
-    await waitFor(() => dashboard.element('status-label').textContent === 'Quota data only')
-
-    expect(dashboard.element('status-label').textContent).toBe('Quota data only')
-    expect(dashboard.element('status-summary').textContent).toContain('does not report readiness')
-    expect(dashboard.element('reason-list').children[0]?.textContent).toBe('Proxy readiness was not checked')
-    expect(dashboard.element('account-type').textContent).toBe('Unknown account')
-    expect(dashboard.element('model-count').textContent).toBe('Model catalog unavailable')
-    expect(dashboard.element('quota-state').textContent).toBe('Usage available')
-    expect(dashboard.element('quota-grid').children[0]?.children[1]?.textContent).toBe('75% left')
+  test.each(['/usage', '/usage/'])('rejects legacy %s links before fetching', async (suffix) => {
+    let calls = 0
+    const dashboard = await createDashboard(async () => {
+      calls++
+      return Response.json(createLegacyUsage('individual', 75))
+    }, `http://old-proxy.example${suffix}`)
+    await waitFor(() => dashboard.element('status-label').textContent === 'Diagnostics unavailable')
+    expect(calls).toBe(0)
+    expect(dashboard.element('error-banner').textContent).toContain('Change the endpoint path to /diagnostics')
   })
 
   test('renders unlimited quotas whose remaining count exceeds a zero entitlement', async () => {
     const cases = [
-      {
-        endpoint: 'http://old-proxy.example/usage',
-        expectedStatus: 'Quota data only',
-        payload: () => {
-          const usage = createLegacyUsage('individual', 75)
-          Object.assign(usage.quota_snapshots.completions, {
-            entitlement: 0,
-            remaining: 1,
-            unlimited: true,
-          })
-          return usage
-        },
-      },
       {
         endpoint: 'http://proxy.example/diagnostics',
         expectedStatus: 'Proxy is ready',
@@ -140,7 +121,7 @@ describe('hosted diagnostics dashboard behavior', () => {
     )
   })
 
-  test('only fetches exact diagnostics or legacy usage endpoints without credentials or redirects', async () => {
+  test('only fetches exact diagnostics endpoints without credentials or redirects', async () => {
     const calls: Array<{ init?: RequestInit, url: string }> = []
     const dashboard = await createDashboard(
       async (input, init) => {
@@ -162,7 +143,7 @@ describe('hosted diagnostics dashboard behavior', () => {
 
     expect(calls).toHaveLength(1)
     expect(dashboard.element('error-banner').textContent).toContain(
-      'Endpoint path must be /diagnostics or /usage with at most one trailing slash',
+      'Endpoint path must be /diagnostics with at most one trailing slash',
     )
   })
 

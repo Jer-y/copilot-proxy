@@ -17,21 +17,17 @@ import {
 
 describe('refreshTokenWithRetry', () => {
   let originalCopilotToken: string | undefined
-  let originalShowToken: boolean
 
   const createFailureState = () => ({ consecutiveFailures: 0 })
 
   beforeEach(() => {
     stopCopilotTokenRefresh()
     originalCopilotToken = state.copilotToken
-    originalShowToken = state.showToken
-    state.showToken = false
   })
 
   afterEach(() => {
     stopCopilotTokenRefresh()
     state.copilotToken = originalCopilotToken
-    state.showToken = originalShowToken
   })
 
   test('refreshes token on first attempt', async () => {

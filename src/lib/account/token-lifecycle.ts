@@ -87,7 +87,6 @@ export interface TokenRefreshSchedulerDeps {
 }
 
 export interface TokenLifecycleOptions {
-  showToken?: () => boolean
   refreshDelay?: (delayMs: number) => number
 }
 
@@ -116,18 +115,14 @@ export class TokenLifecycle {
   private tokenRefreshCancellationInFlight: Promise<void> | undefined
   private lastKnownRefreshInSeconds: number | undefined
   private readonly copilotTokenSnapshotValues = new WeakMap<CopilotTokenSnapshot, string | undefined>()
-  private showToken: () => boolean
   private refreshDelay: (delayMs: number) => number
 
   constructor(ctx: AccountContext, options: TokenLifecycleOptions = {}) {
     this.ctx = ctx
-    this.showToken = options.showToken ?? (() => false)
     this.refreshDelay = options.refreshDelay ?? (delayMs => delayMs)
   }
 
   configure(options: TokenLifecycleOptions): void {
-    if (options.showToken)
-      this.showToken = options.showToken
     if (options.refreshDelay)
       this.refreshDelay = options.refreshDelay
   }
@@ -262,12 +257,10 @@ export class TokenLifecycle {
     options: { scheduleRefresh?: boolean } = {},
   ): Promise<GetCopilotTokenResponse> {
     const response = await getCopilotToken(this.ctx)
-    const { token, refresh_in: refreshIn } = response
+    const { refresh_in: refreshIn } = response
     this.applyCopilotTokenResponse(response)
 
     consola.debug('GitHub Copilot Token fetched successfully!')
-    if (this.showToken())
-      consola.info('Copilot token:', token)
 
     if (options.scheduleRefresh ?? true)
       this.startRefresh(refreshIn)
@@ -388,8 +381,6 @@ export class TokenLifecycle {
         }
         this.applyCopilotTokenResponse(response)
         consola.debug('Copilot token refreshed')
-        if (this.showToken())
-          consola.info('Refreshed Copilot token:', response.token)
         if (failureState.consecutiveFailures > 0) {
           consola.info(`Token refresh recovered after ${failureState.consecutiveFailures} consecutive failure(s)`)
         }

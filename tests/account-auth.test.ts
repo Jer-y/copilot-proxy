@@ -107,7 +107,6 @@ describe('explicit account authentication preflight', () => {
           account: 'work',
           ifNeeded: false,
           proxyEnv: true,
-          showToken: false,
           tokenStdin: true,
           verbose: false,
         })).rejects.toThrow('Refusing to fall back to a direct connection')
@@ -180,7 +179,6 @@ function authOptions() {
   return {
     ifNeeded: true,
     proxyEnv: false,
-    showToken: false,
     verbose: false,
   }
 }

@@ -10,6 +10,7 @@ import consola from 'consola'
 import { serve } from 'crossws/server'
 
 import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
+import { buildAccountNetworkTargets } from './lib/account/proxy-targets'
 import { readAccountsConfiguration, resolveConfiguredAccountTypes } from './lib/account/store'
 import { validateAccountType, validateHost, validateMaxConcurrency, validateMaxQueue, validatePort, validateQueueTimeoutMs, validateRateLimit, validateTimeoutMs } from './lib/cli-validators'
 import { MAX_TIMER_DELAY_MS } from './lib/http-timeouts'
@@ -43,7 +44,6 @@ export interface RunServerOptions {
   bodyTimeoutMs?: number
   connectTimeoutMs?: number
   githubToken?: string
-  showToken: boolean
   proxyEnv: boolean
   exitOnPortInUse?: boolean
   nativeService?: boolean
@@ -92,14 +92,11 @@ export function startProxyRequiredTargets(
   fallbackAccountType: AccountType,
   configuration: AccountsConfiguration | undefined = readAccountsConfiguration(),
 ): string[] {
-  const copilotOrigins = resolveConfiguredAccountTypes(fallbackAccountType, configuration)
-    .map(accountType => accountType === 'individual'
-      ? 'https://api.githubcopilot.com'
-      : `https://api.${accountType}.githubcopilot.com`)
   return [
-    'https://api.github.com',
-    ...copilotOrigins,
-    'https://update.code.visualstudio.com',
+    ...buildAccountNetworkTargets({
+      accountTypes: resolveConfiguredAccountTypes(fallbackAccountType, configuration),
+      vsCode: true,
+    }),
     'https://raw.githubusercontent.com',
   ]
 }
@@ -603,11 +600,6 @@ export const start = defineCommand({
       description:
         'Persist a GitHub token securely, then exit; rerun start without this flag',
     },
-    'show-token': {
-      type: 'boolean',
-      default: false,
-      description: 'Show GitHub and Copilot tokens on fetch and refresh',
-    },
     'expose-account-identity': {
       type: 'boolean',
       default: false,
@@ -794,7 +786,6 @@ export const start = defineCommand({
       bodyTimeoutMs,
       connectTimeoutMs,
       githubToken: args['github-token'],
-      showToken: args['show-token'],
       proxyEnv: args['proxy-env'],
       nativeService: args._service,
       nativeServiceInstanceToken,

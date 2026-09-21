@@ -98,7 +98,7 @@ copilot-proxy doctor \
 
 doctor 会检查连通性、就绪状态、令牌生命周期、恢复状态、并发、模型可用性、客户端候选模型和用量接口。请传入服务基础地址，不要传入 `/diagnostics` 路径。可用 `--client claude`、`codex` 或 `openai-sdk` 缩小模型检查范围，也可用 `--json` 供自动化处理。每个诊断请求默认最多等待 10 秒；可通过 `--timeout-ms <ms>` 设置其他正数且有界的超时时间。
 
-检查失败时命令以非零状态退出。doctor 要求服务提供 `/diagnostics`；HTTP 404 会生成失败报告并以退出码 1 结束。请检查服务基础地址和反代路由，或升级缺少该端点的服务端。doctor 不再降级为分别探测 `/livez`、`/readyz`、`/v1/models` 或 `/usage`。JSON 报告保留 `mode: "full"`，它表示报告格式，不表示检查成功。上述服务端端点和状态面板的旧版用量链接保持不变。
+检查失败时命令以非零状态退出。doctor 要求服务提供 `/diagnostics`；HTTP 404 会生成失败报告并以退出码 1 结束。请检查服务基础地址和反代路由，或升级缺少该端点的服务端。doctor 不再降级为分别探测 `/livez`、`/readyz`、`/v1/models` 或 `/usage`。JSON 报告保留 `mode: "full"`，它表示报告格式，不表示检查成功。上述服务端端点保持不变；面板旧版用量链接已退役，见下文。
 
 ## 诊断与状态面板
 
@@ -120,9 +120,9 @@ curl http://127.0.0.1:4399/diagnostics
 
 托管面板是独立的远程 GitHub Pages origin，不属于本地代理的信任边界。打开该 URL 会把完整的 `endpoint` query 参数发送给 GitHub Pages，该 URL 还可能保留在浏览器历史或基础设施日志中；之后页面才让浏览器请求本地诊断 endpoint。如果 endpoint 主机名也不能泄露，请不要打开托管页面。URL 中绝不能放入凭据或其他秘密；请改用本地 `curl`、`doctor` 或自行托管的面板副本。
 
-面板与代理版本匹配时，会提供完整的运行状态、模型路由和配额视图。单独部署的面板也兼容 `endpoint` 仍指向 `/usage` 的旧版 CLI 链接，但该兼容模式只显示最小配额摘要，并明确不声称已检查就绪状态、认证、恢复、并发或模型路由。其他面板 schema 仍要求代理版本匹配。面板只发送只读 GET 请求，不提供管理或认证能力；刷新面板仍可能触发上述用量缓存填充。
+面板与代理版本匹配时，会提供完整的运行状态、模型路由和配额视图。指向 `/usage` 的旧链接会在请求前被拒绝，并提示将 endpoint 路径改成 `/diagnostics`；不会自动改址或回退。服务端 `/usage` API 保持不变。面板只发送只读 GET 请求，不提供管理或认证能力；刷新仍可能触发上述用量缓存填充。
 
-面板只接受路径精确为 `/diagnostics` 或旧版 `/usage` 的端点（可带一个结尾斜杠），且 URL 不得包含凭据、query 或 fragment。请求不会携带浏览器凭据，遇到重定向也会拒绝而非跟随。
+面板只接受路径精确为 `/diagnostics` 的端点（可带一个结尾斜杠），且 URL 不得包含凭据、query 或 fragment。请求不会携带浏览器凭据，遇到重定向也会拒绝而非跟随。
 
 Chrome 142 及更高版本可能通过 [Local Network Access](https://developer.chrome.com/blog/local-network-access) 权限控制托管 HTTPS 面板对 `localhost` 的请求。如果面板明确报告本地网络访问被阻止，请在浏览器的网站设置中允许面板来源访问本地网络，然后重试。只有浏览器通过 Permissions API 明确返回匹配权限的 `denied` 状态时，面板才会显示这项权限指导；不支持的权限名称、尚未决定的权限提示和普通连接失败仍保留通用的连通性提示。可使用 `curl` 或 `copilot-proxy doctor` 独立于浏览器权限验证代理。
 

@@ -8,7 +8,6 @@ import { PROXY_ENV_KEYS, resolveProxyForUrlFromEnvironment } from '~/lib/proxy-e
 export const SERVICE_SECURITY_ENV_KEYS = [
   'COPILOT_PROXY_ALLOWED_HOSTS',
   'COPILOT_PROXY_CORS_ORIGINS',
-  'COPILOT_PROXY_EXPOSE_TOKEN',
   'COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY',
   'COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS',
   'COPILOT_PROXY_MAX_JSON_BODY_BYTES',
@@ -31,6 +30,7 @@ export const NATIVE_SERVICE_ENV_SCHEMA_VERSION = 1 as const
 const MANAGED_SERVICE_ENV_KEY_SET = new Set<string>(MANAGED_SERVICE_ENV_KEYS)
 const DEPRECATED_SERVICE_ENV_KEY_SET = new Set([
   'COPILOT_PROXY_ALLOW_DOCUMENT_URL_FETCH',
+  'COPILOT_PROXY_EXPOSE_TOKEN',
 ])
 
 const SERVICE_BOOTSTRAP_PASSTHROUGH_ENV_KEYS = [
@@ -132,6 +132,7 @@ export function buildNativeServiceEnvironment(
   options: Pick<NativeServiceEnvironmentOptions, 'proxyEnv' | 'sourceEnv'>,
 ): Record<string, string> {
   const sourceEnv = options.sourceEnv ?? process.env
+  warnRemovedTokenExposure(sourceEnv)
 
   if (options.proxyEnv)
     assertProxyEndpointAvailable(sourceEnv)
@@ -160,6 +161,9 @@ export function loadNativeServiceEnvironment(
   const targetEnv = options.targetEnv ?? process.env
   const filePath = options.filePath ?? PATHS.NATIVE_SERVICE_ENV
   const saved = readNativeServiceEnvironment(filePath)
+
+  warnRemovedTokenExposure(targetEnv)
+  delete targetEnv.COPILOT_PROXY_EXPOSE_TOKEN
 
   for (const key of MANAGED_SERVICE_ENV_KEYS)
     delete targetEnv[key]
@@ -248,6 +252,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 }
 
 function pickManagedEnvironment(environment: Record<string, string>): Record<string, string> {
+  warnRemovedTokenExposure(environment)
   const managed: Record<string, string> = {}
   for (const key of MANAGED_SERVICE_ENV_KEYS) {
     const value = environment[key]
@@ -255,6 +260,11 @@ function pickManagedEnvironment(environment: Record<string, string>): Record<str
       managed[key] = value
   }
   return managed
+}
+
+function warnRemovedTokenExposure(environment: NodeJS.ProcessEnv): void {
+  if (environment.COPILOT_PROXY_EXPOSE_TOKEN?.trim() === '1')
+    process.stderr.write('Warning: COPILOT_PROXY_EXPOSE_TOKEN has been removed and is ignored.\n')
 }
 
 function isNativeServiceEnvironmentSnapshot(

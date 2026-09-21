@@ -232,7 +232,6 @@ function createContextFromDescriptor(
   ctx.githubUserId = descriptor.githubUserId
   ctx.tokens.configure({
     refreshDelay: delayMs => jitterTokenRefreshDelay(delayMs, ctx.id, multiAccount),
-    showToken: () => state.showToken,
   })
   ctx.recovery.maxTrackedScopes = multiAccount ? 32 : 128
   if (descriptor.maxConcurrency !== undefined) {

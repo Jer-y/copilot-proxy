@@ -17,6 +17,7 @@ export interface CittyRootCommandLocation {
 
 export const AUTH_CITTY_STRING_OPTIONS = [
   { name: 'github-token', shortName: 'g' },
+  { name: 'account' },
 ] as const satisfies readonly CittyStringOptionDefinition[]
 
 export const START_CITTY_STRING_OPTIONS = [

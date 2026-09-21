@@ -23,7 +23,7 @@ Use `http://127.0.0.1:4399/v1` as the OpenAI-compatible base URL and `http://127
 | `/livez`, `/readyz` | `GET` | Liveness and readiness |
 | `/diagnostics` | `GET` | Runtime, model-route, and usage summary |
 | `/usage` | `GET` | Minimal Copilot quota summary; does not expose the full upstream user payload |
-| `/token` | `GET` | Disabled-by-default local token diagnostic |
+| `/token` | `GET` | Retired; returns 410 after global security checks, without reading or returning credentials |
 
 OpenAI routes also accept the corresponding unprefixed path. Anthropic Messages remains under `/v1/messages`.
 
@@ -44,7 +44,7 @@ When authentication recovery opens a scoped or global circuit, protected upstrea
 | `COPILOT_PROXY_ALLOWED_HOSTS` | Exact non-loopback Host allowlist |
 | `COPILOT_PROXY_CORS_ORIGINS` | Additional exact browser origins |
 | `COPILOT_PROXY_MAX_JSON_BODY_BYTES` | Positive JSON request-body limit; default 32 MiB |
-| `COPILOT_PROXY_EXPOSE_TOKEN=1` | Enables `/token` under its loopback and same-origin restrictions until the variable is removed; a native-service environment can persist it across restarts |
+| `COPILOT_PROXY_EXPOSE_TOKEN` | Retired and ignored; old enabled values warn and are no longer saved or restored |
 | `COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY=1` | Includes GitHub login and numeric user ID in account health data; disabled by default |
 | `COPILOT_PROXY_EXPOSE_ACCOUNT_MODELS=1` | Adds `<account>/<model>` aliases to non-Codex `/models` responses |
 

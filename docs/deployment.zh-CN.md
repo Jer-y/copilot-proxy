@@ -69,10 +69,10 @@ copilot-proxy start --preset gateway-upstream
 
 ## 监听器与浏览器安全
 
-- 保持 `COPILOT_PROXY_EXPOSE_TOKEN` 未设置。`/token` 默认禁用，也不是认证入口。如果该变量进入原生服务环境，它会跨重启持续生效，直到删除持久化设置。
+- `COPILOT_PROXY_EXPOSE_TOKEN` 已退役；旧值不再生效或被原生服务恢复。开启值只产生警告。
 - 仅在确有需要时，将准确的非本地浏览器来源加入 `COPILOT_PROXY_CORS_ORIGINS`。
 - 将准确的非回环请求主机名加入 `COPILOT_PROXY_ALLOWED_HOSTS`；它不能代替认证。
-- 不要把 `--show-token` 输出持久化到共享日志。
+- `--show-token` 已移除并明确报错；请用 `doctor` 或 `/diagnostics` 查看不含凭据的状态。旧配置中的 `showToken` 布尔值读取时丢弃，开启值会警告；读取不改写文件，下一次正常保存时才清除该字段。
 - 已移除逐请求终端审批（`--manual`）。旧 CLI 参数和持久化的 `manual: true` 会明确报错；只有接受无人值守转发后，才应移除参数或将旧字段设为 `false`。旧 `manual: false` 仍可读取，但新保存的配置不再包含它。认证与 Host/Origin 检查保持不变。
 - 将 `/diagnostics` 和托管状态面板视为可见性工具，而非访问控制入口。
 

@@ -9,7 +9,7 @@ import process from 'node:process'
 
 import { analyzeBootstrapArguments } from './daemon/github-token-argv'
 import { applyInstalledNativeServiceDataDir } from './daemon/service-install-state'
-import { findCittyRootCommand, resolveCittyBooleanOption, START_CITTY_STRING_OPTIONS } from './lib/citty-argv'
+import { AUTH_CITTY_STRING_OPTIONS, findCittyRootCommand, resolveCittyBooleanOption, START_CITTY_STRING_OPTIONS } from './lib/citty-argv'
 import { MANUAL_APPROVAL_REMOVED_MESSAGE } from './lib/constants'
 import {
   NETWORK_BOOTSTRAPPED_ENV,
@@ -166,6 +166,16 @@ if (typeof Bun === 'undefined' && !isSupportedNodeVersion(process.versions.node)
 async function run(): Promise<void> {
   const args = cliArgs
   const command = bootstrapArguments.command ?? findCittyRootCommand(args)?.command
+  if (!bootstrapArguments.rootHelp
+    && (command === 'start' || command === 'auth' || command === 'enable')
+    && resolveCittyBooleanOption(args, 'show-token', {
+      stringOptions: command === 'auth' ? AUTH_CITTY_STRING_OPTIONS : START_CITTY_STRING_OPTIONS,
+    }).value !== undefined) {
+    throw new Error('--show-token has been removed. Remove this option and use copilot-proxy doctor for safe status information.')
+  }
+  if (process.env.COPILOT_PROXY_EXPOSE_TOKEN?.trim() === '1')
+    process.stderr.write('Warning: COPILOT_PROXY_EXPOSE_TOKEN has been removed and is ignored.\n')
+  delete process.env.COPILOT_PROXY_EXPOSE_TOKEN
   if (!bootstrapArguments.rootHelp
     && (command === 'start' || command === 'enable')
     && resolveCittyBooleanOption(args, 'manual', { stringOptions: START_CITTY_STRING_OPTIONS }).value !== undefined) {

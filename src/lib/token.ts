@@ -130,8 +130,6 @@ export async function setupGitHubToken(
 
     if (githubToken && !options?.force) {
       state.defaultAccount.githubToken = githubToken
-      if (state.showToken)
-        consola.info('GitHub token:', githubToken)
       if (options?.logUser !== false)
         await tryLogUser()
 
@@ -143,8 +141,6 @@ export async function setupGitHubToken(
     await writeGithubToken(token)
     state.defaultAccount.githubToken = token
 
-    if (state.showToken)
-      consola.info('GitHub token:', token)
     if (options?.logUser !== false)
       await tryLogUser()
   }

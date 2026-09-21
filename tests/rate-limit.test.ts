@@ -12,7 +12,6 @@ function makeState(overrides?: Partial<State>): State {
   return {
     accountType: 'individual',
     rateLimitWait: false,
-    showToken: false,
     ...overrides,
   }
 }

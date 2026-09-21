@@ -69,10 +69,10 @@ The same circuit state appears on `/readyz`: a globally open recovery circuit ma
 
 ## Listener and browser security
 
-- Keep `COPILOT_PROXY_EXPOSE_TOKEN` unset. `/token` is disabled by default and is not an authentication endpoint. If this variable is included in a native-service environment, it remains enabled across restarts until the persisted setting is removed.
+- `COPILOT_PROXY_EXPOSE_TOKEN` is retired; old values no longer enable exposure or get restored by native services. Enabled values only produce a warning.
 - Add exact non-local browser origins to `COPILOT_PROXY_CORS_ORIGINS` only when they are required.
 - Add exact non-loopback request hostnames to `COPILOT_PROXY_ALLOWED_HOSTS`; do not use it as a substitute for authentication.
-- Never persist `--show-token` output in shared logs.
+- `--show-token` has been removed and fails explicitly; use `doctor` or `/diagnostics` for credential-free status. Historical `showToken` booleans are discarded on read, with a warning if enabled. Reads do not rewrite files; the next normal save omits the field.
 - Per-request terminal approval (`--manual`) has been removed. Old CLI flags and persisted `manual: true` settings fail explicitly; remove the flag or set the old field to `false` only after accepting unattended forwarding. Old `manual: false` settings remain readable and are omitted from newly saved configurations. Authentication and Host/Origin checks are unchanged.
 - Treat `/diagnostics` and the hosted dashboard as visibility tools, not access-control surfaces.
 

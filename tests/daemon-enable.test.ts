@@ -23,7 +23,6 @@ const baseConfig: ServiceConfig = {
   verbose: false,
   accountType: 'individual',
   rateLimitWait: false,
-  showToken: false,
   proxyEnv: false,
 }
 
@@ -61,7 +60,6 @@ describe('buildServiceStartArgs', () => {
       headersTimeoutMs: 600000,
       bodyTimeoutMs: 900000,
       connectTimeoutMs: 15000,
-      showToken: true,
       proxyEnv: true,
     }
 

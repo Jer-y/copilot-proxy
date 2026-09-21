@@ -56,7 +56,6 @@ describe('runServer lifecycle', () => {
       port: 4399,
       proxyEnv: false,
       rateLimitWait: false,
-      showToken: false,
       verbose: false,
     }, {
       createAppServer: () => appServer,

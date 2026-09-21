@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-HGCs4Lpz555cMtHtJbX0bEjtCT/zIhpyWwVC/e/QN8M='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; connect-src http: https:; img-src data:; script-src 'sha256-8V7kHlSAStlgMvoCHAOvTFHaRqibXCsEIdGKyN1uNc8='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     />
     <meta name="color-scheme" content="dark" />
     <meta name="copilot-proxy-dashboard-version" content="diagnostics-v1" />
@@ -765,12 +765,7 @@
           if (requestGeneration !== diagnosticsRequestGeneration) {
             return;
           }
-          const data = parseEndpointData(responseData);
-          if (data.kind === "diagnostics") {
-            renderDiagnostics(data.diagnostics);
-          } else {
-            renderLegacyUsage(data.usage);
-          }
+          renderDiagnostics(parseDiagnosticsData(responseData));
         } catch (error) {
           if (requestGeneration !== diagnosticsRequestGeneration) {
             return;
@@ -854,8 +849,11 @@
         if (rawEndpoint.includes("?") || rawEndpoint.includes("#")) {
           throw new Error("Endpoint URLs cannot contain a query or fragment");
         }
-        if (!["/diagnostics", "/diagnostics/", "/usage", "/usage/"].includes(endpoint.pathname)) {
-          throw new Error("Endpoint path must be /diagnostics or /usage with at most one trailing slash");
+        if (["/usage", "/usage/"].includes(endpoint.pathname)) {
+          throw new Error("Legacy /usage dashboard links have been removed. Change the endpoint path to /diagnostics.");
+        }
+        if (!["/diagnostics", "/diagnostics/"].includes(endpoint.pathname)) {
+          throw new Error("Endpoint path must be /diagnostics with at most one trailing slash");
         }
         return endpoint;
       }
@@ -866,20 +864,7 @@
         window.history.replaceState(null, "", current);
       }
 
-      function parseEndpointData(value) {
-        if (isRecord(value) && isRecord(value.quota_snapshots)) {
-          return {
-            kind: "legacy-usage",
-            usage: parseLegacyUsageData(value),
-          };
-        }
-        return {
-          kind: "diagnostics",
-          diagnostics: parseDiagnosticsData(value),
-        };
-      }
-
-      function parseLegacyUsageData(value) {
+      function parseUsageData(value) {
         if (!isRecord(value) || !isRecord(value.quota_snapshots)) {
           throw new Error("Usage response has invalid quota snapshots");
         }
@@ -964,7 +949,7 @@
         if (usage.status === "available") {
           return {
             status: "available",
-            data: parseLegacyUsageData(usage.data),
+            data: parseUsageData(usage.data),
           };
         }
         if (usage.status === "unavailable") {
@@ -1032,23 +1017,6 @@
         renderRuntime(readiness, data.models.length);
         renderModels(data.models, readiness.modelCatalog);
         renderUsage(data.usage);
-      }
-
-      function renderLegacyUsage(usage) {
-        renderRuntime({});
-        renderModels();
-        renderUsage({ status: "available", data: usage });
-        elements.statusDot.className = "status-dot degraded";
-        setText(elements.statusLabel, "Quota data only");
-        setText(
-          elements.statusSummary,
-          "This legacy usage endpoint does not report readiness, authentication, recovery, concurrency, or model routing.",
-        );
-        setText(elements.generatedAt, `Legacy usage fetched ${formatDate(Date.now())}`);
-        elements.reasonList.replaceChildren();
-        const item = document.createElement("li");
-        item.textContent = "Proxy readiness was not checked";
-        elements.reasonList.append(item);
       }
 
       function renderReasons(reasons, warnings = []) {

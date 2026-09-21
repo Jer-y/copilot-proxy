@@ -4,13 +4,8 @@ import process from 'node:process'
 export const DEFAULT_HOST = '127.0.0.1'
 export const CORS_ORIGINS_ENV = 'COPILOT_PROXY_CORS_ORIGINS'
 export const ALLOWED_HOSTS_ENV = 'COPILOT_PROXY_ALLOWED_HOSTS'
-export const EXPOSE_TOKEN_ENV = 'COPILOT_PROXY_EXPOSE_TOKEN'
 export const EXPOSE_ACCOUNT_IDENTITY_ENV = 'COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY'
 export const HOSTED_USAGE_VIEWER_ORIGIN = 'https://jer-y.github.io'
-
-interface RequestWithIp extends Request {
-  ip?: string
-}
 
 const loopbackV6 = new BlockList()
 loopbackV6.addAddress('::1', 'ipv6')
@@ -129,10 +124,6 @@ export function isLoopbackHostname(hostname: string): boolean {
   return false
 }
 
-export function isLoopbackAddress(address: string): boolean {
-  return isLoopbackHostname(address)
-}
-
 function normalizeWebOrigin(origin: string): string | null {
   try {
     const url = new URL(origin)
@@ -230,10 +221,6 @@ export function isRequestHostAllowed(request: Request): boolean {
   return isLoopbackHostname(hostname) || configuredAllowedHosts().has(normalizeHostname(hostname))
 }
 
-export function isTokenExposureEnabled(): boolean {
-  return process.env[EXPOSE_TOKEN_ENV]?.trim() === '1'
-}
-
 export function isAccountIdentityExposureEnabled(): boolean {
   return process.env[EXPOSE_ACCOUNT_IDENTITY_ENV]?.trim() === '1'
 }
@@ -267,32 +254,4 @@ function requestHostname(request: Request): string | null {
   catch {
     return null
   }
-}
-
-export function isTokenRequestAllowed(request: Request): boolean {
-  if (!isTokenExposureEnabled())
-    return false
-
-  // srvx attaches the socket address as request.ip for Node/Bun adapters. Revisit
-  // this check if the proxy is ever placed behind another HTTP reverse proxy.
-  const remoteIp = (request as RequestWithIp).ip
-  if (!remoteIp || !isLoopbackAddress(remoteIp))
-    return false
-
-  let requestUrl: URL
-  try {
-    requestUrl = new URL(request.url)
-  }
-  catch {
-    return false
-  }
-
-  if (!isLoopbackHostname(requestUrl.hostname) || !isRequestHostAllowed(request))
-    return false
-
-  const origin = request.headers.get('origin')
-  if (!origin)
-    return true
-
-  return normalizeWebOrigin(origin) === requestUrl.origin
 }
