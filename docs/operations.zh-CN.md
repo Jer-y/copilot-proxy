@@ -25,7 +25,7 @@ copilot-proxy start --preset custom --max-concurrency 3 --max-queue 10
 
 ## 多个 Copilot 账号
 
-多账号模式面向一个可信操作者管理自己拥有的多个 GitHub Copilot 身份。它提供确定性路由，不提供多租户、负载均衡、配额池化或自动故障转移。
+多账号模式面向一个可信操作者管理名下的多个 GitHub Copilot 身份。它提供确定性路由，不提供多租户、负载均衡、配额池化或自动故障转移。
 
 从尚未支持多账号 runtime lock 的构建升级后，首次执行会修改配置的 `accounts` 命令前，必须停止或重启所有由旧构建启动的前台 proxy。已安装的原生服务会被检测并按事务重启，但旧前台进程无法发布 `runtime.lock`；继续运行会让它仍使用旧的单账号内存状态。
 

@@ -4,7 +4,7 @@
 
 升级现有部署前，请检查 [v0.10.0 之后的升级变更](operations.zh-CN.md#v0100-之后的升级变更)，尤其是已退役的审批设置和令牌诊断。
 
-copilot-proxy 可以保存一个或多个由所有者配置的 GitHub Copilot 身份，但只服务一个可信操作者，也没有下游用户认证。更改监听地址前，请先从[产品支持矩阵](product-support.zh-CN.md#部署支持矩阵)选择合适的拓扑。
+copilot-proxy 可以管理一个或多个由所有者配置的 GitHub Copilot 身份，但只面向单一可信操作者，不提供下游用户认证。更改监听地址前，请先从[产品支持矩阵](product-support.zh-CN.md#部署支持矩阵)选择合适的拓扑。
 
 ## 本机回环地址
 

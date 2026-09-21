@@ -2,7 +2,7 @@ English | [简体中文](api-reference.zh-CN.md)
 
 # API and configuration reference
 
-Use `http://127.0.0.1:4399/v1` as the OpenAI-compatible base URL and `http://127.0.0.1:4399` as the Anthropic base URL.
+The OpenAI-compatible API base URL is `http://127.0.0.1:4399/v1`, and the Anthropic API base URL is `http://127.0.0.1:4399`.
 
 ## Routes
 

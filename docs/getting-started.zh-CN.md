@@ -2,7 +2,7 @@
 
 # 入门指南
 
-选定一个版本，生成客户端配置，再验证真实客户端回合。非回环访问请先阅读[部署](deployment.zh-CN.md)。
+安装与配置流程分为三步：安装指定版本、运行 `setup` 探测生成客户端配置，并在本地运行代理后完成实际调用验证。非回环网络环境请先查阅[部署](deployment.zh-CN.md)。
 
 ## 环境要求
 
@@ -47,7 +47,7 @@ copilot-proxy setup claude
 # 或：copilot-proxy setup codex / copilot-proxy setup openai-sdk
 ```
 
-setup 可能更新代理认证数据，但只打印客户端配置，不保存客户端文件或启动客户端。它选择[目录允许的原生路由](protocol-compatibility.zh-CN.md#动态模型目录)，通过临时回环监听器探测。
+`setup` 会在本地建立临时监听器，探测上游端点连通性并输出客户端配置；它可能会更新代理自身的登录认证凭据，但不会修改客户端配置文件，也不会启动客户端进程。它根据[动态模型目录](protocol-compatibility.zh-CN.md#动态模型目录)筛选支持的原生路由。
 
 - Claude 和 Codex 要求流式输出正常完成；OpenAI SDK setup 检查所选 JSON 路由。不同于主模型的 Claude `--small-model` 会单独探测。
 - 超时或达到输出、退出等待限制表示验证未完成，不表示能力不受支持。只有 Codex WebSocket 探测失败时，保留独立验证通过的 HTTP/SSE profile，并设置 `supports_websockets = false`。

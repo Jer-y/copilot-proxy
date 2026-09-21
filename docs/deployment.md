@@ -4,7 +4,7 @@ English | [简体中文](deployment.zh-CN.md)
 
 Before upgrading an existing deployment, review the [upgrade changes after v0.10.0](operations.md#upgrade-changes-after-v0100), especially retired approval settings and token diagnostics.
 
-copilot-proxy may hold one or more owner-configured GitHub Copilot identities, but it serves one trusted operator and has no downstream user authentication. Choose a topology from the [Product support matrix](product-support.md#deployment-support-matrix) before changing its listener.
+copilot-proxy can hold one or more owner-configured GitHub Copilot identities, but serves a single trusted operator and provides no downstream user authentication. Review the [Product support matrix](product-support.md#deployment-support-matrix) before changing its listener address.
 
 ## Local loopback
 

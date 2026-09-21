@@ -4,9 +4,9 @@ English | [简体中文](product-support.zh-CN.md)
 
 ## Product definition
 
-copilot-proxy is a local protocol adapter for one trusted operator. It lets trusted clients use one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs.
+copilot-proxy is a local protocol adapter for one trusted operator, exposing one or more owner-configured GitHub Copilot identities through standard OpenAI- and Anthropic-compatible APIs.
 
-One process owns a data directory, listener, diagnostics, and optional global concurrency limit. Each identity has its own tokens, model catalog, recovery state, account type, and optional limiter. Requests bind to one account; unavailability fails without load balancing or automatic failover. These upstream identities do not add downstream users or enterprise controls.
+A single process manages its local data directory, network listener, runtime diagnostics, and optional global concurrency limiter. Each configured Copilot identity independently maintains its access token, dynamic model catalog, circuit-breaker recovery state, account type, and optional account-level concurrency limiter. Incoming requests are routed deterministically to a specific account; if the target account is unavailable, the request fails immediately without load balancing or automatic failover. The proxy provides no downstream multi-tenant isolation, user authentication, or enterprise governance.
 
 ## Deployment support matrix
 

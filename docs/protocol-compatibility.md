@@ -2,7 +2,7 @@ English | [简体中文](protocol-compatibility.zh-CN.md)
 
 # Protocol compatibility
 
-copilot-proxy treats the client-facing protocol and the Copilot upstream protocol as separate contracts. Only native protocol routes are supported: the client request and the selected Copilot endpoint must use the same API.
+Client protocol requirements and Copilot's actual behavior must be validated independently. The proxy only supports forwarding within the same API family—for instance, Messages requests can only go to native Messages endpoints—applying bounded compatibility adaptations when needed.
 
 ## Route modes
 

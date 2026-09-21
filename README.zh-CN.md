@@ -2,7 +2,7 @@
 
 # Copilot API Proxy
 
-面向单一可信操作者的本地适配器，将一个或多个由所有者配置的 GitHub Copilot 身份接入兼容 OpenAI 和 Anthropic 的 API。
+本地协议反向代理服务，面向单一可信操作者，将一个或多个由所有者配置的 GitHub Copilot 身份接入兼容 OpenAI 和 Anthropic 的 API。
 
 > [!WARNING]
 > 本项目通过逆向工程实现，非官方支持；Copilot 变化可能导致失效，过度自动化可能触发滥用控制。请阅读 [GitHub 可接受使用政策](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github)和 [Copilot 条款](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot)。
@@ -33,7 +33,7 @@ copilot-proxy setup claude
 - 所选模型明确声明支持时可用的原生 Responses WebSocket。
 - 确定性多账号路由、客户端设置、诊断和原生服务管理。
 
-只支持原生协议，不做跨协议翻译、账号负载均衡或自动故障转移。可用性取决于账号、模型、端点和传输，详见[协议兼容性](docs/protocol-compatibility.zh-CN.md)。
+只支持同协议原生转发，不做跨协议翻译（如 Messages ↔ Responses 互转），也不做账号负载均衡或自动故障转移。端点与模型可用性取决于账号订阅、端点及传输方式，详见[协议兼容性](docs/protocol-compatibility.zh-CN.md)。
 
 ## 文档
 

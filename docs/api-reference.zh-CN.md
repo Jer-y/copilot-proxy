@@ -2,7 +2,7 @@
 
 # API 与配置参考
 
-OpenAI 兼容 base URL 使用 `http://127.0.0.1:4399/v1`，Anthropic base URL 使用 `http://127.0.0.1:4399`。
+OpenAI 兼容 API 的 Base URL 为 `http://127.0.0.1:4399/v1`，Anthropic API 的 Base URL 为 `http://127.0.0.1:4399`。
 
 ## 路由
 

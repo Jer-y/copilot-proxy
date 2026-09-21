@@ -2,7 +2,7 @@ English | [简体中文](README.zh-CN.md)
 
 # Copilot API Proxy
 
-A local adapter for one trusted operator, exposing one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs.
+A local reverse proxy that exposes one or more owner-configured GitHub Copilot identities through standard OpenAI- and Anthropic-compatible API endpoints.
 
 > [!WARNING]
 > Unofficial and reverse-engineered; Copilot changes may break it, and excessive automation may trigger abuse controls. Review the [GitHub Acceptable Use Policies](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github) and [Copilot Terms](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot).
@@ -33,7 +33,7 @@ This document describes its revision; use bundled documentation for a published 
 - Native Responses WebSocket when advertised by the selected model.
 - Deterministic multi-account routing, client setup, diagnostics, and native services.
 
-Only native protocols are supported: no cross-protocol translation, account load balancing, or automatic failover. Availability depends on the account, model, endpoint, and transport; see [Protocol compatibility](docs/protocol-compatibility.md).
+Only native protocols are supported: no cross-protocol translation (e.g. converting between Messages and Responses), account load balancing, or automatic failover. Availability depends on the account, model, endpoint, and transport; see [Protocol compatibility](docs/protocol-compatibility.md).
 
 ## Documentation
 

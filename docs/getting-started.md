@@ -2,7 +2,7 @@ English | [简体中文](getting-started.zh-CN.md)
 
 # Getting started
 
-Install one version, generate client configuration, then verify a real client turn. For non-loopback access, read [Deployment](deployment.md) first.
+The setup flow consists of three steps: install the proxy, run `setup` to probe upstream support and generate client configuration, and start the local proxy before validating with a live request. For non-loopback network environments, read [Deployment](deployment.md) first.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ copilot-proxy setup claude
 # Or: copilot-proxy setup codex / copilot-proxy setup openai-sdk
 ```
 
-Setup may update the proxy's authentication data, but only prints client configuration: it does not save client files or launch the client. It selects a [catalog-eligible native route](protocol-compatibility.md#dynamic-model-catalog) and probes it through a disposable loopback listener.
+Setup may update the proxy's authentication data, but only prints client configuration: it does not save client files or launch the client. It selects a [catalog-eligible native route](protocol-compatibility.md#dynamic-model-catalog) and probes upstream connectivity through a temporary loopback listener.
 
 - Claude and Codex require completed streaming output; OpenAI SDK setup checks the selected JSON route. A distinct Claude `--small-model` is probed separately.
 - Probe timeouts or output/shutdown limits mean validation is incomplete, not that a capability is unsupported. If only the Codex WebSocket probe fails, setup retains the independently validated HTTP/SSE profile with `supports_websockets = false`.
