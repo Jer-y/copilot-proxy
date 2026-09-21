@@ -106,8 +106,8 @@ let originalModels: ModelsResponse | undefined
 let sessions: ResponsesWebSocketSession[] = []
 
 beforeEach(() => {
-  originalModels = state.models
-  state.models = {
+  originalModels = state.defaultAccount.models
+  state.defaultAccount.models = {
     object: 'list',
     data: [
       makeModel('gpt-ws', ['/responses', 'ws:/responses']),
@@ -122,7 +122,7 @@ afterEach(async () => {
   sessions = []
   await Promise.resolve()
   configureCopilotFetchTimeouts({})
-  state.models = originalModels
+  state.defaultAccount.models = originalModels
 })
 
 describe('ResponsesWebSocketSession', () => {
@@ -453,7 +453,7 @@ describe('ResponsesWebSocketSession', () => {
   })
 
   test('requires an exact live model entry after Anthropic model normalization', async () => {
-    state.models?.data.push(makeModel('claude-opus-4.6', ['ws:/responses']))
+    state.defaultAccount.models?.data.push(makeModel('claude-opus-4.6', ['ws:/responses']))
 
     const unsupportedSuffix = createHarness()
     unsupportedSuffix.session.receive(textMessage({

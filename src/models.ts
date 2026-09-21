@@ -5,6 +5,7 @@ import type { ModelsResponse } from './services/copilot/get-models'
 import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
+import { state } from '~/lib/state'
 
 import { assertProxyEndpointAvailable } from './daemon/service-env'
 import { selectCommandAccount, verifyCommandAccountIdentity } from './lib/account/command-selection'
@@ -13,7 +14,8 @@ import { validateAccountType } from './lib/cli-validators'
 import { ensurePaths } from './lib/paths'
 import { buildModelCapabilityProfiles } from './lib/product-capabilities'
 import { initializeNodeHttpClient } from './lib/proxy'
-import { setupCopilotToken, setupGitHubToken } from './lib/token'
+import { setupGitHubToken } from './lib/token'
+
 import { assertModelCatalogSnapshot, cacheVSCodeVersion } from './lib/utils'
 import { getModels } from './services/copilot/get-models'
 
@@ -63,7 +65,7 @@ const DEFAULT_DEPENDENCIES: ModelsCommandDependencies = {
       return
     }
     await setupGitHubToken()
-    await setupCopilotToken({ scheduleRefresh: false })
+    await state.defaultAccount.tokens.setup({ scheduleRefresh: false })
   },
   async fetchModels(selection) {
     return await getModels(selection.context)

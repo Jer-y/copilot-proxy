@@ -18,14 +18,14 @@ function restoreRequestPolicyState(snapshot: {
   lastRequestTimestamp?: number
   copilotToken?: string
   vsCodeVersion?: string
-  accountType: string
+  accountType: typeof state.defaultAccount.accountType
 }) {
   state.rateLimitSeconds = snapshot.rateLimitSeconds
   state.rateLimitWait = snapshot.rateLimitWait
   state.lastRequestTimestamp = snapshot.lastRequestTimestamp
-  state.copilotToken = snapshot.copilotToken
-  state.vsCodeVersion = snapshot.vsCodeVersion
-  state.accountType = snapshot.accountType
+  state.defaultAccount.copilotToken = snapshot.copilotToken
+  state.defaultAccount.vsCodeVersion = snapshot.vsCodeVersion
+  state.defaultAccount.accountType = snapshot.accountType
 }
 
 let stateSnapshot: {
@@ -34,7 +34,7 @@ let stateSnapshot: {
   lastRequestTimestamp?: number
   copilotToken?: string
   vsCodeVersion?: string
-  accountType: string
+  accountType: typeof state.defaultAccount.accountType
 }
 
 beforeEach(() => {
@@ -42,16 +42,16 @@ beforeEach(() => {
     rateLimitSeconds: state.rateLimitSeconds,
     rateLimitWait: state.rateLimitWait,
     lastRequestTimestamp: state.lastRequestTimestamp,
-    copilotToken: state.copilotToken,
-    vsCodeVersion: state.vsCodeVersion,
-    accountType: state.accountType,
+    copilotToken: state.defaultAccount.copilotToken,
+    vsCodeVersion: state.defaultAccount.vsCodeVersion,
+    accountType: state.defaultAccount.accountType,
   }
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false
   state.lastRequestTimestamp = undefined
-  state.copilotToken = 'test-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
+  state.defaultAccount.copilotToken = 'test-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
   fetchMock.mockClear()
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock

@@ -32,10 +32,10 @@ beforeEach(() => {
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false
   state.lastRequestTimestamp = undefined
-  state.copilotToken = 'test-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
-  state.models = createTestModelCatalog()
+  state.defaultAccount.copilotToken = 'test-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
+  state.defaultAccount.models = createTestModelCatalog()
   fetchMock.mockClear()
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock

@@ -59,16 +59,16 @@ const fetchMock = mock(async (url: string, init?: RequestInit) => {
 beforeEach(() => {
   fetchMock.mockClear()
   state.lastRequestTimestamp = undefined
-  state.copilotToken = undefined
-  state.models = createTestModelCatalog()
+  state.defaultAccount.copilotToken = undefined
+  state.defaultAccount.models = createTestModelCatalog()
   globalThis.fetch = originalFetch
 })
 
 describe('messages error paths', () => {
   test('upstream AbortError returns Anthropic API errors for messages and count_tokens', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
     const abortError = new Error('Copilot upstream request aborted.')
     abortError.name = 'AbortError'
     globalThis.fetch = mock(async () => {
@@ -110,9 +110,9 @@ describe('messages error paths', () => {
   })
 
   test('native Anthropic errors preserve upstream correlation headers', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
     globalThis.fetch = mock(async (url: string) => {
       expect(url.endsWith('/v1/messages')).toBe(true)
       return new Response('forbidden\n', {
@@ -420,9 +420,9 @@ describe('messages error paths', () => {
   })
 
   test('native passthrough forwards context_management and mcp_toolset for upstream capability truth', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
     // @ts-expect-error test mock only needs fetch callable shape
     globalThis.fetch = fetchMock
 
@@ -652,9 +652,9 @@ describe('messages error paths', () => {
   })
 
   test('native passthrough preserves official tool-change and fallback fields for upstream truth', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
 
     fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
       expect(url.endsWith('/v1/messages')).toBe(true)
@@ -847,10 +847,10 @@ describe('messages error paths', () => {
   })
 
   test('missing "max_tokens" is backfilled from model limits before forwarding', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    state.models = {
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
+    state.defaultAccount.models = {
       data: [{
         id: 'claude-sonnet-4',
         supported_endpoints: ['/v1/messages'],
@@ -860,7 +860,7 @@ describe('messages error paths', () => {
           },
         },
       }],
-    } as typeof state.models
+    } as typeof state.defaultAccount.models
 
     // @ts-expect-error test mock only needs fetch callable shape
     globalThis.fetch = fetchMock
@@ -883,10 +883,10 @@ describe('messages error paths', () => {
   })
 
   test('explicit client max_tokens is preserved even above the fetched output limit', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    state.models = {
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
+    state.defaultAccount.models = {
       data: ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8'].map(id => ({
         id,
         supported_endpoints: ['/v1/messages'],
@@ -896,7 +896,7 @@ describe('messages error paths', () => {
           },
         },
       })),
-    } as typeof state.models
+    } as typeof state.defaultAccount.models
 
     // @ts-expect-error test mock only needs fetch callable shape
     globalThis.fetch = fetchMock
@@ -923,10 +923,10 @@ describe('messages error paths', () => {
   })
 
   test('missing max_tokens uses the fetched limit without a model-specific floor', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    state.models = {
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
+    state.defaultAccount.models = {
       data: ['claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8'].map(id => ({
         id,
         supported_endpoints: ['/v1/messages'],
@@ -936,7 +936,7 @@ describe('messages error paths', () => {
           },
         },
       })),
-    } as typeof state.models
+    } as typeof state.defaultAccount.models
 
     // @ts-expect-error test mock only needs fetch callable shape
     globalThis.fetch = fetchMock
@@ -960,10 +960,10 @@ describe('messages error paths', () => {
   })
 
   test('native Messages uses the fetched Opus 5 output limit', async () => {
-    state.copilotToken = 'test-token'
-    state.vsCodeVersion = '1.0.0'
-    state.accountType = 'individual'
-    state.models = {
+    state.defaultAccount.copilotToken = 'test-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
+    state.defaultAccount.models = {
       data: [{
         id: 'claude-opus-5',
         capabilities: {
@@ -973,7 +973,7 @@ describe('messages error paths', () => {
         },
         supported_endpoints: ['/v1/messages', '/chat/completions'],
       }],
-    } as typeof state.models
+    } as typeof state.defaultAccount.models
 
     // @ts-expect-error test mock only needs fetch callable shape
     globalThis.fetch = fetchMock

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 import { createAccountContext } from '~/lib/account/context'
-import { setDefaultAccountContext, state } from '~/lib/state'
+import { state } from '~/lib/state'
 import { cacheModels, refreshModelsSafely } from '~/lib/utils'
 import { server } from '~/server'
 import { makeModel } from './model-fixtures'
@@ -20,7 +20,7 @@ beforeEach(() => {
   const ctx = createAccountContext({ id: 'default', accountType: 'individual' })
   ctx.copilotToken = 'test-token'
   ctx.vsCodeVersion = '1.0.0'
-  setDefaultAccountContext(ctx)
+  state.defaultAccount = ctx
   state.lastRequestTimestamp = undefined
   fetchMock.mockClear()
   globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -28,7 +28,7 @@ beforeEach(() => {
 
 afterEach(() => {
   state.accounts = originalAccounts
-  setDefaultAccountContext(originalDefault)
+  state.defaultAccount = originalDefault
   globalThis.fetch = originalFetch
 })
 
@@ -66,7 +66,7 @@ describe('dynamic model catalog request boundary', () => {
   test('requests reuse the fetched snapshot and observe model removals on refresh', async () => {
     const snapshot = { object: 'list', data: [makeModel('future-native', ['/responses'])] }
     const load = mock(async () => snapshot)
-    await cacheModels(load)
+    await cacheModels(state.defaultAccount, { fetchModels: load })
     for (let turn = 0; turn < 2; turn++)
       expect((await post('/v1/responses', { model: 'future-native', input: 'hello' })).status).toBe(200)
     expect(load).toHaveBeenCalledTimes(1)
@@ -74,7 +74,7 @@ describe('dynamic model catalog request boundary', () => {
     expect(await (await server.request('/v1/models')).json()).toMatchObject({ data: [{ id: 'future-native' }] })
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
-    await refreshModelsSafely(async () => ({ object: 'list', data: [] }))
+    await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => ({ object: 'list', data: [] }) })
     expect((await post('/v1/responses', { model: 'future-native', input: 'hello' })).status).toBe(400)
     expect(await (await server.request('/v1/models')).json()).toMatchObject({ data: [] })
     expect(snapshot.data).toHaveLength(1)
@@ -82,7 +82,7 @@ describe('dynamic model catalog request boundary', () => {
   })
 
   test('neither a familiar name nor a listed family grants an undeclared route', async () => {
-    await cacheModels(async () => ({ object: 'list', data: [makeModel('gpt-4o'), makeModel('gpt-5.4', ['/responses'])] }))
+    await cacheModels(state.defaultAccount, { fetchModels: async () => ({ object: 'list', data: [makeModel('gpt-4o'), makeModel('gpt-5.4', ['/responses'])] }) })
     expect((await post('/v1/chat/completions', { model: 'gpt-4o', messages: [{ role: 'user', content: 'hello' }] })).status).toBe(400)
     expect((await post('/v1/responses', { model: 'gpt-5.4-fast', input: 'hello' })).status).toBe(400)
     expect(fetchMock).not.toHaveBeenCalled()

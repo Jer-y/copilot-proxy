@@ -32,7 +32,7 @@ export function selectCommandAccount(
         `--account=${requestedAccountId} requires accounts.json; configure the account first with \`copilot-proxy accounts add\`.`,
       )
     }
-    state.accountType = fallbackAccountType
+    state.defaultAccount.accountType = fallbackAccountType
     const registry = new AccountRegistry(undefined, state.defaultAccount)
     return {
       accountId: registry.defaultAccountId,

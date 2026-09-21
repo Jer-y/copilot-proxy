@@ -279,19 +279,19 @@ async function runNodeUnexpectedHandshakeProbe(url: string): Promise<{
 }
 
 describe('authenticated Copilot Responses WebSocket connection', () => {
-  let originalAccountType: typeof state.accountType
+  let originalAccountType: typeof state.defaultAccount.accountType
   let originalToken: string | undefined
 
   beforeEach(() => {
-    originalAccountType = state.accountType
-    originalToken = state.copilotToken
-    state.accountType = 'individual'
-    state.copilotToken = 'old-token'
+    originalAccountType = state.defaultAccount.accountType
+    originalToken = state.defaultAccount.copilotToken
+    state.defaultAccount.accountType = 'individual'
+    state.defaultAccount.copilotToken = 'old-token'
   })
 
   afterEach(() => {
-    state.accountType = originalAccountType
-    state.copilotToken = originalToken
+    state.defaultAccount.accountType = originalAccountType
+    state.defaultAccount.copilotToken = originalToken
   })
 
   test('rebuilds authorization and request IDs for every authenticated attempt', async () => {
@@ -313,7 +313,7 @@ describe('authenticated Copilot Responses WebSocket connection', () => {
     const fetchAuthenticated: NonNullable<ConnectCopilotResponsesWebSocketDeps['fetchAuthenticated']> = mock(async (options) => {
       const firstResponse = await options.request(0)
       expect(firstResponse.status).toBe(401)
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return await options.request(1)
     })
 

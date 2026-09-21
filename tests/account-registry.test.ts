@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, spyOn
 import { AccountRegistry } from '~/lib/account/registry'
 import { writeAccountToken } from '~/lib/account/store'
 import { PATHS } from '~/lib/paths'
-import { setDefaultAccountContext, state } from '~/lib/state'
+import { state } from '~/lib/state'
 import { isModelRefreshScheduled } from '~/lib/utils'
 
 const originalFetch = globalThis.fetch
@@ -22,14 +22,14 @@ beforeEach(() => {
   cleanAccountFiles()
   delete process.env.GH_TOKEN
   delete process.env.GITHUB_TOKEN
-  state.vsCodeVersion = '1.0.0'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
   globalThis.fetch = createUpstreamMock()
 })
 
 afterEach(() => {
   state.accounts?.stopRefreshes()
   state.accounts = originalAccounts
-  setDefaultAccountContext(originalDefault)
+  state.defaultAccount = originalDefault
   globalThis.fetch = originalFetch
   delete process.env.GH_TOKEN
   delete process.env.GITHUB_TOKEN

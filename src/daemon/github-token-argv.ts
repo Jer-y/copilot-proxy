@@ -28,7 +28,7 @@ const INTERNAL_DATA_DIR_OPTION = '--_data-dir'
 const START_NON_TOKEN_STRING_OPTIONS = START_CITTY_STRING_OPTIONS
   .filter(option => option.name !== 'github-token')
 const STRING_START_ALIASES = new Set<string>(START_NON_TOKEN_STRING_OPTIONS.flatMap(option => (
-  'shortName' in option ? [option.shortName] : []
+  option.shortName ? [option.shortName] : []
 )))
 const LONG_GITHUB_TOKEN_OPTIONS = new Map<string, GithubTokenOptionKind>([
   ['--github-token', 'canonical'],

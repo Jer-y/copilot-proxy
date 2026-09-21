@@ -20,6 +20,7 @@ import clipboard from 'clipboardy'
 import consola from 'consola'
 import { events } from 'fetch-event-stream'
 import WebSocket from 'ws'
+import { SETUP_CLI_OPTIONS, withCliOptions } from '~/lib/cli-options'
 
 import { assertProxyEndpointAvailable } from './daemon/service-env'
 import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
@@ -34,7 +35,7 @@ import { isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { SHELL_NAMES } from './lib/shell'
 import { state } from './lib/state'
-import { cancelInFlightCopilotTokenRefreshes, stopCopilotTokenRefresh } from './lib/token'
+
 import { stopModelRefresh } from './lib/utils'
 import { buildBoundModelCatalog } from './routes/models/route'
 import { server } from './server'
@@ -536,9 +537,9 @@ async function stopAndCancelSetupRefreshes(reason: Error): Promise<void> {
     await state.accounts.stopAndCancelRefreshes(reason)
     return
   }
-  stopCopilotTokenRefresh()
-  await cancelInFlightCopilotTokenRefreshes(reason)
-  stopModelRefresh()
+  state.defaultAccount.tokens.stopRefresh()
+  await state.defaultAccount.tokens.cancelInFlight(reason)
+  stopModelRefresh(state.defaultAccount)
 }
 
 export async function fetchDirectSetupWebSocketProbe(
@@ -1023,65 +1024,51 @@ export const setup = defineCommand({
     name: 'setup',
     description: 'Authenticate, validate a live route, and generate client configuration. Codex only: preflight installed Codex >=0.134.0 and bundled metadata before authentication',
   },
-  args: {
+  args: withCliOptions(SETUP_CLI_OPTIONS, {
     'client': {
-      type: 'positional',
       required: true,
       description: 'Client to configure: claude, codex, or openai-sdk',
     },
     'model': {
-      type: 'string',
       description: 'Model to validate; Codex only: must have both a live direct route and installed bundled metadata (required when non-interactive)',
     },
     'small-model': {
-      type: 'string',
       description: 'Direct small/fast Claude model; defaults to the primary model',
     },
     'port': {
-      alias: 'p',
-      type: 'string',
       default: '4399',
       description: 'Disposable validation listener and generated client port',
     },
     'host': {
-      alias: 'H',
-      type: 'string',
       default: '127.0.0.1',
       description: 'Disposable validation listener host',
     },
     'account-type': {
-      alias: 'a',
-      type: 'string',
       default: 'individual',
       description: 'Copilot account route: individual, business, or enterprise',
     },
     'preset': {
-      type: 'enum',
       options: [...SETUP_PRESET_NAMES],
-      default: 'personal',
+      default: 'personal' as const,
       description: 'Local runtime preset used for validation: personal, service, or custom',
     },
     'proxy-env': {
-      type: 'boolean',
       default: false,
       description: 'Use configured HTTP(S)_PROXY/NO_PROXY variables',
     },
     'shell': {
-      type: 'enum',
       options: [...SHELL_NAMES],
       description: 'Shell syntax for generated commands; auto-detected when omitted',
     },
     'json': {
-      type: 'boolean',
       default: false,
       description: 'Print the setup result and generated configuration as JSON; cannot be combined with --copy',
     },
     'copy': {
-      type: 'boolean',
       default: false,
       description: 'Copy the generated configuration to the clipboard after validation; cannot be combined with --json',
     },
-  },
+  }),
   async run({ args, rawArgs }) {
     if (!isSetupClient(args.client)) {
       throw new TypeError(`Unknown setup client ${args.client}; choose ${SETUP_CLIENTS.join(', ')}`)

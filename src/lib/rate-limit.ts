@@ -5,6 +5,8 @@ import consola from 'consola'
 import { HTTPError } from './error'
 import { MAX_TIMER_DELAY_MS } from './http-timeouts'
 
+export type RateLimitState = Pick<State, 'rateLimitSeconds' | 'rateLimitWait' | 'lastRequestTimestamp'>
+
 export interface RateLimitOptions {
   signal?: AbortSignal
 }
@@ -24,10 +26,10 @@ interface RateLimitWaitQueue {
   timer?: ReturnType<typeof setTimeout>
 }
 
-const waitQueues = new WeakMap<State, RateLimitWaitQueue>()
+const waitQueues = new WeakMap<RateLimitState, RateLimitWaitQueue>()
 
 export async function checkRateLimit(
-  state: State,
+  state: RateLimitState,
   options: RateLimitOptions = {},
 ): Promise<void> {
   if (state.rateLimitSeconds === undefined)
@@ -102,7 +104,7 @@ export async function checkRateLimit(
 }
 
 function reserveRateLimitSlot(
-  state: State,
+  state: RateLimitState,
   queue: RateLimitWaitQueue,
   dueAt: number,
   gapMs: number,
@@ -142,7 +144,7 @@ function reserveRateLimitSlot(
   })
 }
 
-function completeQueueHead(state: State, queue: RateLimitWaitQueue): void {
+function completeQueueHead(state: RateLimitState, queue: RateLimitWaitQueue): void {
   const reservation = queue.reservations.shift()
   if (!reservation || reservation.settled)
     return
@@ -171,7 +173,7 @@ function compactQueueFrom(queue: RateLimitWaitQueue, startIndex: number): void {
   }
 }
 
-function scheduleQueueHead(state: State, queue: RateLimitWaitQueue): void {
+function scheduleQueueHead(state: RateLimitState, queue: RateLimitWaitQueue): void {
   if (queue.timer !== undefined) {
     clearTimeout(queue.timer)
     queue.timer = undefined
@@ -189,7 +191,7 @@ function scheduleQueueHead(state: State, queue: RateLimitWaitQueue): void {
   )
 }
 
-function syncQueueState(state: State, queue: RateLimitWaitQueue): void {
+function syncQueueState(state: RateLimitState, queue: RateLimitWaitQueue): void {
   const tail = queue.reservations.at(-1)
   state.lastRequestTimestamp = tail?.dueAt ?? queue.baselineTimestamp
 

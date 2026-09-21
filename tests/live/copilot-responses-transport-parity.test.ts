@@ -1,5 +1,4 @@
 import type { ResponsesTransportAttempt, ResponsesTransportOutcome } from './copilot-responses-transport-parity'
-import type { State } from '~/lib/state'
 
 import { expect, test } from 'bun:test'
 import { state } from '~/lib/state'
@@ -124,16 +123,20 @@ async function withLiveCopilotState<T>(
   config: LiveParityConfig,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const snapshot: State = { ...state }
-  state.copilotToken = config.token
-  state.accountType = config.accountType
-  state.vsCodeVersion = config.vsCodeVersion
+  const snapshot = {
+    accountType: state.defaultAccount.accountType,
+    copilotToken: state.defaultAccount.copilotToken,
+    vsCodeVersion: state.defaultAccount.vsCodeVersion,
+  }
+  state.defaultAccount.copilotToken = config.token
+  state.defaultAccount.accountType = (config.accountType) as typeof state.defaultAccount.accountType
+  state.defaultAccount.vsCodeVersion = config.vsCodeVersion
 
   try {
     return await operation()
   }
   finally {
-    Object.assign(state, snapshot)
+    Object.assign(state.defaultAccount, snapshot)
   }
 }
 

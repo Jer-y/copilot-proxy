@@ -41,13 +41,7 @@ export interface AccountsConfiguration {
   routes: AccountRouteRule[]
 }
 
-/**
- * All mutable state that belongs to one GitHub/Copilot identity.
- *
- * Token lifecycle and recovery registries are attached in the next mechanical
- * refactor step. Keeping the data boundary explicit first lets legacy callers
- * continue through State's compatibility accessors without changing behavior.
- */
+/** All mutable state that belongs to one GitHub/Copilot identity. */
 export interface AccountContext {
   readonly id: string
   accountType: AccountType

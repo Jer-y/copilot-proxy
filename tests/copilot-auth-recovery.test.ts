@@ -30,15 +30,15 @@ describe('authenticated Copilot recovery', () => {
   let originalLimiter: typeof state.concurrencyLimiter
 
   beforeEach(() => {
-    originalToken = state.copilotToken
+    originalToken = state.defaultAccount.copilotToken
     originalLimiter = state.concurrencyLimiter
-    state.copilotToken = 'old-token'
+    state.defaultAccount.copilotToken = 'old-token'
     state.concurrencyLimiter = undefined
     resetCopilotRecoveryStateForTests()
   })
 
   afterEach(() => {
-    state.copilotToken = originalToken
+    state.defaultAccount.copilotToken = originalToken
     state.concurrencyLimiter = originalLimiter
     resetCopilotRecoveryStateForTests()
   })
@@ -46,7 +46,7 @@ describe('authenticated Copilot recovery', () => {
   test('refreshes after a 401 and rebuilds the request once', async () => {
     const authorizations: string[] = []
     const refreshToken = mock(async () => {
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
 
@@ -54,7 +54,7 @@ describe('authenticated Copilot recovery', () => {
       endpoint: '/responses',
       model: 'gpt-test',
       request: async (attempt) => {
-        authorizations.push(`Bearer ${state.copilotToken}`)
+        authorizations.push(`Bearer ${state.defaultAccount.copilotToken}`)
         return attempt === 0
           ? new Response('Unauthorized', { status: 401 })
           : completed()
@@ -620,7 +620,7 @@ describe('authenticated Copilot recovery', () => {
   test('coalesces concurrent same-scope failures into one refresh and one canary', async () => {
     const refreshToken = mock(async () => {
       await new Promise(resolve => setTimeout(resolve, 5))
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
     let firstAttempts = 0
@@ -664,7 +664,7 @@ describe('authenticated Copilot recovery', () => {
     const refreshToken = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
     let leaderResponseDiscarded = false
@@ -810,7 +810,7 @@ describe('authenticated Copilot recovery', () => {
     const initialRefresh = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       markRefreshFinished()
       return { outcome: 'refreshed' as const, generation: 2 }
     })
@@ -1046,7 +1046,7 @@ describe('authenticated Copilot recovery', () => {
     const initialRefresh = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       markRefreshFinished()
       return { outcome: 'refreshed' as const, generation: 2 }
     })
@@ -1100,7 +1100,7 @@ describe('authenticated Copilot recovery', () => {
     const initialRefresh = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token-1'
+      state.defaultAccount.copilotToken = 'new-token-1'
       markRefreshFinished()
       return { outcome: 'refreshed' as const, generation: 2 }
     })
@@ -1120,15 +1120,15 @@ describe('authenticated Copilot recovery', () => {
 
     const authorizations: string[] = []
     const nextRefresh = mock(async () => {
-      state.copilotToken = 'new-token-2'
+      state.defaultAccount.copilotToken = 'new-token-2'
       return { outcome: 'refreshed' as const, generation: 3 }
     })
     const nextResponse = await fetchAuthenticatedCopilot({
       endpoint: '/responses',
       model: 'gpt-aborted-permit-not-a-follower',
       request: async () => {
-        authorizations.push(`Bearer ${state.copilotToken}`)
-        return state.copilotToken === 'new-token-2'
+        authorizations.push(`Bearer ${state.defaultAccount.copilotToken}`)
+        return state.defaultAccount.copilotToken === 'new-token-2'
           ? completed('fresh recovery')
           : new Response('Unauthorized', { status: 401 })
       },
@@ -1154,7 +1154,7 @@ describe('authenticated Copilot recovery', () => {
     const refreshToken = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
 
@@ -1234,7 +1234,7 @@ describe('authenticated Copilot recovery', () => {
     const refreshToken = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
 
@@ -2458,7 +2458,7 @@ describe('authenticated Copilot recovery', () => {
     const refreshToken = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
 
@@ -2543,7 +2543,7 @@ describe('authenticated Copilot recovery', () => {
     const refreshToken = mock(async () => {
       markRefreshStarted()
       await refreshGate
-      state.copilotToken = 'new-token'
+      state.defaultAccount.copilotToken = 'new-token'
       return { outcome: 'refreshed' as const, generation: 2 }
     })
     const leaderRequest = mock(async (attempt: 0 | 1) => attempt === 0

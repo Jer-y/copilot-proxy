@@ -11,8 +11,8 @@ function fail(message: string): never {
 
 describe('dynamic native routing', () => {
   test('requires an account catalog, even for formerly hardcoded model names', () => {
-    const previous = state.models
-    state.models = { object: 'list', data: [makeModel('gpt-5.4', ['/responses'])] }
+    const previous = state.defaultAccount.models
+    state.defaultAccount.models = { object: 'list', data: [makeModel('gpt-5.4', ['/responses'])] }
     try {
       for (const model of ['gpt-5.4', 'claude-opus-4.8', 'future-model']) {
         expect(() => resolveRoute('responses', model, fail)).toThrow(HTTPError)
@@ -20,7 +20,7 @@ describe('dynamic native routing', () => {
       }
     }
     finally {
-      state.models = previous
+      state.defaultAccount.models = previous
     }
   })
 

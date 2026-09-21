@@ -1,8 +1,10 @@
 import type { ParseArgsOptionsConfig } from 'node:util'
+import type { CliOptionMetadata } from './cli-options'
 import process from 'node:process'
 import { parseArgs } from 'node:util'
 
 import { cittyLongOptionNames } from './citty-argv'
+import { SETUP_CLI_OPTIONS, START_CLI_OPTIONS } from './cli-options'
 import { ALLOWED_HOSTS_ENV, DEFAULT_HOST, hasValidNonLoopbackAllowedHost } from './security'
 
 export const RUN_PRESET_NAMES = ['personal', 'service', 'gateway-upstream', 'custom'] as const
@@ -56,70 +58,26 @@ export const RUN_PRESETS: Readonly<Record<RunPresetName, Readonly<RunPresetDefau
   },
 }
 
-interface RunOptionDefinition {
-  name: string
-  short?: string
-  type: 'boolean' | 'string'
-}
-
-// Keep the start portion aligned with every option accepted by that command.
-// Citty delegates parsing to node:util after generating camelCase aliases for
-// dashed names. Presence detection needs the complete type table: otherwise a
-// string option such as --github-token can consume text that only looks like a
-// later option, and a short boolean cluster such as -vH127.0.0.1 can be misread.
-const START_RUN_OPTION_DEFINITIONS: readonly RunOptionDefinition[] = [
-  { name: 'port', short: 'p', type: 'string' },
-  { name: 'host', short: 'H', type: 'string' },
-  { name: 'preset', type: 'string' },
-  { name: 'verbose', short: 'v', type: 'boolean' },
-  { name: 'account-type', short: 'a', type: 'string' },
-  { name: 'rate-limit', short: 'r', type: 'string' },
-  { name: 'wait', short: 'w', type: 'boolean' },
-  { name: 'max-concurrency', type: 'string' },
-  { name: 'max-queue', type: 'string' },
-  { name: 'queue-timeout-ms', type: 'string' },
-  { name: 'headers-timeout-ms', type: 'string' },
-  { name: 'body-timeout-ms', type: 'string' },
-  { name: 'connect-timeout-ms', type: 'string' },
-  { name: 'github-token', short: 'g', type: 'string' },
-  { name: 'proxy-env', type: 'boolean' },
-  { name: 'daemon', short: 'd', type: 'boolean' },
-  { name: '_service', type: 'boolean' },
-  { name: '_log-file', type: 'boolean' },
-  { name: '_data-dir', type: 'string' },
-  { name: '_instance-token', type: 'string' },
-]
-
-const SETUP_RUN_OPTION_DEFINITIONS: readonly RunOptionDefinition[] = [
-  { name: 'model', type: 'string' },
-  { name: 'small-model', type: 'string' },
-  { name: 'port', short: 'p', type: 'string' },
-  { name: 'host', short: 'H', type: 'string' },
-  { name: 'account-type', short: 'a', type: 'string' },
-  { name: 'preset', type: 'string' },
-  { name: 'proxy-env', type: 'boolean' },
-  { name: 'shell', type: 'string' },
-  { name: 'json', type: 'boolean' },
-  { name: 'copy', type: 'boolean' },
-]
-
-function buildRunParseOptions(definitions: readonly RunOptionDefinition[]): ParseArgsOptionsConfig {
+function buildRunParseOptions(definitions: Record<string, CliOptionMetadata>): ParseArgsOptionsConfig {
   const options: ParseArgsOptionsConfig = {}
-  for (const definition of definitions) {
-    const [name, ...aliases] = [...cittyLongOptionNames(definition.name)]
+  for (const [optionName, definition] of Object.entries(definitions)) {
+    if (definition.type === 'positional')
+      continue
+    const type = definition.type === 'boolean' ? 'boolean' : 'string'
+    const [name, ...aliases] = [...cittyLongOptionNames(optionName)]
     options[name] = {
-      type: definition.type,
-      ...(definition.short && { short: definition.short }),
+      type,
+      ...(definition.alias && { short: definition.alias }),
     }
     for (const alias of aliases)
-      options[alias] = { type: definition.type }
+      options[alias] = { type }
   }
   return options
 }
 
 const RUN_PARSE_OPTIONS = {
-  setup: buildRunParseOptions(SETUP_RUN_OPTION_DEFINITIONS),
-  start: buildRunParseOptions(START_RUN_OPTION_DEFINITIONS),
+  setup: buildRunParseOptions(SETUP_CLI_OPTIONS),
+  start: buildRunParseOptions(START_CLI_OPTIONS),
 } as const
 
 export function isRunPresetName(value: string): value is RunPresetName {

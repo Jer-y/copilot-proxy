@@ -9,7 +9,7 @@ import { setupGitHubToken } from '~/lib/token'
 
 test('authentication, initial token fetch, and refresh never log plaintext tokens', async () => {
   const oldTokenFile = fs.existsSync(PATHS.GITHUB_TOKEN_PATH) ? fs.readFileSync(PATHS.GITHUB_TOKEN_PATH) : undefined
-  const oldGithubToken = state.githubToken
+  const oldGithubToken = state.defaultAccount.githubToken
   const oldLevel = consola.level
   const silentLog = Object.assign(() => {}, { raw: () => {} })
   const info = spyOn(consola, 'info').mockImplementation(silentLog)
@@ -24,7 +24,7 @@ test('authentication, initial token fetch, and refresh never log plaintext token
     await ensurePaths()
     fs.writeFileSync(PATHS.GITHUB_TOKEN_PATH, githubToken, { mode: 0o600 })
     await setupGitHubToken({ logUser: false })
-    expect(state.githubToken).toBe(githubToken)
+    expect(state.defaultAccount.githubToken).toBe(githubToken)
     const context = createAccountContext()
     context.githubToken = githubToken
     await context.tokens.setup({ scheduleRefresh: false })
@@ -40,7 +40,7 @@ test('authentication, initial token fetch, and refresh never log plaintext token
     info.mockRestore()
     debug.mockRestore()
     consola.level = oldLevel
-    state.githubToken = oldGithubToken
+    state.defaultAccount.githubToken = oldGithubToken
     if (oldTokenFile)
       fs.writeFileSync(PATHS.GITHUB_TOKEN_PATH, oldTokenFile, { mode: 0o600 })
     else

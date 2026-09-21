@@ -133,14 +133,14 @@ describe('product capability profiles', () => {
   })
 
   test('never fills missing account metadata from the process-wide catalog', () => {
-    const previousModels = state.models
+    const previousModels = state.defaultAccount.models
     const input = [makeModel('gpt-4o')]
 
     try {
-      state.models = undefined
+      state.defaultAccount.models = undefined
       const withoutGlobalCatalog = buildModelCapabilityProfiles(input)
 
-      state.models = {
+      state.defaultAccount.models = {
         object: 'list',
         data: [makeModel('gpt-4o', { supportedEndpoints: ['/responses'] })],
       } satisfies ModelsResponse
@@ -154,7 +154,7 @@ describe('product capability profiles', () => {
       })
     }
     finally {
-      state.models = previousModels
+      state.defaultAccount.models = previousModels
     }
   })
 

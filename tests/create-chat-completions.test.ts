@@ -6,9 +6,9 @@ import { state } from '../src/lib/state'
 import { createChatCompletions } from '../src/services/copilot/create-chat-completions'
 
 // Mock state
-state.copilotToken = 'test-token'
-state.vsCodeVersion = '1.0.0'
-state.accountType = 'individual'
+state.defaultAccount.copilotToken = 'test-token'
+state.defaultAccount.vsCodeVersion = '1.0.0'
+state.defaultAccount.accountType = 'individual'
 
 // Helper to mock fetch
 const fetchMock = mock(

@@ -16,7 +16,8 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import consola from 'consola'
 
 import { state } from '~/lib/state'
-import { setupCopilotToken, setupGitHubToken } from '~/lib/token'
+import { setupGitHubToken } from '~/lib/token'
+
 import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
 import { server } from '~/server'
 import { MINIMAL_PDF_BASE64 } from './fixtures'
@@ -131,13 +132,13 @@ beforeAll(async () => {
     throw new Error('COPILOT_LIVE_CLAUDE_MODEL or COPILOT_LIVE_CLAUDE_MODELS is required when COPILOT_LIVE_TEST=1')
   }
 
-  state.accountType = process.env.COPILOT_ACCOUNT_TYPE ?? 'individual'
+  state.defaultAccount.accountType = (process.env.COPILOT_ACCOUNT_TYPE ?? 'individual') as typeof state.defaultAccount.accountType
   await cacheVSCodeVersion()
   await setupGitHubToken()
-  await setupCopilotToken()
-  await cacheModels()
+  await state.defaultAccount.tokens.setup()
+  await cacheModels(state.defaultAccount)
 
-  if (!state.copilotToken) {
+  if (!state.defaultAccount.copilotToken) {
     throw new Error('Failed to obtain Copilot token. Ensure GitHub auth is configured.')
   }
 }, TIMEOUT)
@@ -147,7 +148,7 @@ afterAll(() => {
     return
   }
 
-  state.copilotToken = undefined
+  state.defaultAccount.copilotToken = undefined
 })
 
 // ======================================================================

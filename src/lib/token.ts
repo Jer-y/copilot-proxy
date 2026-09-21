@@ -1,12 +1,3 @@
-import type {
-  CopilotTokenLifecycleStatus,
-  CopilotTokenSnapshot,
-  ReactiveTokenRefreshDeps,
-  ReactiveTokenRefreshResult,
-  RefreshTokenWithRetryDeps,
-  TokenRefreshSchedulerDeps,
-} from './account/token-lifecycle'
-
 import type { DeviceCodeResponse } from '~/services/github/get-device-code'
 import fs from 'node:fs/promises'
 
@@ -18,21 +9,8 @@ import { getGitHubUser } from '~/services/github/get-user'
 
 import { pollAccessToken } from '~/services/github/poll-access-token'
 
-import { getCopilotTokenRefreshDelayMs } from './account/token-lifecycle'
 import { HTTPError } from './error'
 import { state } from './state'
-
-export type {
-  CopilotTokenLifecycleStatus,
-  CopilotTokenSnapshot,
-  ReactiveTokenRefreshDeps,
-  ReactiveTokenRefreshOutcome,
-  ReactiveTokenRefreshResult,
-  RefreshTokenWithRetryDeps,
-  TokenRefreshFailureKind,
-  TokenRefreshSchedulerDeps,
-} from './account/token-lifecycle'
-export { getCopilotTokenRefreshDelayMs }
 
 const readGithubToken = async () => (await fs.readFile(PATHS.GITHUB_TOKEN_PATH, 'utf8')).trim()
 
@@ -53,56 +31,6 @@ export function redactDeviceCodeResponse(response: DeviceCodeResponse): DeviceCo
     ...response,
     device_code: '<redacted>',
   }
-}
-
-export function getCopilotTokenSnapshot(): CopilotTokenSnapshot {
-  return state.defaultAccount.tokens.getSnapshot()
-}
-
-export function getCopilotTokenLifecycleStatus(
-  now = Date.now(),
-): CopilotTokenLifecycleStatus {
-  return state.defaultAccount.tokens.getStatus(now)
-}
-
-export function refreshCopilotTokenAfterFailure(
-  failedSnapshot: CopilotTokenSnapshot,
-  deps: ReactiveTokenRefreshDeps = {},
-): Promise<ReactiveTokenRefreshResult> {
-  return state.defaultAccount.tokens.refreshAfterFailure(failedSnapshot, deps)
-}
-
-export function cancelInFlightCopilotTokenRefreshes(
-  reason: Error = new Error('Disposable Copilot token refresh was cancelled.'),
-): Promise<void> {
-  return state.defaultAccount.tokens.cancelInFlight(reason)
-}
-
-export function refreshTokenWithRetry(
-  deps: RefreshTokenWithRetryDeps = {},
-) {
-  return state.defaultAccount.tokens.refreshWithRetry(deps)
-}
-
-export function setupCopilotToken(
-  options: { scheduleRefresh?: boolean } = {},
-) {
-  return state.defaultAccount.tokens.setup(options)
-}
-
-export function startCopilotTokenRefresh(
-  refreshInSeconds: number,
-  deps: TokenRefreshSchedulerDeps = {},
-): void {
-  state.defaultAccount.tokens.startRefresh(refreshInSeconds, deps)
-}
-
-export function stopCopilotTokenRefresh(): void {
-  state.defaultAccount.tokens.stopRefresh()
-}
-
-export function isCopilotTokenRefreshScheduled(): boolean {
-  return state.defaultAccount.tokens.isRefreshScheduled()
 }
 
 interface SetupGitHubTokenOptions {

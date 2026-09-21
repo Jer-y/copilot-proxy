@@ -18,6 +18,7 @@ interface ModelRefreshRuntime {
 const modelRefreshRuntimes = new WeakMap<AccountContext, ModelRefreshRuntime>()
 
 interface ModelCatalogFetchDependencies {
+  fetchModels?: ModelCatalogFetcher
   now?: () => number
 }
 
@@ -33,25 +34,11 @@ export function isNullish(value: unknown): value is null | undefined {
   return value === null || value === undefined
 }
 
-export function cacheModels(
-  fetchModels?: ModelCatalogFetcher,
-  dependencies?: ModelCatalogFetchDependencies,
-): Promise<void>
-export function cacheModels(
-  ctx: AccountContext,
-  fetchModels?: ModelCatalogFetcher,
-  dependencies?: ModelCatalogFetchDependencies,
-): Promise<void>
 export async function cacheModels(
-  ctxOrFetchModels: AccountContext | ModelCatalogFetcher = state.defaultAccount,
-  fetchModelsOrDependencies: ModelCatalogFetcher | ModelCatalogFetchDependencies = {},
-  maybeDependencies: ModelCatalogFetchDependencies = {},
+  ctx: AccountContext,
+  dependencies: ModelCatalogFetchDependencies = {},
 ): Promise<void> {
-  const { ctx, dependencies, fetchModels } = resolveModelCatalogArguments(
-    ctxOrFetchModels,
-    fetchModelsOrDependencies,
-    maybeDependencies,
-  )
+  const fetchModels = dependencies.fetchModels ?? (() => getModels(ctx))
   const now = dependencies.now ?? Date.now
   const attemptAt = now()
   ctx.models = undefined
@@ -69,25 +56,11 @@ export async function cacheModels(
   }
 }
 
-export function refreshModelsSafely(
-  fetchModels?: ModelCatalogFetcher,
-  dependencies?: ModelCatalogFetchDependencies,
-): Promise<boolean>
-export function refreshModelsSafely(
-  ctx: AccountContext,
-  fetchModels?: ModelCatalogFetcher,
-  dependencies?: ModelCatalogFetchDependencies,
-): Promise<boolean>
 export async function refreshModelsSafely(
-  ctxOrFetchModels: AccountContext | ModelCatalogFetcher = state.defaultAccount,
-  fetchModelsOrDependencies: ModelCatalogFetcher | ModelCatalogFetchDependencies = {},
-  maybeDependencies: ModelCatalogFetchDependencies = {},
+  ctx: AccountContext,
+  dependencies: ModelCatalogFetchDependencies = {},
 ): Promise<boolean> {
-  const { ctx, dependencies, fetchModels } = resolveModelCatalogArguments(
-    ctxOrFetchModels,
-    fetchModelsOrDependencies,
-    maybeDependencies,
-  )
+  const fetchModels = dependencies.fetchModels ?? (() => getModels(ctx))
   const now = dependencies.now ?? Date.now
   const attemptAt = now()
   try {
@@ -209,18 +182,9 @@ function recordModelCatalogRefreshFailure(
 }
 
 export function startModelRefresh(
-  intervalMs?: number,
-): void
-export function startModelRefresh(
   ctx: AccountContext,
-  intervalMs?: number,
-): void
-export function startModelRefresh(
-  ctxOrInterval: AccountContext | number = state.defaultAccount,
-  maybeInterval = DEFAULT_MODEL_REFRESH_INTERVAL_MS,
+  intervalMs = DEFAULT_MODEL_REFRESH_INTERVAL_MS,
 ): void {
-  const ctx = typeof ctxOrInterval === 'number' ? state.defaultAccount : ctxOrInterval
-  const intervalMs = typeof ctxOrInterval === 'number' ? ctxOrInterval : maybeInterval
   stopModelRefresh(ctx)
   const runtime = getModelRefreshRuntime(ctx)
   const generation = runtime.generation
@@ -236,7 +200,7 @@ export function startModelRefresh(
   scheduleNext()
 }
 
-export function stopModelRefresh(ctx: AccountContext = state.defaultAccount): void {
+export function stopModelRefresh(ctx: AccountContext): void {
   const runtime = getModelRefreshRuntime(ctx)
   runtime.generation++
   if (runtime.timer !== undefined) {
@@ -245,7 +209,7 @@ export function stopModelRefresh(ctx: AccountContext = state.defaultAccount): vo
   }
 }
 
-export function isModelRefreshScheduled(ctx: AccountContext = state.defaultAccount): boolean {
+export function isModelRefreshScheduled(ctx: AccountContext): boolean {
   return getModelRefreshRuntime(ctx).timer !== undefined
 }
 
@@ -253,7 +217,7 @@ export async function cacheVSCodeVersion(
   contexts: Iterable<AccountContext> = [state.defaultAccount],
 ) {
   const response = await getVSCodeVersion()
-  state.vsCodeVersion = response
+  state.defaultAccount.vsCodeVersion = response
   for (const ctx of contexts)
     ctx.vsCodeVersion = response
 
@@ -267,34 +231,4 @@ function getModelRefreshRuntime(ctx: AccountContext): ModelRefreshRuntime {
   const runtime: ModelRefreshRuntime = { generation: 0 }
   modelRefreshRuntimes.set(ctx, runtime)
   return runtime
-}
-
-function resolveModelCatalogArguments(
-  ctxOrFetchModels: AccountContext | ModelCatalogFetcher,
-  fetchModelsOrDependencies: ModelCatalogFetcher | ModelCatalogFetchDependencies,
-  maybeDependencies: ModelCatalogFetchDependencies,
-): {
-  ctx: AccountContext
-  dependencies: ModelCatalogFetchDependencies
-  fetchModels: ModelCatalogFetcher
-} {
-  if (typeof ctxOrFetchModels === 'function') {
-    return {
-      ctx: state.defaultAccount,
-      fetchModels: ctxOrFetchModels,
-      dependencies: typeof fetchModelsOrDependencies === 'function'
-        ? maybeDependencies
-        : fetchModelsOrDependencies,
-    }
-  }
-
-  return {
-    ctx: ctxOrFetchModels,
-    fetchModels: typeof fetchModelsOrDependencies === 'function'
-      ? fetchModelsOrDependencies
-      : () => getModels(ctxOrFetchModels),
-    dependencies: typeof fetchModelsOrDependencies === 'function'
-      ? maybeDependencies
-      : fetchModelsOrDependencies,
-  }
 }

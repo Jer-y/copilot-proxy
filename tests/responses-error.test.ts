@@ -6,9 +6,9 @@ import { server } from '../src/server'
 import { normalizeCopilotResponsesEventStream } from '../src/services/copilot/responses-id-normalizer'
 import { createTestModelCatalog } from './model-fixtures'
 
-state.copilotToken = 'test-token'
-state.vsCodeVersion = '1.0.0'
-state.accountType = 'individual'
+state.defaultAccount.copilotToken = 'test-token'
+state.defaultAccount.vsCodeVersion = '1.0.0'
+state.defaultAccount.accountType = 'individual'
 
 async function defaultFetchImplementation(_url: string, _opts?: RequestInit) {
   return new Response(JSON.stringify({
@@ -33,10 +33,10 @@ beforeEach(() => {
   fetchMock.mockClear()
   fetchMock.mockImplementation(defaultFetchImplementation)
   state.lastRequestTimestamp = undefined
-  state.copilotToken = 'test-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
-  state.models = createTestModelCatalog()
+  state.defaultAccount.copilotToken = 'test-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
+  state.defaultAccount.models = createTestModelCatalog()
 })
 
 function createErroringSSE(

@@ -7,12 +7,8 @@ import { AsyncConcurrencyLimiter, resolveConcurrencyLimitConfig } from '~/lib/co
 import { ensurePaths } from '~/lib/paths'
 import { initializeNodeHttpClient } from '~/lib/proxy'
 import { state } from '~/lib/state'
-import {
-  setupCopilotToken,
-  setupGitHubToken,
-  startCopilotTokenRefresh,
-  stopCopilotTokenRefresh,
-} from '~/lib/token'
+import { setupGitHubToken } from '~/lib/token'
+
 import {
   cacheModels,
   cacheVSCodeVersion,
@@ -29,8 +25,8 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
   // any prior schedules first so failed retries cannot accumulate refresh
   // loops.
   state.accounts?.stopRefreshes()
-  stopCopilotTokenRefresh()
-  stopModelRefresh()
+  state.defaultAccount.tokens.stopRefresh()
+  stopModelRefresh(state.defaultAccount)
 
   if (options.verbose) {
     consola.level = 5
@@ -74,27 +70,26 @@ export async function initializeServer(options: RunServerOptions): Promise<void>
     return
   }
 
-  state.accountType = options.accountType
   if (options.accountType !== 'individual')
     consola.info(`Using ${options.accountType} plan GitHub account`)
 
-  const githubToken = consumeGithubToken(options.githubToken, process.env, state.githubToken)
+  const githubToken = consumeGithubToken(options.githubToken, process.env, state.defaultAccount.githubToken)
   if (githubToken) {
-    state.githubToken = githubToken
+    state.defaultAccount.githubToken = githubToken
     consola.info('Using provided GitHub token')
   }
   else {
     await setupGitHubToken()
   }
 
-  const copilotToken = await setupCopilotToken({ scheduleRefresh: false })
-  await cacheModels()
-  startCopilotTokenRefresh(copilotToken.refresh_in)
-  startModelRefresh()
+  const copilotToken = await state.defaultAccount.tokens.setup({ scheduleRefresh: false })
+  await cacheModels(state.defaultAccount)
+  state.defaultAccount.tokens.startRefresh(copilotToken.refresh_in)
+  startModelRefresh(state.defaultAccount)
   state.defaultAccount.identityState = 'unverified'
   state.defaultAccount.availability = 'ready'
 
-  consola.info(formatModelInventorySummary(state.models?.data.length ?? 0))
+  consola.info(formatModelInventorySummary(state.defaultAccount.models?.data.length ?? 0))
 }
 
 export function formatModelInventorySummary(count: number): string {

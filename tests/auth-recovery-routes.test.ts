@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 
 import { state } from '~/lib/state'
-import { stopCopilotTokenRefresh } from '~/lib/token'
+
 import { server } from '~/server'
 import { getCopilotRecoveryStatus, resetCopilotRecoveryStateForTests } from '~/services/copilot/authenticated-fetch'
 import { createTestModelCatalog } from './model-fixtures'
@@ -80,19 +80,19 @@ const cases: RecoveryRouteCase[] = [
 
 describe('real route authentication recovery', () => {
   beforeEach(() => {
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
-    state.accountType = 'individual'
+    state.defaultAccount.accountType = 'individual'
     state.concurrencyLimiter = undefined
-    state.copilotToken = 'old-copilot-token'
-    state.githubToken = 'github-token'
+    state.defaultAccount.copilotToken = 'old-copilot-token'
+    state.defaultAccount.githubToken = 'github-token'
     state.lastRequestTimestamp = undefined
-    state.models = createTestModelCatalog()
-    state.vsCodeVersion = '1.0.0'
+    state.defaultAccount.models = createTestModelCatalog()
+    state.defaultAccount.vsCodeVersion = '1.0.0'
   })
 
   afterEach(() => {
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
     state.concurrencyLimiter = originalLimiter
     globalThis.fetch = originalFetch

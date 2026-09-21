@@ -93,14 +93,11 @@ const add = defineCommand({
     const token = args['token-stdin']
       ? await readTokenFromStdin()
       : await runDeviceFlow()
-    await runWriteOperation(async () => {
-      const configuration = await addAccount({
-        id,
-        accountType: args['account-type'] as AccountType,
-        token,
-      })
-      consola.success(`Added account ${id}; configuration revision ${configuration.revision}.`)
-    })
+    await runAddAccount({
+      id,
+      accountType: args['account-type'] as AccountType,
+      token,
+    }, true)
   },
 })
 
@@ -124,10 +121,7 @@ const authenticate = defineCommand({
     const token = args['token-stdin']
       ? await readTokenFromStdin()
       : await runDeviceFlow()
-    await runWriteOperation(async () => {
-      await authenticateExistingAccount({ id, token })
-      consola.success(`Re-authenticated account ${id}.`)
-    })
+    await runAccountAuthentication(id, token)
   },
 })
 
@@ -141,10 +135,7 @@ const setDefault = defineCommand({
     await prepareAccountWrite(args['proxy-env'])
     const id = args.id ?? await chooseAccount('New default account')
     await confirmChange(`Set default account to ${id}`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await setDefaultAccount(id)
-      consola.success(`Default account is now ${id}; configuration revision ${configuration.revision}.`)
-    })
+    await runSetDefaultAccount(id, true)
   },
 })
 
@@ -163,10 +154,7 @@ const remove = defineCommand({
       if (confirmation !== id)
         throw new Error('Removal confirmation did not match the account id')
     }
-    await runWriteOperation(async () => {
-      const configuration = await removeAccount(id)
-      consola.success(`Removed account ${id}; configuration revision ${configuration.revision}.`)
-    })
+    await runRemoveAccount(id, true)
   },
 })
 
@@ -192,10 +180,7 @@ const concurrencySet = defineCommand({
     const id = args.id ?? await chooseAccount('Account to limit')
     const max = parseMaxConcurrency(args.max ?? await requireInteractiveText('Maximum concurrency'))
     await confirmChange(`Set account ${id} max concurrency to ${max}`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await setAccountMaxConcurrency(id, max)
-      consola.success(`Account ${id} max concurrency is now ${max}; configuration revision ${configuration.revision}.`)
-    })
+    await runSetAccountConcurrency(id, max, true)
   },
 })
 
@@ -209,10 +194,7 @@ const concurrencyClear = defineCommand({
     await prepareAccountWrite(args['proxy-env'])
     const id = args.id ?? await chooseAccount('Account whose limit should be cleared')
     await confirmChange(`Clear account ${id} max concurrency`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await setAccountMaxConcurrency(id, undefined)
-      consola.success(`Cleared account ${id} max concurrency; configuration revision ${configuration.revision}.`)
-    })
+    await runSetAccountConcurrency(id, undefined, true)
   },
 })
 
@@ -235,10 +217,7 @@ const requiredRouteSet = defineCommand({
       : await chooseClientSurface()
     const model = args.model ?? await requireInteractiveText('Required model id')
     await confirmChange(`Require ${surface}:${model}`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await setRequiredAccountRoute(surface, model)
-      consola.success(`Required route ${surface}:${model} added; configuration revision ${configuration.revision}.`)
-    })
+    await runSetRequiredRoute(surface, model, true)
   },
 })
 
@@ -260,10 +239,7 @@ const requiredRouteRemove = defineCommand({
         }
       : await chooseRequiredRoute()
     await confirmChange(`Remove required route ${selected.surface}:${selected.model}`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await removeRequiredAccountRoute(selected.surface, selected.model)
-      consola.success(`Required route ${selected.surface}:${selected.model} removed; configuration revision ${configuration.revision}.`)
-    })
+    await runRemoveRequiredRoute(selected.surface, selected.model, true)
   },
 })
 
@@ -294,10 +270,7 @@ const routeSet = defineCommand({
     const match = args.match ?? await requireInteractiveText('Model glob')
     const account = args.account ?? await chooseAccount('Route account')
     await confirmChange(`Route ${match} to ${account}`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await setAccountRoute(match, account)
-      consola.success(`Route ${match} now uses ${account}; configuration revision ${configuration.revision}.`)
-    })
+    await runSetAccountRoute(match, account, true)
   },
 })
 
@@ -311,10 +284,7 @@ const routeRemove = defineCommand({
     await prepareAccountWrite(args['proxy-env'])
     const match = args.match ?? await chooseRoute()
     await confirmChange(`Remove route ${match}`, args.yes)
-    await runWriteOperation(async () => {
-      const configuration = await removeAccountRoute(match)
-      consola.success(`Removed route ${match}; configuration revision ${configuration.revision}.`)
-    })
+    await runRemoveAccountRoute(match, true)
   },
 })
 
@@ -457,9 +427,86 @@ function requireConfiguration(): AccountsConfiguration {
   return configuration
 }
 
-async function runWriteOperation(operation: () => Promise<void>): Promise<boolean> {
+function runAddAccount(input: { id: string, accountType: AccountType, token: string }, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => addAccount(input),
+    `Added account ${input.id}`,
+    includeRevision,
+  )
+}
+
+function runAccountAuthentication(id: string, token: string): Promise<boolean> {
+  return runWriteOperation(
+    () => authenticateExistingAccount({ id, token }),
+    `Re-authenticated account ${id}`,
+    false,
+  )
+}
+
+function runSetDefaultAccount(id: string, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => setDefaultAccount(id),
+    `Default account is now ${id}`,
+    includeRevision,
+  )
+}
+
+function runRemoveAccount(id: string, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => removeAccount(id),
+    `Removed account ${id}`,
+    includeRevision,
+  )
+}
+
+function runSetAccountConcurrency(id: string, max: number | undefined, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => setAccountMaxConcurrency(id, max),
+    max === undefined ? `Cleared account ${id} max concurrency` : `Account ${id} max concurrency is now ${max}`,
+    includeRevision,
+  )
+}
+
+function runSetRequiredRoute(surface: ClientSurface, model: string, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => setRequiredAccountRoute(surface, model),
+    `Required route ${surface}:${model} added`,
+    includeRevision,
+  )
+}
+
+function runRemoveRequiredRoute(surface: ClientSurface, model: string, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => removeRequiredAccountRoute(surface, model),
+    `Required route ${surface}:${model} removed`,
+    includeRevision,
+  )
+}
+
+function runSetAccountRoute(match: string, account: string, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => setAccountRoute(match, account),
+    `Route ${match} now uses ${account}`,
+    includeRevision,
+  )
+}
+
+function runRemoveAccountRoute(match: string, includeRevision = false): Promise<boolean> {
+  return runWriteOperation(
+    () => removeAccountRoute(match),
+    `Removed route ${match}`,
+    includeRevision,
+  )
+}
+
+async function runWriteOperation(
+  operation: () => Promise<AccountsConfiguration | void>,
+  message: string,
+  includeRevision: boolean,
+): Promise<boolean> {
   try {
-    await operation()
+    const configuration = await operation()
+    consola.success(`${message}${includeRevision && configuration ? `; configuration revision ${configuration.revision}` : ''}.`)
     return true
   }
   catch (error) {
@@ -492,29 +539,20 @@ async function runInteractiveAction(action: string): Promise<void> {
       })
       await confirmChange(`Add account ${id} (${accountType})`, false)
       const token = await runDeviceFlow()
-      const added = await runWriteOperation(async () => {
-        await addAccount({ id, accountType, token })
-        consola.success(`Added account ${id}.`)
-      })
+      const added = await runAddAccount({ id, accountType, token })
       if (!added)
         return
       const configuration = readAccountsConfiguration()
       if (configuration && configuration.defaultAccount !== id) {
         const makeDefault = await consola.prompt('Set this account as default?', { type: 'confirm' }) as boolean
         if (makeDefault) {
-          await runWriteOperation(async () => {
-            await setDefaultAccount(id)
-            consola.success(`Default account is now ${id}.`)
-          })
+          await runSetDefaultAccount(id)
         }
       }
       const addRoute = await consola.prompt('Add a model route for this account now?', { type: 'confirm' }) as boolean
       if (addRoute) {
         const match = await requireInteractiveText('Model glob (for example claude-*)')
-        await runWriteOperation(async () => {
-          await setAccountRoute(match, id)
-          consola.success(`Route ${match} now uses ${id}.`)
-        })
+        await runSetAccountRoute(match, id)
       }
       return
     }
@@ -523,19 +561,13 @@ async function runInteractiveAction(action: string): Promise<void> {
       initializeAccountsNetwork(false, { deviceFlow: true })
       await confirmChange(`Re-authenticate account ${id}`, false)
       const token = await runDeviceFlow()
-      await runWriteOperation(async () => {
-        await authenticateExistingAccount({ id, token })
-        consola.success(`Re-authenticated account ${id}.`)
-      })
+      await runAccountAuthentication(id, token)
       return
     }
     case 'Set default account': {
       const id = await chooseAccount('New default account')
       await confirmChange(`Set default account to ${id}`, false)
-      await runWriteOperation(async () => {
-        await setDefaultAccount(id)
-        consola.success(`Default account is now ${id}.`)
-      })
+      await runSetDefaultAccount(id)
       return
     }
     case 'Configure account concurrency': {
@@ -547,17 +579,11 @@ async function runInteractiveAction(action: string): Promise<void> {
       if (action === 'Set limit') {
         const max = parseMaxConcurrency(await requireInteractiveText('Maximum concurrency'))
         await confirmChange(`Set account ${id} max concurrency to ${max}`, false)
-        await runWriteOperation(async () => {
-          await setAccountMaxConcurrency(id, max)
-          consola.success(`Account ${id} max concurrency is now ${max}.`)
-        })
+        await runSetAccountConcurrency(id, max)
       }
       else {
         await confirmChange(`Clear account ${id} max concurrency`, false)
-        await runWriteOperation(async () => {
-          await setAccountMaxConcurrency(id, undefined)
-          consola.success(`Cleared account ${id} max concurrency.`)
-        })
+        await runSetAccountConcurrency(id, undefined)
       }
       return
     }
@@ -574,18 +600,12 @@ async function runInteractiveAction(action: string): Promise<void> {
         const account = await chooseAccount('Route account')
         const match = await requireInteractiveText('Model glob')
         await confirmChange(`Route ${match} to ${account}`, false)
-        await runWriteOperation(async () => {
-          await setAccountRoute(match, account)
-          consola.success(`Route ${match} now uses ${account}.`)
-        })
+        await runSetAccountRoute(match, account)
         return
       }
       const match = await chooseRoute()
       await confirmChange(`Remove route ${match}`, false)
-      await runWriteOperation(async () => {
-        await removeAccountRoute(match)
-        consola.success(`Removed route ${match}.`)
-      })
+      await runRemoveAccountRoute(match)
       return
     }
     case 'Configure required routes': {
@@ -601,18 +621,12 @@ async function runInteractiveAction(action: string): Promise<void> {
         const surface = await chooseClientSurface()
         const model = await requireInteractiveText('Required model id')
         await confirmChange(`Require ${surface}:${model}`, false)
-        await runWriteOperation(async () => {
-          await setRequiredAccountRoute(surface, model)
-          consola.success(`Required route ${surface}:${model} added.`)
-        })
+        await runSetRequiredRoute(surface, model)
         return
       }
       const selected = await chooseRequiredRoute()
       await confirmChange(`Remove required route ${selected.surface}:${selected.model}`, false)
-      await runWriteOperation(async () => {
-        await removeRequiredAccountRoute(selected.surface, selected.model)
-        consola.success(`Required route ${selected.surface}:${selected.model} removed.`)
-      })
+      await runRemoveRequiredRoute(selected.surface, selected.model)
       return
     }
     case 'Remove account': {
@@ -620,10 +634,7 @@ async function runInteractiveAction(action: string): Promise<void> {
       const confirmation = await requireInteractiveText(`Type ${id} to confirm removal`)
       if (confirmation !== id)
         throw new Error('Removal confirmation did not match the account id')
-      await runWriteOperation(async () => {
-        await removeAccount(id)
-        consola.success(`Removed account ${id}.`)
-      })
+      await runRemoveAccount(id)
     }
   }
 }

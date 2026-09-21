@@ -4,43 +4,43 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { state } from '~/lib/state'
-import { refreshTokenWithRetry, startCopilotTokenRefresh, stopCopilotTokenRefresh } from '~/lib/token'
+
 import { refreshModelsSafely } from '~/lib/utils'
 import { server } from '~/server'
 import { fetchAuthenticatedCopilot, resetCopilotRecoveryStateForTests } from '~/services/copilot/authenticated-fetch'
 
 describe('health routes', () => {
   const original = {
-    accountType: state.accountType,
+    accountType: state.defaultAccount.accountType,
     availability: state.defaultAccount.availability,
     concurrencyLimiter: state.concurrencyLimiter,
-    copilotToken: state.copilotToken,
-    modelCatalogLifecycle: state.modelCatalogLifecycle,
-    models: state.models,
+    copilotToken: state.defaultAccount.copilotToken,
+    modelCatalogLifecycle: state.defaultAccount.modelCatalogLifecycle,
+    models: state.defaultAccount.models,
     nativeServiceInstanceToken: state.nativeServiceInstanceToken,
   }
 
   beforeEach(() => {
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
-    state.accountType = 'individual'
+    state.defaultAccount.accountType = 'individual'
     state.defaultAccount.availability = 'initializing'
     state.concurrencyLimiter = undefined
-    state.copilotToken = undefined
-    state.modelCatalogLifecycle = undefined
-    state.models = undefined
+    state.defaultAccount.copilotToken = undefined
+    state.defaultAccount.modelCatalogLifecycle = undefined
+    state.defaultAccount.models = undefined
     state.nativeServiceInstanceToken = undefined
   })
 
   afterEach(() => {
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
-    state.accountType = original.accountType
+    state.defaultAccount.accountType = original.accountType
     state.defaultAccount.availability = original.availability
     state.concurrencyLimiter = original.concurrencyLimiter
-    state.copilotToken = original.copilotToken
-    state.modelCatalogLifecycle = original.modelCatalogLifecycle
-    state.models = original.models
+    state.defaultAccount.copilotToken = original.copilotToken
+    state.defaultAccount.modelCatalogLifecycle = original.modelCatalogLifecycle
+    state.defaultAccount.models = original.models
     state.nativeServiceInstanceToken = original.nativeServiceInstanceToken
   })
 
@@ -56,7 +56,7 @@ describe('health routes', () => {
   })
 
   test('reports passive readiness failures without exposing credentials', async () => {
-    state.copilotToken = 'must-not-appear'
+    state.defaultAccount.copilotToken = 'must-not-appear'
     const response = await server.request('/readyz')
     const text = await response.text()
 
@@ -73,7 +73,7 @@ describe('health routes', () => {
   })
 
   test('reports ready state, token lifecycle, recovery metrics, and aggregate concurrency', async () => {
-    state.accountType = 'enterprise'
+    state.defaultAccount.accountType = 'enterprise'
     await configureReadyState()
     state.concurrencyLimiter = new AsyncConcurrencyLimiter({
       maxConcurrency: 4,
@@ -125,13 +125,13 @@ describe('health routes', () => {
 
   test('keeps readiness while a valid token refresh is in flight between timers', async () => {
     await configureReadyState()
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     let resolveRefresh!: (value: {
       token: string
       refresh_in: number
       expires_at: number
     }) => void
-    const inFlight = refreshTokenWithRetry({
+    const inFlight = state.defaultAccount.tokens.refreshWithRetry({
       fetchToken: () => new Promise((resolve) => {
         resolveRefresh = resolve
       }),
@@ -161,18 +161,18 @@ describe('health routes', () => {
 
   test('keeps readiness with an explicit warning while preserving a stale catalog', async () => {
     await configureReadyState()
-    const previousModels = state.models
+    const previousModels = state.defaultAccount.models
     const times = [2_000, 2_100]
 
-    expect(await refreshModelsSafely(async () => {
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => {
       throw new Error('forced model refresh failure')
-    }, { now: () => times.shift() ?? 0 })).toBe(false)
+    }, now: () => times.shift() ?? 0 })).toBe(false)
 
     const response = await server.request('/readyz')
     const body = await response.json() as { reasons: string[], warnings: string[] } & Record<string, unknown>
     expect(response.status).toBe(200)
     expect(response.headers.get('retry-after')).toBeNull()
-    expect(state.models).toBe(previousModels)
+    expect(state.defaultAccount.models).toBe(previousModels)
     expect(body).toMatchObject({
       status: 'ready',
       warnings: expect.arrayContaining(['model_catalog_stale']),
@@ -263,7 +263,7 @@ describe('health routes', () => {
         }),
       }, { now: () => cooldownStartedAt, refreshToken })
     }
-    state.models = undefined
+    state.defaultAccount.models = undefined
 
     const response = await server.request('/readyz')
     expect(response.status).toBe(503)
@@ -277,7 +277,7 @@ describe('health routes', () => {
 })
 
 async function configureReadyState(expiresAt = Date.now() + 3_600_000): Promise<void> {
-  await refreshTokenWithRetry({
+  await state.defaultAccount.tokens.refreshWithRetry({
     fetchToken: async () => ({
       token: 'test-token',
       refresh_in: 3_600,
@@ -285,15 +285,15 @@ async function configureReadyState(expiresAt = Date.now() + 3_600_000): Promise<
     }),
     failureState: { consecutiveFailures: 0 },
   })
-  state.models = {
+  state.defaultAccount.models = {
     object: 'list',
     data: [{ id: 'gpt-test' }],
   } as ModelsResponse
-  state.modelCatalogLifecycle = {
+  state.defaultAccount.modelCatalogLifecycle = {
     consecutiveRefreshFailures: 0,
     lastRefreshAttemptAt: 1_000,
     lastRefreshSuccessAt: 1_100,
   }
   state.defaultAccount.availability = 'ready'
-  startCopilotTokenRefresh(3_600)
+  state.defaultAccount.tokens.startRefresh(3_600)
 }

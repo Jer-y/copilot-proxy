@@ -4,7 +4,7 @@ import type { ModelsResponse } from '~/services/copilot/get-models'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { AccountRegistry } from '~/lib/account/registry'
-import { setDefaultAccountContext, state } from '~/lib/state'
+import { state } from '~/lib/state'
 import { buildReadinessStatus } from '~/routes/health/route'
 import { buildBoundModelCatalog } from '~/routes/models/route'
 import { server } from '~/server'
@@ -16,13 +16,13 @@ const originalExposeIdentity = process.env.COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY
 beforeEach(() => {
   const registry = createRegistry()
   state.accounts = registry
-  setDefaultAccountContext(registry.defaultAccount)
+  state.defaultAccount = registry.defaultAccount
 })
 
 afterEach(() => {
   state.accounts?.stopRefreshes()
   state.accounts = originalAccounts
-  setDefaultAccountContext(originalDefault)
+  state.defaultAccount = originalDefault
   if (originalExposeIdentity === undefined)
     delete process.env.COPILOT_PROXY_EXPOSE_ACCOUNT_IDENTITY
   else
@@ -38,7 +38,7 @@ describe('multi-account health and models', () => {
       state.accounts?.stopRefreshes()
       const registry = createRegistry({ requiredRoutes: [{ surface, model }] })
       state.accounts = registry
-      setDefaultAccountContext(registry.defaultAccount)
+      state.defaultAccount = registry.defaultAccount
 
       expect(buildReadinessStatus()).toMatchObject({
         status: 'degraded',
@@ -191,7 +191,7 @@ describe('multi-account health and models', () => {
     state.accounts?.stopRefreshes()
     const registry = createRegistry({ requiredRoutes: [] })
     state.accounts = registry
-    setDefaultAccountContext(registry.defaultAccount)
+    state.defaultAccount = registry.defaultAccount
     const work = registry.get('work')!
     work.tokens.stopRefresh()
 
@@ -225,7 +225,7 @@ describe('multi-account health and models', () => {
       routes: [{ match: 'claude-opus-4.8', account: 'work' }],
     })
     state.accounts = registry
-    setDefaultAccountContext(registry.defaultAccount)
+    state.defaultAccount = registry.defaultAccount
 
     expect(buildReadinessStatus()).toMatchObject({
       status: 'ready',
@@ -252,7 +252,7 @@ describe('multi-account health and models', () => {
       throw new Error('Expected the work account gpt-5.4 fixture')
     baseModel.supported_endpoints = ['/responses', 'ws:/responses']
     state.accounts = registry
-    setDefaultAccountContext(registry.defaultAccount)
+    state.defaultAccount = registry.defaultAccount
 
     expect(buildReadinessStatus()).toMatchObject({
       status: 'degraded',

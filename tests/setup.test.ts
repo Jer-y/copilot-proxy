@@ -598,15 +598,17 @@ describe('runSetup', () => {
 
   test('validates the real Codex and Claude SSE routes through terminal events', async () => {
     const originalFetch = globalThis.fetch
+    const originalAccountState = {
+      accountType: state.defaultAccount.accountType,
+      copilotToken: state.defaultAccount.copilotToken,
+      models: state.defaultAccount.models,
+      vsCodeVersion: state.defaultAccount.vsCodeVersion,
+    }
     const originalState = {
-      accountType: state.accountType,
       concurrencyLimiter: state.concurrencyLimiter,
-      copilotToken: state.copilotToken,
       lastRequestTimestamp: state.lastRequestTimestamp,
-      models: state.models,
       rateLimitSeconds: state.rateLimitSeconds,
       rateLimitWait: state.rateLimitWait,
-      vsCodeVersion: state.vsCodeVersion,
     }
     const gptModel = model('gpt-stream-setup', ['/responses'])
     const claudeModel = model('claude-stream-setup', ['/v1/messages'])
@@ -669,14 +671,14 @@ describe('runSetup', () => {
       throw new Error(`Unexpected setup SSE URL: ${url.toString()}`)
     }) as typeof fetch
 
-    state.accountType = 'individual'
+    state.defaultAccount.accountType = 'individual'
     state.concurrencyLimiter = undefined
-    state.copilotToken = 'setup-test-token'
+    state.defaultAccount.copilotToken = 'setup-test-token'
     state.lastRequestTimestamp = undefined
-    state.models = { data: [gptModel, claudeModel], object: 'list' }
+    state.defaultAccount.models = { data: [gptModel, claudeModel], object: 'list' }
     state.rateLimitSeconds = undefined
     state.rateLimitWait = false
-    state.vsCodeVersion = '1.0.0'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
 
     try {
       await expect(runDisposableSetupProbe({
@@ -703,20 +705,23 @@ describe('runSetup', () => {
     finally {
       globalThis.fetch = originalFetch
       Object.assign(state, originalState)
+      Object.assign(state.defaultAccount, originalAccountState)
     }
   })
 
   test('does not accept a non-streaming success when the required Codex SSE route fails', async () => {
     const originalFetch = globalThis.fetch
+    const originalAccountState = {
+      accountType: state.defaultAccount.accountType,
+      copilotToken: state.defaultAccount.copilotToken,
+      models: state.defaultAccount.models,
+      vsCodeVersion: state.defaultAccount.vsCodeVersion,
+    }
     const originalState = {
-      accountType: state.accountType,
       concurrencyLimiter: state.concurrencyLimiter,
-      copilotToken: state.copilotToken,
       lastRequestTimestamp: state.lastRequestTimestamp,
-      models: state.models,
       rateLimitSeconds: state.rateLimitSeconds,
       rateLimitWait: state.rateLimitWait,
-      vsCodeVersion: state.vsCodeVersion,
     }
     const gptModel = model('gpt-stream-failure', ['/responses'])
     let forwardedStream: unknown
@@ -740,14 +745,14 @@ describe('runSetup', () => {
       })
     }) as typeof fetch
 
-    state.accountType = 'individual'
+    state.defaultAccount.accountType = 'individual'
     state.concurrencyLimiter = undefined
-    state.copilotToken = 'setup-test-token'
+    state.defaultAccount.copilotToken = 'setup-test-token'
     state.lastRequestTimestamp = undefined
-    state.models = { data: [gptModel], object: 'list' }
+    state.defaultAccount.models = { data: [gptModel], object: 'list' }
     state.rateLimitSeconds = undefined
     state.rateLimitWait = false
-    state.vsCodeVersion = '1.0.0'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
 
     try {
       await expect(runDisposableSetupProbe({
@@ -762,20 +767,23 @@ describe('runSetup', () => {
     finally {
       globalThis.fetch = originalFetch
       Object.assign(state, originalState)
+      Object.assign(state.defaultAccount, originalAccountState)
     }
   })
 
   test('bounds WebSocket validation before the overall deadline and preserves the validated SSE fallback', async () => {
     const originalFetch = globalThis.fetch
+    const originalAccountState = {
+      accountType: state.defaultAccount.accountType,
+      copilotToken: state.defaultAccount.copilotToken,
+      models: state.defaultAccount.models,
+      vsCodeVersion: state.defaultAccount.vsCodeVersion,
+    }
     const originalState = {
-      accountType: state.accountType,
       concurrencyLimiter: state.concurrencyLimiter,
-      copilotToken: state.copilotToken,
       lastRequestTimestamp: state.lastRequestTimestamp,
-      models: state.models,
       rateLimitSeconds: state.rateLimitSeconds,
       rateLimitWait: state.rateLimitWait,
-      vsCodeVersion: state.vsCodeVersion,
     }
     const gptModel = model('gpt-ws-timeout-fallback', ['/responses', 'ws:/responses'])
     let websocketTimeoutMs: number | undefined
@@ -797,14 +805,14 @@ describe('runSetup', () => {
       },
     ]), { headers: { 'Content-Type': 'text/event-stream' } })) as unknown as typeof fetch
 
-    state.accountType = 'individual'
+    state.defaultAccount.accountType = 'individual'
     state.concurrencyLimiter = undefined
-    state.copilotToken = 'setup-test-token'
+    state.defaultAccount.copilotToken = 'setup-test-token'
     state.lastRequestTimestamp = undefined
-    state.models = { data: [gptModel], object: 'list' }
+    state.defaultAccount.models = { data: [gptModel], object: 'list' }
     state.rateLimitSeconds = undefined
     state.rateLimitWait = false
-    state.vsCodeVersion = '1.0.0'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
 
     try {
       const result = await runDisposableSetupProbe({
@@ -838,6 +846,7 @@ describe('runSetup', () => {
     finally {
       globalThis.fetch = originalFetch
       Object.assign(state, originalState)
+      Object.assign(state.defaultAccount, originalAccountState)
     }
   })
 

@@ -4,7 +4,7 @@ import type { ModelsResponse } from '~/services/copilot/get-models'
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 
 import { AccountRegistry } from '~/lib/account/registry'
-import { setDefaultAccountContext, state } from '~/lib/state'
+import { state } from '~/lib/state'
 import { server } from '~/server'
 
 const originalAccounts = state.accounts
@@ -51,13 +51,13 @@ beforeEach(() => {
   globalThis.fetch = fetchMock as unknown as typeof fetch
   const registry = createRegistry()
   state.accounts = registry
-  setDefaultAccountContext(registry.defaultAccount)
+  state.defaultAccount = registry.defaultAccount
 })
 
 afterEach(() => {
   state.accounts?.stopRefreshes()
   state.accounts = originalAccounts
-  setDefaultAccountContext(originalDefaultAccount)
+  state.defaultAccount = originalDefaultAccount
   globalThis.fetch = originalFetch
 })
 

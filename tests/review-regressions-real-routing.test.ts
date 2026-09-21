@@ -52,10 +52,10 @@ async function defaultFetchMock(input: FetchInput, init?: RequestInit): Promise<
 beforeEach(() => {
   upstreamCalls.length = 0
   state.lastRequestTimestamp = undefined
-  state.models = createTestModelCatalog()
-  state.copilotToken = 'test-copilot-token'
-  state.vsCodeVersion = '1.99.0'
-  state.accountType = 'individual'
+  state.defaultAccount.models = createTestModelCatalog()
+  state.defaultAccount.copilotToken = 'test-copilot-token'
+  state.defaultAccount.vsCodeVersion = '1.99.0'
+  state.defaultAccount.accountType = 'individual'
   state.rateLimitWait = false
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = defaultFetchMock

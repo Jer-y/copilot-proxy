@@ -46,10 +46,10 @@ async function expectOpenAIInvalidUpstreamResponse(response: Response): Promise<
 
 beforeEach(() => {
   state.lastRequestTimestamp = undefined
-  state.models = createTestModelCatalog()
-  state.copilotToken = 'test-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
+  state.defaultAccount.models = createTestModelCatalog()
+  state.defaultAccount.copilotToken = 'test-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
   state.rateLimitWait = false
   fetchMock.mockClear()
   responseFactory = () => {

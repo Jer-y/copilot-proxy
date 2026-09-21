@@ -23,7 +23,8 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
 import { state } from '~/lib/state'
-import { setupCopilotToken, setupGitHubToken } from '~/lib/token'
+import { setupGitHubToken } from '~/lib/token'
+
 import { cacheModels, cacheVSCodeVersion } from '~/lib/utils'
 import { server } from '~/server'
 
@@ -143,13 +144,13 @@ beforeAll(async () => {
     throw new Error('COPILOT_LIVE_EMBEDDING_MODEL is required when COPILOT_LIVE_TEST=1')
   }
 
-  state.accountType = process.env.COPILOT_ACCOUNT_TYPE ?? 'individual'
+  state.defaultAccount.accountType = (process.env.COPILOT_ACCOUNT_TYPE ?? 'individual') as typeof state.defaultAccount.accountType
   await cacheVSCodeVersion()
   await setupGitHubToken()
-  await setupCopilotToken()
-  await cacheModels()
+  await state.defaultAccount.tokens.setup()
+  await cacheModels(state.defaultAccount)
 
-  if (!state.copilotToken) {
+  if (!state.defaultAccount.copilotToken) {
     throw new Error('Failed to obtain Copilot token. Ensure GitHub auth is configured.')
   }
 }, TIMEOUT)
@@ -159,7 +160,7 @@ afterAll(() => {
     return
   }
 
-  state.copilotToken = undefined
+  state.defaultAccount.copilotToken = undefined
 })
 
 describeLive('Proxy live smoke', () => {
@@ -612,7 +613,7 @@ describeLive('Proxy live smoke', () => {
       expect(res.status).toBe(410)
       const body = await parseJson<Record<string, unknown>>(res)
       expect(body).not.toHaveProperty('token')
-      expect(JSON.stringify(body)).not.toContain(state.copilotToken!)
+      expect(JSON.stringify(body)).not.toContain(state.defaultAccount.copilotToken!)
     }, TIMEOUT)
 
     test('/usage → returns only public Copilot quota fields', async () => {

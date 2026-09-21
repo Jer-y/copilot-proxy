@@ -9,9 +9,9 @@ import { createEmbeddings } from '../src/services/copilot/create-embeddings'
 
 const originalFetch = globalThis.fetch
 
-state.copilotToken = 'test-token'
-state.vsCodeVersion = '1.0.0'
-state.accountType = 'individual'
+state.defaultAccount.copilotToken = 'test-token'
+state.defaultAccount.vsCodeVersion = '1.0.0'
+state.defaultAccount.accountType = 'individual'
 
 async function defaultFetchMock(_url: string, init?: RequestInit): Promise<Response> {
   const request = JSON.parse(String(init?.body)) as { input: Array<string> }
@@ -36,9 +36,9 @@ beforeEach(() => {
   fetchMock.mockClear()
   fetchMock.mockImplementation(defaultFetchMock)
   state.lastRequestTimestamp = undefined
-  state.copilotToken = 'test-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
+  state.defaultAccount.copilotToken = 'test-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock
 })

@@ -8,6 +8,7 @@ import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
 import { serve } from 'crossws/server'
+import { START_CLI_OPTIONS, withCliOptions } from '~/lib/cli-options'
 
 import { acquireAccountStateLock, acquireRuntimeLock } from './lib/account/lock'
 import { buildAccountNetworkTargets } from './lib/account/proxy-targets'
@@ -20,7 +21,7 @@ import { gatewayPresetEnvironmentError, isRunPresetName, resolveRunPreset, RUN_P
 import { DEFAULT_HOST, isLoopbackHostname } from './lib/security'
 import { initializeServer } from './lib/server-setup'
 import { state } from './lib/state'
-import { stopCopilotTokenRefresh } from './lib/token'
+
 import { stopModelRefresh } from './lib/utils'
 import {
   closeResponsesWebSocketsGracefully,
@@ -518,8 +519,8 @@ async function closeServerAfterStartupFailure(appServer: Server): Promise<boolea
 
 function cleanupRuntimeSchedules(): void {
   state.accounts?.stopRefreshes()
-  stopCopilotTokenRefresh()
-  stopModelRefresh()
+  state.defaultAccount.tokens.stopRefresh()
+  stopModelRefresh(state.defaultAccount)
 }
 
 export const start = defineCommand({
@@ -527,119 +528,89 @@ export const start = defineCommand({
     name: 'start',
     description: 'Start the Copilot API server',
   },
-  args: {
+  args: withCliOptions(START_CLI_OPTIONS, {
     'port': {
-      alias: 'p',
-      type: 'string',
       default: '4399',
       description: 'Port to listen on',
     },
     'host': {
-      alias: 'H',
-      type: 'string',
       default: DEFAULT_HOST,
       description: 'Host/IP to bind to. Use 0.0.0.0 only when intentionally exposing the port',
     },
     'preset': {
-      type: 'enum',
       options: [...RUN_PRESET_NAMES],
-      default: 'custom',
+      default: 'custom' as const,
       description: 'Runtime preset; plain start keeps the legacy unbounded custom behavior',
     },
     'verbose': {
-      alias: 'v',
-      type: 'boolean',
       default: false,
       description: 'Enable verbose logging',
     },
     'account-type': {
-      alias: 'a',
-      type: 'string',
       default: 'individual',
       description: 'Account type to use (individual, business, enterprise)',
     },
     'rate-limit': {
-      alias: 'r',
-      type: 'string',
       description: 'Rate limit in seconds between requests',
     },
     'wait': {
-      alias: 'w',
-      type: 'boolean',
       default: false,
       description:
         'Wait instead of error when rate limit is hit. Has no effect if rate limit is not set',
     },
     'max-concurrency': {
-      type: 'string',
       description: 'Override preset concurrency; custom is unbounded when this is omitted',
     },
     'max-queue': {
-      type: 'string',
       description: 'Override the preset queue (custom + max-concurrency defaults to 50; 0 disables queueing)',
     },
     'queue-timeout-ms': {
-      type: 'string',
       description: 'Override preset queue wait (custom + max-concurrency defaults to 30000; 0 disables waiting)',
     },
     'headers-timeout-ms': {
-      type: 'string',
       description: 'Upstream HTTP response headers timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
     },
     'body-timeout-ms': {
-      type: 'string',
       description: 'Upstream HTTP response body timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
     },
     'connect-timeout-ms': {
-      type: 'string',
       description: 'Upstream HTTP connect timeout in milliseconds (uses built-in Copilot defaults when omitted; 0 disables timeout)',
     },
     'github-token': {
-      alias: 'g',
-      type: 'string',
       description:
         'Persist a GitHub token securely, then exit; rerun start without this flag',
     },
     'expose-account-identity': {
-      type: 'boolean',
       default: false,
       description: 'Expose configured GitHub account identities in health diagnostics',
     },
     'expose-account-models': {
-      type: 'boolean',
       default: false,
       description: 'Expose <account>/<model> aliases to non-Codex model-list clients',
     },
     'proxy-env': {
-      type: 'boolean',
       default: false,
       description: 'Initialize proxy from environment variables',
     },
     'daemon': {
-      alias: 'd',
-      type: 'boolean',
       default: false,
       description: 'Removed: use `enable` to install a native background service',
     },
     '_service': {
-      type: 'boolean',
       default: false,
       description: 'Internal: load the persisted native-service environment',
     },
     '_log-file': {
-      type: 'boolean',
       default: false,
       description: 'Internal: write stdout/stderr through the rotating daemon log',
     },
     '_data-dir': {
-      type: 'string',
       description: 'Internal: use the persisted native-service data directory',
     },
     '_instance-token': {
-      type: 'string',
       description: 'Internal: identify the installed native-service instance',
     },
-  },
+  }),
   async run({ args, rawArgs }) {
     if (args.daemon) {
       consola.error('The legacy app-managed daemon was removed. If an older daemon is still running, temporarily reinstall `@jer-y/copilot-proxy@0.9.3` and run `copilot-proxy enable` to migrate it before upgrading. Otherwise, run `copilot-proxy enable` for a native background service.')

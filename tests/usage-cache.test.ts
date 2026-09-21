@@ -48,9 +48,9 @@ beforeEach(() => {
   resetUsageCacheForTests()
   fetchMock.mockClear()
   fetchMock.mockImplementation(async (): Promise<Response> => Response.json(upstreamUsagePayload))
-  state.githubToken = 'github-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
+  state.defaultAccount.githubToken = 'github-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
   globalThis.fetch = fetchMock as unknown as typeof fetch
 })
 

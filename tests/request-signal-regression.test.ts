@@ -130,10 +130,10 @@ beforeEach(() => {
   upstreamRequests.length = 0
   fetchMock.mockClear()
   state.lastRequestTimestamp = undefined
-  state.models = createTestModelCatalog()
-  state.copilotToken = 'test-token'
-  state.vsCodeVersion = '1.0.0'
-  state.accountType = 'individual'
+  state.defaultAccount.models = createTestModelCatalog()
+  state.defaultAccount.copilotToken = 'test-token'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
+  state.defaultAccount.accountType = 'individual'
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock
 })

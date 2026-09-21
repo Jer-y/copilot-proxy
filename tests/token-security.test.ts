@@ -4,11 +4,11 @@ import { isLoopbackHostname } from '~/lib/security'
 import { state } from '~/lib/state'
 import { server } from '~/server'
 
-const originalCopilotToken = state.copilotToken
+const originalCopilotToken = state.defaultAccount.copilotToken
 const originalExposeToken = process.env.COPILOT_PROXY_EXPOSE_TOKEN
 
 afterEach(() => {
-  state.copilotToken = originalCopilotToken
+  state.defaultAccount.copilotToken = originalCopilotToken
   if (originalExposeToken === undefined)
     delete process.env.COPILOT_PROXY_EXPOSE_TOKEN
   else
@@ -26,7 +26,7 @@ function requestWithIp(url: string, ip: string, init?: RequestInit): Request {
 describe('/token security', () => {
   test('returns a retirement error even for same-machine requests', async () => {
     delete process.env.COPILOT_PROXY_EXPOSE_TOKEN
-    state.copilotToken = 'test-copilot-token'
+    state.defaultAccount.copilotToken = 'test-copilot-token'
 
     const response = await server.fetch(requestWithIp('http://localhost:4399/token', '127.0.0.1'))
 
@@ -53,7 +53,7 @@ describe('/token security', () => {
 
   test('never returns tokens even with the retired exposure variable', async () => {
     process.env.COPILOT_PROXY_EXPOSE_TOKEN = '1'
-    state.copilotToken = 'test-copilot-token'
+    state.defaultAccount.copilotToken = 'test-copilot-token'
 
     const response = await server.fetch(requestWithIp('http://localhost:4399/token', '127.0.0.1'))
 
@@ -66,7 +66,7 @@ describe('/token security', () => {
 
   test('rejects cross-origin browser reads', async () => {
     process.env.COPILOT_PROXY_EXPOSE_TOKEN = '1'
-    state.copilotToken = 'test-copilot-token'
+    state.defaultAccount.copilotToken = 'test-copilot-token'
 
     const response = await server.fetch(requestWithIp('http://localhost:4399/token', '127.0.0.1', {
       headers: {
@@ -81,7 +81,7 @@ describe('/token security', () => {
 
   test('returns the retirement notice for same-origin browser reads', async () => {
     process.env.COPILOT_PROXY_EXPOSE_TOKEN = '1'
-    state.copilotToken = 'test-copilot-token'
+    state.defaultAccount.copilotToken = 'test-copilot-token'
 
     const response = await server.fetch(requestWithIp('http://localhost:4399/token', '127.0.0.1', {
       headers: {
@@ -98,7 +98,7 @@ describe('/token security', () => {
 
   test('rejects non-loopback request hosts', async () => {
     process.env.COPILOT_PROXY_EXPOSE_TOKEN = '1'
-    state.copilotToken = 'test-copilot-token'
+    state.defaultAccount.copilotToken = 'test-copilot-token'
 
     const response = await server.fetch(requestWithIp('http://192.168.1.10:4399/token', '127.0.0.1'))
 
@@ -108,7 +108,7 @@ describe('/token security', () => {
 
   test.each(['192.168.1.20', undefined])('never reads the token for remote address %s', async (ip) => {
     process.env.COPILOT_PROXY_EXPOSE_TOKEN = '1'
-    state.copilotToken = 'unread-token-sentinel'
+    state.defaultAccount.copilotToken = 'unread-token-sentinel'
     const request = ip ? requestWithIp('http://127.0.0.1/token', ip) : new Request('http://127.0.0.1/token')
     const response = await server.fetch(request)
     expect(response.status).toBe(410)

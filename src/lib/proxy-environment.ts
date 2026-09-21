@@ -8,6 +8,7 @@ import {
   findCittyRootCommand,
   hasCittyRootHelpFlag,
   resolveCittyBooleanOption,
+  SETUP_CITTY_STRING_OPTIONS,
   START_CITTY_STRING_OPTIONS,
 } from './citty-argv'
 
@@ -57,15 +58,7 @@ const NETWORK_COMMAND_STRING_OPTIONS: Record<string, readonly CittyStringOptionD
     { name: 'account' },
     { name: 'client' },
   ],
-  'setup': [
-    { name: 'model' },
-    { name: 'small-model' },
-    { name: 'port', shortName: 'p' },
-    { name: 'host', shortName: 'H' },
-    { name: 'account-type', shortName: 'a' },
-    { name: 'preset' },
-    { name: 'shell' },
-  ],
+  'setup': SETUP_CITTY_STRING_OPTIONS,
   'start': START_CITTY_STRING_OPTIONS,
 }
 

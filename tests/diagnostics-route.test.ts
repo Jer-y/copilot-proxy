@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, mock, test, vi } from 'bun:tes
 
 import { AsyncConcurrencyLimiter } from '~/lib/concurrency-limiter'
 import { state } from '~/lib/state'
-import { refreshTokenWithRetry, startCopilotTokenRefresh, stopCopilotTokenRefresh } from '~/lib/token'
+
 import { refreshModelsSafely } from '~/lib/utils'
 import { DIAGNOSTICS_USAGE_TIMEOUT_MS } from '~/routes/diagnostics/route'
 import { resetUsageCacheForTests } from '~/routes/usage/route'
@@ -43,56 +43,56 @@ const fetchMock = mock(async (
 
 describe('/diagnostics', () => {
   const original = {
-    accountType: state.accountType,
+    accountType: state.defaultAccount.accountType,
     availability: state.defaultAccount.availability,
     identityState: state.defaultAccount.identityState,
     concurrencyLimiter: state.concurrencyLimiter,
-    copilotToken: state.copilotToken,
-    githubToken: state.githubToken,
-    modelCatalogLifecycle: state.modelCatalogLifecycle,
-    models: state.models,
+    copilotToken: state.defaultAccount.copilotToken,
+    githubToken: state.defaultAccount.githubToken,
+    modelCatalogLifecycle: state.defaultAccount.modelCatalogLifecycle,
+    models: state.defaultAccount.models,
     nativeServiceInstanceToken: state.nativeServiceInstanceToken,
-    vsCodeVersion: state.vsCodeVersion,
+    vsCodeVersion: state.defaultAccount.vsCodeVersion,
   }
 
   beforeEach(() => {
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
     resetUsageCacheForTests()
     fetchMock.mockClear()
     fetchMock.mockImplementation(async (): Promise<Response> => Response.json(usagePayload))
     globalThis.fetch = fetchMock as unknown as typeof fetch
-    state.accountType = 'individual'
+    state.defaultAccount.accountType = 'individual'
     state.defaultAccount.availability = 'initializing'
     state.defaultAccount.identityState = 'unverified'
     state.concurrencyLimiter = undefined
-    state.copilotToken = undefined
-    state.githubToken = 'must-not-appear-github-token'
-    state.modelCatalogLifecycle = undefined
-    state.models = undefined
+    state.defaultAccount.copilotToken = undefined
+    state.defaultAccount.githubToken = 'must-not-appear-github-token'
+    state.defaultAccount.modelCatalogLifecycle = undefined
+    state.defaultAccount.models = undefined
     state.nativeServiceInstanceToken = 'must-not-appear-instance-token'
-    state.vsCodeVersion = '1.0.0'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
   })
 
   afterEach(() => {
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
     resetUsageCacheForTests()
     globalThis.fetch = originalFetch
-    state.accountType = original.accountType
+    state.defaultAccount.accountType = original.accountType
     state.defaultAccount.availability = original.availability
     state.defaultAccount.identityState = original.identityState
     state.concurrencyLimiter = original.concurrencyLimiter
-    state.copilotToken = original.copilotToken
-    state.githubToken = original.githubToken
-    state.modelCatalogLifecycle = original.modelCatalogLifecycle
-    state.models = original.models
+    state.defaultAccount.copilotToken = original.copilotToken
+    state.defaultAccount.githubToken = original.githubToken
+    state.defaultAccount.modelCatalogLifecycle = original.modelCatalogLifecycle
+    state.defaultAccount.models = original.models
     state.nativeServiceInstanceToken = original.nativeServiceInstanceToken
-    state.vsCodeVersion = original.vsCodeVersion
+    state.defaultAccount.vsCodeVersion = original.vsCodeVersion
   })
 
   test('returns a passive degraded snapshot without exposing credentials', async () => {
-    state.copilotToken = 'must-not-appear-copilot-token'
+    state.defaultAccount.copilotToken = 'must-not-appear-copilot-token'
 
     const response = await server.request('/diagnostics')
     const text = await response.text()
@@ -125,7 +125,7 @@ describe('/diagnostics', () => {
   })
 
   test('reports ready auth, recovery, concurrency, catalog, and usage state', async () => {
-    state.accountType = 'business'
+    state.defaultAccount.accountType = 'business'
     await configureReadyState()
     state.concurrencyLimiter = new AsyncConcurrencyLimiter({
       maxConcurrency: 4,
@@ -182,12 +182,12 @@ describe('/diagnostics', () => {
 
   test('marks a retained model snapshot stale after its latest refresh fails', async () => {
     await configureReadyState()
-    const previousModels = state.models
+    const previousModels = state.defaultAccount.models
     const times = [2_000, 2_100]
 
-    expect(await refreshModelsSafely(async () => {
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => {
       throw new Error('forced model refresh failure')
-    }, { now: () => times.shift() ?? 0 })).toBe(false)
+    }, now: () => times.shift() ?? 0 })).toBe(false)
 
     const response = await server.request('/diagnostics')
     const body = await response.json() as {
@@ -203,7 +203,7 @@ describe('/diagnostics', () => {
     }
 
     expect(response.status).toBe(200)
-    expect(state.models).toBe(previousModels)
+    expect(state.defaultAccount.models).toBe(previousModels)
     expect(body).toMatchObject({
       status: 'degraded',
       readiness: {
@@ -225,10 +225,10 @@ describe('/diagnostics', () => {
 
   test('omits models disabled for user selection from diagnostics profiles', async () => {
     await configureReadyState()
-    const visible = state.models?.data[0]
+    const visible = state.defaultAccount.models?.data[0]
     if (!visible)
       throw new Error('Expected the ready-state model fixture')
-    state.models?.data.push({
+    state.defaultAccount.models?.data.push({
       ...visible,
       id: 'trajectory-compaction',
       name: 'Trajectory Compaction',
@@ -244,7 +244,7 @@ describe('/diagnostics', () => {
 
   test('degrades diagnostics when the catalog contains only hidden models without changing readyz semantics', async () => {
     await configureReadyState()
-    const hidden = state.models?.data[0]
+    const hidden = state.defaultAccount.models?.data[0]
     if (!hidden)
       throw new Error('Expected the ready-state model fixture')
     hidden.model_picker_enabled = false
@@ -330,7 +330,7 @@ describe('/diagnostics', () => {
 
   test('uses one model catalog snapshot while awaiting usage', async () => {
     await configureReadyState()
-    const initialModel = state.models?.data[0]
+    const initialModel = state.defaultAccount.models?.data[0]
     if (!initialModel)
       throw new Error('Expected the ready-state model fixture')
 
@@ -344,7 +344,7 @@ describe('/diagnostics', () => {
       await Promise.resolve()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         { ...initialModel, id: 'next-generation-a', name: 'Next Generation A' },
@@ -460,7 +460,7 @@ describe('/diagnostics', () => {
 })
 
 async function configureReadyState(): Promise<void> {
-  await refreshTokenWithRetry({
+  await state.defaultAccount.tokens.refreshWithRetry({
     fetchToken: async () => ({
       token: 'must-not-appear-ready-token',
       refresh_in: 3_600,
@@ -468,7 +468,7 @@ async function configureReadyState(): Promise<void> {
     }),
     failureState: { consecutiveFailures: 0 },
   })
-  state.models = {
+  state.defaultAccount.models = {
     object: 'list',
     data: [{
       id: 'gpt-test',
@@ -495,14 +495,14 @@ async function configureReadyState(): Promise<void> {
       },
     }],
   } satisfies ModelsResponse
-  state.modelCatalogLifecycle = {
+  state.defaultAccount.modelCatalogLifecycle = {
     consecutiveRefreshFailures: 0,
     lastRefreshAttemptAt: 1_000,
     lastRefreshSuccessAt: 1_100,
   }
   state.defaultAccount.availability = 'ready'
   state.defaultAccount.identityState = 'ok'
-  startCopilotTokenRefresh(3_600)
+  state.defaultAccount.tokens.startRefresh(3_600)
 }
 
 function createQuota(percentRemaining: number, used: number, unlimited = false) {

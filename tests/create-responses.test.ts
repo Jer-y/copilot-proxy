@@ -13,9 +13,9 @@ import {
   normalizeCopilotResponsesEventStream,
 } from '../src/services/copilot/responses-id-normalizer'
 
-state.copilotToken = 'test-token'
-state.vsCodeVersion = '1.0.0'
-state.accountType = 'individual'
+state.defaultAccount.copilotToken = 'test-token'
+state.defaultAccount.vsCodeVersion = '1.0.0'
+state.defaultAccount.accountType = 'individual'
 
 const fetchMock = mock(
   (_url: string, _opts: { headers: Record<string, string> }) => {

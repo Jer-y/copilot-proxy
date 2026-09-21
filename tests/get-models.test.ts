@@ -10,10 +10,10 @@ const originalLimiter = state.concurrencyLimiter
 
 describe('Copilot model inventory', () => {
   beforeEach(() => {
-    state.accountType = 'individual'
-    state.copilotToken = 'copilot-token'
-    state.githubToken = 'github-token'
-    state.vsCodeVersion = '1.0.0'
+    state.defaultAccount.accountType = 'individual'
+    state.defaultAccount.copilotToken = 'copilot-token'
+    state.defaultAccount.githubToken = 'github-token'
+    state.defaultAccount.vsCodeVersion = '1.0.0'
     state.concurrencyLimiter = new AsyncConcurrencyLimiter({
       maxConcurrency: 1,
       maxQueue: 0,

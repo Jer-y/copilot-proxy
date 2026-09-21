@@ -3,7 +3,7 @@ import type { Model } from '~/services/copilot/get-models'
 import process from 'node:process'
 
 import { state } from '~/lib/state'
-import { getCopilotTokenLifecycleStatus, refreshTokenWithRetry, stopCopilotTokenRefresh } from '~/lib/token'
+
 import { getCopilotRecoveryStatus, resetCopilotRecoveryStateForTests } from '~/services/copilot/authenticated-fetch'
 import { runDisposableSetupProbe } from '~/setup'
 
@@ -39,15 +39,15 @@ void main().catch((error) => {
 })
 
 async function main(): Promise<void> {
-  state.accountType = 'individual'
+  state.defaultAccount.accountType = 'individual'
   state.concurrencyLimiter = undefined
-  state.copilotToken = 'expired-setup-token'
-  state.githubToken = 'setup-github-token'
+  state.defaultAccount.copilotToken = 'expired-setup-token'
+  state.defaultAccount.githubToken = 'setup-github-token'
   state.lastRequestTimestamp = undefined
-  state.models = { data: [model], object: 'list' }
+  state.defaultAccount.models = { data: [model], object: 'list' }
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false
-  state.vsCodeVersion = '1.0.0'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
   resetCopilotRecoveryStateForTests()
 
   const originalFetch = globalThis.fetch
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   }) as typeof fetch
 
   if (scenario === 'scheduled') {
-    void refreshTokenWithRetry()
+    void state.defaultAccount.tokens.refreshWithRetry()
     await tokenStarted
   }
 
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     const setupElapsedMs = performance.now() - startedAt
 
     await tokenStarted
-    const lifecycle = getCopilotTokenLifecycleStatus()
+    const lifecycle = state.defaultAccount.tokens.getStatus()
     const recovery = getCopilotRecoveryStatus()
 
     assert(
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
   }
   finally {
     globalThis.fetch = originalFetch
-    stopCopilotTokenRefresh()
+    state.defaultAccount.tokens.stopRefresh()
     resetCopilotRecoveryStateForTests()
   }
 }

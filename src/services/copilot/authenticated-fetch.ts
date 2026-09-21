@@ -9,9 +9,9 @@ import type {
   RecoveryResult,
   ScopeCircuit,
 } from '~/lib/account/recovery-registry'
+import type { CopilotTokenSnapshot, ReactiveTokenRefreshResult } from '~/lib/account/token-lifecycle'
 import type { AccountContext } from '~/lib/account/types'
 import type { ConcurrencyLease } from '~/lib/concurrency-limiter'
-import type { CopilotTokenSnapshot, ReactiveTokenRefreshResult } from '~/lib/token'
 
 import consola from 'consola'
 

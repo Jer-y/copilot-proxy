@@ -28,8 +28,8 @@ type ModelOverrides = Partial<Omit<Model, 'capabilities'>> & {
 
 beforeEach(() => {
   resetCodexCatalogStateForTesting()
-  originalModels = state.models
-  state.models = {
+  originalModels = state.defaultAccount.models
+  state.defaultAccount.models = {
     object: 'list',
     data: [
       makeModel('gpt-5.5', {
@@ -59,7 +59,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  state.models = originalModels
+  state.defaultAccount.models = originalModels
   globalThis.fetch = originalFetch
 })
 
@@ -97,7 +97,7 @@ describe('/v1/models', () => {
   })
 
   test('keeps model-picker filtering scoped to client-specific catalog behavior', async () => {
-    state.models?.data.push(makeModel('trajectory-compaction', {
+    state.defaultAccount.models?.data.push(makeModel('trajectory-compaction', {
       model_picker_enabled: false,
       supported_endpoints: ['/responses'],
     }))
@@ -351,7 +351,7 @@ describe('/v1/models', () => {
   })
 
   test('filters dual-transport Copilot models that are missing from the bundled Codex catalog', async () => {
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         makeModel('gpt-5.5', {
@@ -371,7 +371,7 @@ describe('/v1/models', () => {
   })
 
   test('hides transport-exclusive and unavailable bundled models after the Codex client merge', async () => {
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         makeModel('gpt-5.5', {
@@ -465,7 +465,7 @@ describe('/v1/models', () => {
       supported_endpoints: ['/responses', 'ws:/responses'],
     })
     delete modelWithoutSupports.capabilities.supports
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         makeModel('gpt-5.5', {
@@ -531,7 +531,7 @@ describe('/v1/models', () => {
   })
 
   test('disables bundled Responses Lite metadata for the full Codex Responses provider', async () => {
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         makeModel('gpt-5.6-sol', {
@@ -573,7 +573,7 @@ describe('/v1/models', () => {
   })
 
   test('honors explicit Copilot capability false values', async () => {
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         makeModel('gpt-5.5', {

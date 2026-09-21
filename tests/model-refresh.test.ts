@@ -11,47 +11,45 @@ import {
   stopModelRefresh,
 } from '~/lib/utils'
 
-const originalModels = state.models
-const originalModelCatalogLifecycle = state.modelCatalogLifecycle
+const originalModels = state.defaultAccount.models
+const originalModelCatalogLifecycle = state.defaultAccount.modelCatalogLifecycle
 
 afterEach(() => {
-  stopModelRefresh()
-  state.models = originalModels
-  state.modelCatalogLifecycle = originalModelCatalogLifecycle
+  stopModelRefresh(state.defaultAccount)
+  state.defaultAccount.models = originalModels
+  state.defaultAccount.modelCatalogLifecycle = originalModelCatalogLifecycle
 })
 
 describe('model inventory refresh', () => {
   test('failed startup fetch clears a previous initialization snapshot', async () => {
-    state.models = makeModels('previous-run')
-    await expect(cacheModels(async () => {
+    state.defaultAccount.models = makeModels('previous-run')
+    await expect(cacheModels(state.defaultAccount, { fetchModels: async () => {
       throw new Error('models unavailable')
-    })).rejects.toThrow('models unavailable')
-    expect(state.models).toBeUndefined()
+    } })).rejects.toThrow('models unavailable')
+    expect(state.defaultAccount.models).toBeUndefined()
   })
 
   test('an empty initial inventory cannot initialize an account', async () => {
-    await expect(cacheModels(async () => ({ object: 'list', data: [] }))).rejects.toThrow('model catalog is empty')
-    expect(state.models).toBeUndefined()
+    await expect(cacheModels(state.defaultAccount, { fetchModels: async () => ({ object: 'list', data: [] }) })).rejects.toThrow('model catalog is empty')
+    expect(state.defaultAccount.models).toBeUndefined()
   })
 
   test('a successful empty refresh removes models instead of resurrecting a static catalog', async () => {
-    state.models = makeModels('removed-model')
-    expect(await refreshModelsSafely(async () => ({ object: 'list', data: [] }))).toBe(true)
-    expect(state.models?.data).toEqual([])
+    state.defaultAccount.models = makeModels('removed-model')
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => ({ object: 'list', data: [] }) })).toBe(true)
+    expect(state.defaultAccount.models?.data).toEqual([])
   })
 
   test('atomically replaces the model snapshot after a successful refresh', async () => {
     const previous = makeModels('old-model')
     const next = makeModels('new-model')
-    state.models = previous
+    state.defaultAccount.models = previous
 
     const times = [1_000, 1_100]
-    expect(await refreshModelsSafely(async () => next, {
-      now: () => times.shift() ?? 0,
-    })).toBe(true)
-    expect(state.models).toBe(next)
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => next, now: () => times.shift() ?? 0 })).toBe(true)
+    expect(state.defaultAccount.models).toBe(next)
     expect(previous.data[0]?.id).toBe('old-model')
-    expect(state.modelCatalogLifecycle).toEqual({
+    expect(state.defaultAccount.modelCatalogLifecycle).toEqual({
       consecutiveRefreshFailures: 0,
       lastRefreshAttemptAt: 1_000,
       lastRefreshSuccessAt: 1_100,
@@ -60,19 +58,19 @@ describe('model inventory refresh', () => {
 
   test('keeps the prior snapshot when a periodic refresh fails', async () => {
     const previous = makeModels('stable-model')
-    state.models = previous
-    state.modelCatalogLifecycle = {
+    state.defaultAccount.models = previous
+    state.defaultAccount.modelCatalogLifecycle = {
       consecutiveRefreshFailures: 0,
       lastRefreshAttemptAt: 1_000,
       lastRefreshSuccessAt: 1_100,
     }
     const times = [2_000, 2_100]
 
-    expect(await refreshModelsSafely(async () => {
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => {
       throw new Error('temporary models failure')
-    }, { now: () => times.shift() ?? 0 })).toBe(false)
-    expect(state.models).toBe(previous)
-    expect(state.modelCatalogLifecycle).toEqual({
+    }, now: () => times.shift() ?? 0 })).toBe(false)
+    expect(state.defaultAccount.models).toBe(previous)
+    expect(state.defaultAccount.modelCatalogLifecycle).toEqual({
       consecutiveRefreshFailures: 1,
       lastRefreshAttemptAt: 2_000,
       lastRefreshFailureAt: 2_100,
@@ -82,8 +80,8 @@ describe('model inventory refresh', () => {
 
   test('does not replace the prior snapshot with a malformed successful response', async () => {
     const previous = makeModels('stable-model')
-    state.models = previous
-    state.modelCatalogLifecycle = {
+    state.defaultAccount.models = previous
+    state.defaultAccount.modelCatalogLifecycle = {
       consecutiveRefreshFailures: 0,
       lastRefreshAttemptAt: 1_000,
       lastRefreshSuccessAt: 1_100,
@@ -91,12 +89,10 @@ describe('model inventory refresh', () => {
     const times = [2_000, 2_100]
     const malformed = { object: 'list' } as unknown as ModelsResponse
 
-    expect(await refreshModelsSafely(async () => malformed, {
-      now: () => times.shift() ?? 0,
-    })).toBe(false)
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => malformed, now: () => times.shift() ?? 0 })).toBe(false)
 
-    expect(state.models).toBe(previous)
-    expect(state.modelCatalogLifecycle).toEqual({
+    expect(state.defaultAccount.models).toBe(previous)
+    expect(state.defaultAccount.modelCatalogLifecycle).toEqual({
       consecutiveRefreshFailures: 1,
       lastRefreshAttemptAt: 2_000,
       lastRefreshFailureAt: 2_100,
@@ -106,8 +102,8 @@ describe('model inventory refresh', () => {
 
   test('keeps the prior snapshot when refreshed model capabilities are incomplete', async () => {
     const previous = makeModels('stable-model')
-    state.models = previous
-    state.modelCatalogLifecycle = {
+    state.defaultAccount.models = previous
+    state.defaultAccount.modelCatalogLifecycle = {
       consecutiveRefreshFailures: 0,
       lastRefreshAttemptAt: 1_000,
       lastRefreshSuccessAt: 1_100,
@@ -118,12 +114,10 @@ describe('model inventory refresh', () => {
       data: [{ id: 'broken-model', supported_endpoints: ['/chat/completions'] }],
     } as unknown as ModelsResponse
 
-    expect(await refreshModelsSafely(async () => malformed, {
-      now: () => times.shift() ?? 0,
-    })).toBe(false)
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => malformed, now: () => times.shift() ?? 0 })).toBe(false)
 
-    expect(state.models).toBe(previous)
-    expect(state.modelCatalogLifecycle).toEqual({
+    expect(state.defaultAccount.models).toBe(previous)
+    expect(state.defaultAccount.modelCatalogLifecycle).toEqual({
       consecutiveRefreshFailures: 1,
       lastRefreshAttemptAt: 2_000,
       lastRefreshFailureAt: 2_100,
@@ -133,33 +127,33 @@ describe('model inventory refresh', () => {
 
   test('keeps the prior snapshot when refreshed model identity fields have invalid types', async () => {
     const previous = makeModels('stable-model')
-    state.models = previous
+    state.defaultAccount.models = previous
     const malformed = makeModels('broken-model') as unknown as {
       data: Array<Record<string, unknown>>
       object: string
     }
     malformed.data[0]!.name = 42
 
-    expect(await refreshModelsSafely(async () => malformed as unknown as ModelsResponse)).toBe(false)
-    expect(state.models).toBe(previous)
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => malformed as unknown as ModelsResponse })).toBe(false)
+    expect(state.defaultAccount.models).toBe(previous)
   })
 
   test('accepts capability metadata without limits for non-routing catalog entries', async () => {
     const next = makeModels('embedding-inference')
     delete next.data[0]?.capabilities.limits
 
-    expect(await refreshModelsSafely(async () => next)).toBe(true)
-    expect(state.models).toBe(next)
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => next })).toBe(true)
+    expect(state.defaultAccount.models).toBe(next)
   })
 
   test('marks the initial catalog fetch as fresh', async () => {
     const times = [3_000, 3_100]
     const models = makeModels('initial-model')
 
-    await cacheModels(async () => models, { now: () => times.shift() ?? 0 })
+    await cacheModels(state.defaultAccount, { fetchModels: async () => models, now: () => times.shift() ?? 0 })
 
-    expect(state.models).toBe(models)
-    expect(state.modelCatalogLifecycle).toEqual({
+    expect(state.defaultAccount.models).toBe(models)
+    expect(state.defaultAccount.modelCatalogLifecycle).toEqual({
       consecutiveRefreshFailures: 0,
       lastRefreshAttemptAt: 3_000,
       lastRefreshSuccessAt: 3_100,
@@ -167,17 +161,15 @@ describe('model inventory refresh', () => {
   })
 
   test('rejects a malformed initial catalog without marking it fresh', async () => {
-    state.models = undefined
-    state.modelCatalogLifecycle = undefined
+    state.defaultAccount.models = undefined
+    state.defaultAccount.modelCatalogLifecycle = undefined
     const times = [4_000, 4_100]
     const malformed = { object: 'list', data: [{ id: '' }] } as unknown as ModelsResponse
 
-    await expect(cacheModels(async () => malformed, {
-      now: () => times.shift() ?? 0,
-    })).rejects.toThrow('non-empty id')
+    await expect(cacheModels(state.defaultAccount, { fetchModels: async () => malformed, now: () => times.shift() ?? 0 })).rejects.toThrow('non-empty id')
 
-    expect(state.models).toBeUndefined()
-    expect(state).toMatchObject({
+    expect(state.defaultAccount.models).toBeUndefined()
+    expect(state.defaultAccount).toMatchObject({
       modelCatalogLifecycle: {
         consecutiveRefreshFailures: 1,
         lastRefreshAttemptAt: 4_000,
@@ -187,8 +179,8 @@ describe('model inventory refresh', () => {
   })
 
   test('clears the stale state after a later successful refresh', async () => {
-    state.models = makeModels('stale-model')
-    state.modelCatalogLifecycle = {
+    state.defaultAccount.models = makeModels('stale-model')
+    state.defaultAccount.modelCatalogLifecycle = {
       consecutiveRefreshFailures: 2,
       lastRefreshAttemptAt: 4_000,
       lastRefreshFailureAt: 4_100,
@@ -196,12 +188,10 @@ describe('model inventory refresh', () => {
     }
     const times = [5_000, 5_100]
 
-    expect(await refreshModelsSafely(async () => makeModels('recovered-model'), {
-      now: () => times.shift() ?? 0,
-    })).toBe(true)
+    expect(await refreshModelsSafely(state.defaultAccount, { fetchModels: async () => makeModels('recovered-model'), now: () => times.shift() ?? 0 })).toBe(true)
 
-    expect(state.models?.data[0]?.id).toBe('recovered-model')
-    expect(state.modelCatalogLifecycle).toEqual({
+    expect(state.defaultAccount.models?.data[0]?.id).toBe('recovered-model')
+    expect(state.defaultAccount.modelCatalogLifecycle).toEqual({
       consecutiveRefreshFailures: 0,
       lastRefreshAttemptAt: 5_000,
       lastRefreshFailureAt: 4_100,
@@ -210,9 +200,9 @@ describe('model inventory refresh', () => {
   })
 
   test('replaces an existing periodic schedule instead of accumulating timers', () => {
-    startModelRefresh(60_000)
-    startModelRefresh(60_000)
-    expect(isModelRefreshScheduled()).toBe(true)
+    startModelRefresh(state.defaultAccount, 60_000)
+    startModelRefresh(state.defaultAccount, 60_000)
+    expect(isModelRefreshScheduled(state.defaultAccount)).toBe(true)
   })
 })
 

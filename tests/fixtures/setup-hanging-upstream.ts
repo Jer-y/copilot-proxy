@@ -78,14 +78,14 @@ void main().catch((error) => {
 })
 
 async function main(): Promise<void> {
-  state.accountType = 'individual'
+  state.defaultAccount.accountType = 'individual'
   state.concurrencyLimiter = undefined
-  state.copilotToken = 'setup-test-token'
+  state.defaultAccount.copilotToken = 'setup-test-token'
   state.lastRequestTimestamp = undefined
-  state.models = { data: models, object: 'list' }
+  state.defaultAccount.models = { data: models, object: 'list' }
   state.rateLimitSeconds = undefined
   state.rateLimitWait = false
-  state.vsCodeVersion = '1.0.0'
+  state.defaultAccount.vsCodeVersion = '1.0.0'
 
   const evidence: SetupDeadlineEvidence[] = []
   for (const testCase of cases)

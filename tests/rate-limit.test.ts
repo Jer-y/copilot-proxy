@@ -1,4 +1,4 @@
-import type { State } from '~/lib/state'
+import type { RateLimitState } from '~/lib/rate-limit'
 
 import { describe, expect, test, vi } from 'bun:test'
 
@@ -8,9 +8,8 @@ import { checkRateLimit } from '~/lib/rate-limit'
 
 type TrackedAbortListener = ((event: Event) => void) | { handleEvent: (event: Event) => void }
 
-function makeState(overrides?: Partial<State>): State {
+function makeState(overrides?: Partial<RateLimitState>): RateLimitState {
   return {
-    accountType: 'individual',
     rateLimitWait: false,
     ...overrides,
   }

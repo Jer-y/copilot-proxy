@@ -1,7 +1,8 @@
-export interface CittyStringOptionDefinition {
-  name: string
-  shortName?: string
-}
+import type { CittyStringOptionDefinition } from './cli-options'
+
+import { AUTH_CLI_OPTIONS, cliStringOptions, SETUP_CLI_OPTIONS, START_CLI_OPTIONS } from './cli-options'
+
+export type { CittyStringOptionDefinition } from './cli-options'
 
 export interface CittyBooleanOptionResolution {
   negated: boolean
@@ -15,27 +16,10 @@ export interface CittyRootCommandLocation {
   rawArgs: string[]
 }
 
-export const AUTH_CITTY_STRING_OPTIONS = [
-  { name: 'github-token', shortName: 'g' },
-  { name: 'account' },
-] as const satisfies readonly CittyStringOptionDefinition[]
+export const AUTH_CITTY_STRING_OPTIONS = cliStringOptions(AUTH_CLI_OPTIONS)
 
-export const START_CITTY_STRING_OPTIONS = [
-  { name: 'port', shortName: 'p' },
-  { name: 'host', shortName: 'H' },
-  { name: 'preset' },
-  { name: 'account-type', shortName: 'a' },
-  { name: 'rate-limit', shortName: 'r' },
-  { name: 'max-concurrency' },
-  { name: 'max-queue' },
-  { name: 'queue-timeout-ms' },
-  { name: 'headers-timeout-ms' },
-  { name: 'body-timeout-ms' },
-  { name: 'connect-timeout-ms' },
-  { name: 'github-token', shortName: 'g' },
-  { name: '_data-dir' },
-  { name: '_instance-token' },
-] as const satisfies readonly CittyStringOptionDefinition[]
+export const START_CITTY_STRING_OPTIONS = cliStringOptions(START_CLI_OPTIONS)
+export const SETUP_CITTY_STRING_OPTIONS = cliStringOptions(SETUP_CLI_OPTIONS)
 
 // This module is loaded before the runtime guard. Keep it dependency-free and
 // aligned with Citty's root command and node:util.parseArgs preprocessing.

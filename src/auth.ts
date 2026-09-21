@@ -3,6 +3,7 @@
 import process from 'node:process'
 import { defineCommand } from 'citty'
 import consola from 'consola'
+import { AUTH_CLI_OPTIONS, withCliOptions } from '~/lib/cli-options'
 
 import { assertProxyEndpointAvailable } from './daemon/service-env'
 import { readTokenFromStdin, runDeviceFlow } from './lib/account/auth'
@@ -139,38 +140,30 @@ export const auth = defineCommand({
     name: 'auth',
     description: 'Run GitHub auth flow without running the server',
   },
-  args: {
+  args: withCliOptions(AUTH_CLI_OPTIONS, {
     'verbose': {
-      alias: 'v',
-      type: 'boolean',
       default: false,
       description: 'Enable verbose logging',
     },
     'proxy-env': {
-      type: 'boolean',
       default: false,
       description: 'Use HTTP(S)_PROXY/NO_PROXY environment variables for authentication requests',
     },
     'github-token': {
-      alias: 'g',
-      type: 'string',
       description: 'Persist a GitHub token securely, then exit without starting the device flow',
     },
     'account': {
-      type: 'string',
       description: 'Re-authenticate one accounts.json account (alias of accounts auth)',
     },
     'token-stdin': {
-      type: 'boolean',
       default: false,
       description: 'Read the account token from stdin instead of device flow',
     },
     '_if-needed': {
-      type: 'boolean',
       default: false,
       description: 'Internal: authenticate only when no startup token input is available',
     },
-  },
+  }),
   run({ args }) {
     return runAuth({
       ifNeeded: args['_if-needed'],

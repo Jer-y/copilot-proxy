@@ -558,17 +558,21 @@ async function withLiveCopilotState<T>(
   config: LiveEnvConfig,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const snapshot = { ...state }
+  const snapshot = {
+    accountType: state.defaultAccount.accountType,
+    copilotToken: state.defaultAccount.copilotToken,
+    vsCodeVersion: state.defaultAccount.vsCodeVersion,
+  }
 
-  state.copilotToken = config.token
-  state.accountType = config.accountType
-  state.vsCodeVersion = config.vsCodeVersion
+  state.defaultAccount.copilotToken = config.token
+  state.defaultAccount.accountType = (config.accountType) as typeof state.defaultAccount.accountType
+  state.defaultAccount.vsCodeVersion = config.vsCodeVersion
 
   try {
     return await fn()
   }
   finally {
-    Object.assign(state, snapshot)
+    Object.assign(state.defaultAccount, snapshot)
   }
 }
 

@@ -6,7 +6,7 @@ import consola from 'consola'
 
 import { validateAccountType } from '~/lib/cli-validators'
 import { AsyncConcurrencyLimiter, resolveConcurrencyLimitConfig } from '~/lib/concurrency-limiter'
-import { setDefaultAccountContext, state } from '~/lib/state'
+import { state } from '~/lib/state'
 import { cacheModels, DEFAULT_MODEL_REFRESH_INTERVAL_MS, startModelRefresh, stopModelRefresh } from '~/lib/utils'
 
 import { assessRequiredRoute } from './capabilities'
@@ -95,7 +95,7 @@ export class AccountRegistry {
       for (const ctx of accounts) {
         if (!ctx.githubToken)
           ctx.githubToken = readAccountToken(ctx.id)
-        ctx.vsCodeVersion = state.vsCodeVersion
+        ctx.vsCodeVersion = state.defaultAccount.vsCodeVersion
       }
 
       await mapWithConcurrency(accounts, 3, async (ctx) => {
@@ -116,7 +116,7 @@ export class AccountRegistry {
         throw new Error(`Required Copilot routes are unavailable: ${failedRequiredRoutes.map(failure => `${failure.surface}:${failure.model}@${failure.accountId} (${failure.reason})`).join(', ')}`)
       }
 
-      setDefaultAccountContext(defaultCtx)
+      state.defaultAccount = defaultCtx
       state.accounts = this
       if (
         !options.nativeService

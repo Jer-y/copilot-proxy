@@ -6,9 +6,9 @@ import { state } from '../src/lib/state'
 import { server } from '../src/server'
 import { createTestModelCatalog } from './model-fixtures'
 
-state.copilotToken = 'test-token'
-state.vsCodeVersion = '1.0.0'
-state.accountType = 'individual'
+state.defaultAccount.copilotToken = 'test-token'
+state.defaultAccount.vsCodeVersion = '1.0.0'
+state.defaultAccount.accountType = 'individual'
 
 const fetchMock = mock(async (url: string) => {
   if (url.endsWith('/v1/messages')) {
@@ -58,13 +58,13 @@ const fetchMock = mock(async (url: string) => {
 beforeEach(() => {
   fetchMock.mockClear()
   state.lastRequestTimestamp = undefined
-  state.models = createTestModelCatalog()
+  state.defaultAccount.models = createTestModelCatalog()
 })
 
 describe('native protocol routing', () => {
   test.each([false, true])('rejects both retired directions without contacting Copilot (stream=%s)', async (stream) => {
     for (const minimalCatalog of [false, true]) {
-      state.models = minimalCatalog
+      state.defaultAccount.models = minimalCatalog
         ? {
             object: 'list',
             data: [
@@ -98,7 +98,7 @@ describe('native protocol routing', () => {
   })
 
   test('uses advertised native endpoints rather than model brand', async () => {
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [makeModel('claude-native-responses', ['/responses']), makeModel('gpt-native-messages', ['/v1/messages'])],
     }
@@ -136,7 +136,7 @@ describe('native protocol routing', () => {
   })
 
   test('/v1/responses routes future models from live supported_endpoints', async () => {
-    state.models = {
+    state.defaultAccount.models = {
       object: 'list',
       data: [
         makeModel('gpt-next', ['/responses']),
