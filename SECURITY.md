@@ -2,60 +2,26 @@
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for a suspected vulnerability. Use GitHub's
-private vulnerability reporting feature for this repository instead:
-
-<https://github.com/Jer-y/copilot-proxy/security/advisories/new>
-
-Include the affected version, reproduction steps, impact, and any suggested
-mitigation. Please avoid including real GitHub or Copilot tokens, prompts, or
-model output in the report. You can expect an initial acknowledgement within
-seven days.
+Use [GitHub private vulnerability reporting](https://github.com/Jer-y/copilot-proxy/security/advisories/new), not a public issue. Include the affected version, reproduction, impact, and suggested mitigation, without real tokens, prompts, or model output. Expect an initial acknowledgement within seven days.
 
 ## Security model
 
-copilot-proxy is a personal, local proxy by default. It listens on loopback and
-does not provide multi-user API authentication. Binding it to a LAN or public
-interface exposes the user's Copilot subscription to every client that can
-reach it; place an authenticated gateway in front of it if remote access is
-required.
+copilot-proxy serves one trusted operator on loopback and has no downstream user authentication. Remote access requires an [authenticated private gateway](docs/deployment.md#authenticated-private-gateway); exposing the listener directly exposes the operator's subscription.
 
-Browser Origins and request Hosts are allowlisted separately. Cross-origin
-requests are rejected before route execution, and JSON routes require a JSON
-Content-Type. Plaintext token diagnostics have been removed: `/token` returns
-410 after the normal Host/Origin checks, and `--show-token` is rejected before
-authentication or token persistence. The retired `COPILOT_PROXY_EXPOSE_TOKEN`
-variable and historical `showToken` booleans are ignored; enabled settings warn
-without exposing values. Reading old service state does not rewrite it; the
-retired fields are omitted on the next normal save. `/usage`
-returns a minimal quota summary rather than the full upstream Copilot user
-payload.
+Request Hosts and browser Origins are allowlisted separately and rejected before route execution when disallowed. JSON bodies require the appropriate Content-Type. These checks do not authenticate downstream users.
 
-The hosted diagnostics dashboard is a separate GitHub Pages origin. Opening a
-dashboard URL sends its complete `endpoint` query parameter to that remote
-site, can retain the URL in browser or infrastructure history, and trusts the
-page's JavaScript with the diagnostics response it fetches. Never put URL
-credentials or other secrets in the endpoint. Use local `doctor`, `curl`, or a
-locally hosted dashboard when the endpoint hostname or diagnostics data must
-remain inside the local trust boundary.
+Per-request terminal approval has been removed: there is no interactive approval step before forwarding. `--manual` and enabled legacy settings are rejected. Follow the [upgrade checklist](docs/operations.md#upgrade-changes-after-v0100) before removing a safety setting.
 
-`--manual` is an interactive foreground safeguard. Requests fail closed if a
-TTY is unavailable or approval times out. Do not enable verbose or token
-logging when logs are persisted or shared: prompts, tool data, model output,
-and bearer tokens can contain secrets.
+Plaintext token diagnostics are retired. Use `doctor` or `/diagnostics`, not `/token` or `--show-token`; see [route behavior](docs/api-reference.md#routes) and [retired settings](docs/operations.md#upgrade-changes-after-v0100). `/usage` returns a minimal quota summary, not the full upstream user payload.
 
-Treat authenticated HTTP proxy URLs and persisted proxy/TLS service state as
-credentials. Before sharing setup output, logs, `debug --json`, diagnostics
-snapshots, shell commands, or bug reports, remove tokens, API keys, proxy
-credentials, internal endpoints, usernames, and local filesystem paths. Local
-diagnostic output is not automatically safe to publish merely because known
-token fields are redacted.
+## Diagnostics privacy
 
-Deployment details are in [Deployment](docs/deployment.md), and operational
-diagnostics boundaries are in [Operations](docs/operations.md).
+The hosted Dashboard is a remote GitHub Pages origin. Opening it sends the complete `endpoint` query value to that site; the URL may persist in browser history or infrastructure logs. Its JavaScript is also trusted with the diagnostics response it fetches.
+
+Never put credentials in the URL. If endpoint names or diagnostics must remain local, use `doctor`, `curl`, or a self-hosted copy. See [Dashboard operation](docs/operations.md#diagnostics-and-dashboard).
+
+Treat authenticated proxy URLs and persisted proxy/TLS settings as credentials. Before sharing logs, setup output, `debug --json`, diagnostics, or bug reports, remove tokens, keys, prompts, tool/model content, proxy credentials, internal endpoints, usernames, and local paths. Automatic redaction of known fields does not make every output safe to publish.
 
 ## Supported versions
 
-Security fixes are made on the latest release line. Users should upgrade to
-the newest published version before reporting an issue that may already have
-been fixed.
+Security fixes target the latest release line. Upgrade to the newest published version before reporting an issue that may already be fixed.

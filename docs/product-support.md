@@ -6,7 +6,7 @@ English | [简体中文](product-support.zh-CN.md)
 
 copilot-proxy is a local protocol adapter for one trusted operator. It lets trusted clients use one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs.
 
-One running process owns one data directory, listener, optional global concurrency limiter, and diagnostic surface. Each configured identity retains its own token lifecycle, model catalog, recovery state, account type, and optional account limiter. Every upstream request binds to exactly one account before dispatch; an unavailable account fails instead of triggering load balancing or automatic failover. These capabilities do not add downstream users or enterprise controls.
+One process owns a data directory, listener, diagnostics, and optional global concurrency limit. Each identity has its own tokens, model catalog, recovery state, account type, and optional limiter. Requests bind to one account; unavailability fails without load balancing or automatic failover. These upstream identities do not add downstream users or enterprise controls.
 
 ## Deployment support matrix
 
@@ -21,20 +21,10 @@ Conditional gateway support does not mean that a listener is safe merely because
 
 ## Non-goals
 
-copilot-proxy is not intended to become:
+Public inference hosting, downstream user/API-key/tenant/quota/billing/audit systems, and HA or distributed control planes require a separate architecture, not exposure of this process.
 
-- a public hosted inference service;
-- a user, API-key, tenant, quota, billing, or audit system;
-- a high-availability or distributed control plane;
-- an upstream capability oracle based only on OpenAI or Anthropic documentation;
-- a compatibility layer that reports success after silently dropping user intent.
-
-A public or independently multi-tenant product would require a separate control-plane architecture, not incremental exposure of this process.
+The proxy is neither an upstream capability oracle based on provider documentation alone nor a compatibility layer that silently drops intent and reports success.
 
 ## Related documentation
 
-- [Getting started](getting-started.md): prove a first real response and generate client configuration.
-- [Operations](operations.md): presets, deterministic multi-account routing, model inspection, diagnostics, and native-service lifecycle.
-- [Deployment](deployment.md): loopback, Docker, and authenticated private-gateway topologies.
-- [Protocol compatibility](protocol-compatibility.md): native routes, maturity labels, and protocol boundaries.
-- [Copilot capability validation](copilot-capability-validation.md): live-probe procedures and semantic validation rules.
+Continue with [Getting started](getting-started.md), [Operations](operations.md), or [Deployment](deployment.md). Other tasks are in the [documentation index](README.md).

@@ -31,9 +31,19 @@ OpenAI 路由也接受对应的不带 `/v1` 前缀路径。Anthropic Messages �
 
 ### Claude Code 文档边界
 
-受支持的 Claude setup 只选择具有原生 `/v1/messages` 路由的模型。Claude Code 会把本地文本与 Markdown 文件转换为普通 `text` 或 `tool_result` block。只有客户端发送 base64 `application/pdf` document block 时才原样转发 PDF；Claude Code 也可能把 PDF 页面渲染为 base64 图片。代理不提供 Anthropic Files、Message Batches、Skills 或 Managed Agents 控制面。生成路径不实现通用 Anthropic document 适配：`document.source` 使用 `text`、`content`、`url`、`file` 或非 PDF base64 media type 时，会返回 Anthropic `400 invalid_request_error`。`/v1/messages/count_tokens` 按端点独立处理；由于 Copilot token counting 接受 generation 会拒绝的形状，该端点不会套用 generation 专用的 sanitizer 或 document gate。URL 或 `file_id` 成功返回 token 数只代表请求形状被接受，不代表 URL 已被抓取，也不代表文件存在或可读。
+Claude setup 选择原生 `/v1/messages` 模型。文档行为按端点区分：
 
-多账号模式下，生成路由接受 `x-copilot-account: <id>`。带模型的请求也可以使用 `<account-id>/<model-id>`。selector 冲突时返回 `409`；所选账号不可用时返回 `503`，不会自动切换。`/usage?account=<id>` 与 `/readyz?account=<id>` 可检查单个账号。
+- Claude Code 将本地文本/Markdown 转为普通 text 或 `tool_result` 块。
+- PDF 转发要求客户端发出 base64 `application/pdf` 文档块；Claude Code 也可能将页面渲染为 base64 图片。
+- 生成请求对 `document.source` 的 `text`、`content`、`url`、`file` 或非 PDF base64 形式返回 `400 invalid_request_error`，不做通用文档适配。
+- `/v1/messages/count_tokens` 不套用生成专用的清理或文档限制。URL/`file_id` 计数成功只证明请求被接受，不证明资源已获取、文件存在/可读或生成支持。
+- 不提供 Anthropic Files、Message Batches、Skills 和 Managed Agents 控制面。
+
+### 账号选择
+
+多账号生成路由接受 `x-copilot-account: <id>`；带模型的请求也接受 `<account-id>/<model-id>`。冲突返回 `409`；账号不可用返回 `503`，不故障转移。`/usage?account=<id>` 与 `/readyz?account=<id>` 检查单个账号。完整优先级和连接绑定见[运维](operations.zh-CN.md#多个-copilot-账号)。
+
+### 恢复退避
 
 当认证恢复打开单路由或全局熔断器时，受保护的上游路由会在本地返回 `503`、`Retry-After`、错误码 `copilot_upstream_circuit_open` 和 `X-Copilot-Proxy-Recovery-State`。全局熔断器打开期间，`/readyz` 也会带 `Retry-After` 返回 `503`。客户端和网关应遵守该等待时间，不要自行启动重启或重试循环。
 
@@ -66,7 +76,7 @@ printf '%s\n' "$TOKEN" | copilot-proxy accounts auth <id> --token-stdin --yes
 copilot-proxy start --headers-timeout-ms <ms> --body-timeout-ms <ms> --connect-timeout-ms <ms>
 ```
 
-`--github-token` 只保留为旧版单账号 bootstrap；存在 `accounts.json` 时会被拒绝。多账号应使用 `--token-stdin`，避免 token 进入 argv。不要把真实 token 写入共享 shell history 或日志；分享 CLI 输出前，还要脱敏本地路径、用户名、内部 endpoint 和带认证信息的代理 URL。
+`--github-token` 是旧版单账号 bootstrap，存在 `accounts.json` 时拒绝；多账号使用 `--token-stdin` 导入，避免秘密进入 argv。分享 CLI 输出前遵循[安全策略](../SECURITY.md)。
 
 可通过 `accounts concurrency set|clear` 配置可选的账号级限制，通过 `accounts required-route set|remove|list` 配置启动/readiness 能力门槛。这些写操作与[运维](operations.zh-CN.md#多个-copilot-账号)说明的账号事务及回滚边界一致。
 

@@ -19,6 +19,8 @@ Messages、Responses、Chat Completions 和 Embeddings 都只支持直连。请�
 
 路由按端点能力判断，不按模型品牌限制。一个模型如果声明多个原生 API，仍可通过这些 API 分别接入。
 
+包含退役 CLI 参数和诊断行为的完整操作者迁移清单，见 [v0.10.0 之后的升级变更](operations.zh-CN.md#v0100-之后的升级变更)。
+
 ## 动态模型目录
 
 每个账号在启动时拉取自己的 Copilot 模型目录并缓存在内存中。HTTP 路由、模型选择、setup 和能力展示使用该账号动态取得的模型 ID 与 `supported_endpoints`，不使用内置模型表，也不按模型家族前缀推断能力。已知客户端别名的格式归一化与模型是否可用是两回事。
@@ -29,6 +31,10 @@ Messages、Responses、Chat Completions 和 Embeddings 都只支持直连。请�
 
 代理补充的默认输出额度只取动态目录，客户端显式额度保持不变。已有 GPT-5.4 Chat Completions token 字段归一化等小范围原生格式适配，不用于决定模型或端点是否可用。
 
+## 用量
+
+保留上游 usage；缺失时不使用本地估算补齐，应视为不可用而非零。`POST /v1/messages/count_tokens` 是独立的上游能力，不代替实际生成用量；其[文档接受边界](api-reference.zh-CN.md#claude-code-文档边界)与生成不同。
+
 ## 成熟度标签
 
 | 标签 | 产品含义 |
@@ -38,8 +44,6 @@ Messages、Responses、Chat Completions 和 Embeddings 都只支持直连。请�
 | `unsupported` | 不存在原生路由 |
 
 这些标签只表示路由是否可用，不保证某模型支持所有字段、工具、停止条件或输出语义。
-
-预览状态会把模型目录明确声明的直连 HTTP 路由从 `stable` 调整为 `experimental`；原生 Responses WebSocket 路由始终为 `experimental`。
 
 ## HTTP 与 SSE 上的 Responses
 
@@ -63,9 +67,7 @@ Codex 目前在模型提供商级别选择 Responses 传输，而不是按模型
 
 `POST /v1/messages` 必须使用原生 Messages 后端。只支持 Responses 的模型不能通过此端点调用。请求和事件保持 Messages 协议，只应用现有的 Copilot 兼容处理。
 
-原生工具探针区分 `code_execution`、`web_search` 等服务端托管工具与 `bash`、文本编辑器、memory 等客户端执行工具：前者必须验证可观察的服务端结果，后者必须验证名称正确且输入可执行、符合请求操作的 `tool_use`。Anthropic 平台控制面 API 不属于逐模型能力矩阵。
-
-Anthropic 专属行为以原生 Messages 为准。代理不会为了获得表面上的 `200` 响应而通过 Chat Completions 路由 Messages。
+Messages 不会为 Anthropic 专属功能回退到 Chat Completions。接受工具调用不等于执行，见[工具执行归属与探针语义](copilot-capability-validation.md#live-copilot-capability-matrix)及独立的[文档边界](api-reference.zh-CN.md#claude-code-文档边界)。
 
 ## 能力声明所需的证据
 

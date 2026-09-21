@@ -2,111 +2,46 @@
 
 # Copilot API Proxy
 
-一个面向单一可信操作者的本地适配器：把一个或多个由所有者配置的 GitHub Copilot 身份转换成兼容 OpenAI 和 Anthropic 的 API，供 Claude Code、Codex、SDK 与自定义工具使用。
-
-> [!IMPORTANT]
-> copilot-proxy 面向一个通过本机回环地址访问的可信用户。每个已配置账号的 Individual、Business 或 Enterprise 类型只决定该账号的 Copilot 上游路由；多账号支持不会提供下游认证、租户隔离、审计、计费或企业治理。使用网关或非回环监听地址前，请先阅读[产品支持](docs/product-support.zh-CN.md)。
+面向单一可信操作者的本地适配器，将一个或多个由所有者配置的 GitHub Copilot 身份接入兼容 OpenAI 和 Anthropic 的 API。
 
 > [!WARNING]
-> 这是一个通过逆向工程实现的代理，不受 GitHub 官方支持，并可能因 Copilot 变化而失效。过度自动化或批量使用可能触发 GitHub 的滥用控制。请阅读 [GitHub 可接受使用政策](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github)与 [GitHub Copilot 条款](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot)，并负责任地使用。
+> 本项目通过逆向工程实现，非官方支持；Copilot 变化可能导致失效，过度自动化可能触发滥用控制。请阅读 [GitHub 可接受使用政策](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github)和 [Copilot 条款](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot)。
+>
+> 默认仅供可信用户通过回环地址使用，不提供下游用户认证；远程访问须经过[认证私有网关](docs/deployment.zh-CN.md#认证私有网关)。
 
 ## 快速开始
 
-要求：拥有 Individual、Business 或 Enterprise Copilot 订阅的 GitHub 账号；使用 registry 发布版需要 Node.js >= 22.19.0，使用当前源码 checkout 需要 Git 与 Bun >= 1.3.6。运行 `setup codex` 还需要在 `PATH` 中安装 Codex >= 0.134.0。
-
-从空目录开始，在发布版 package 与当前源码 checkout 之间二选一。全局安装 registry 发布版，或不安装直接运行一次：
+需要 Copilot 订阅及 Node.js >= 22.19.0。使用 `setup codex` 时，`PATH` 中还须安装 Codex >= 0.134.0。
 
 ```sh
 npm install --global @jer-y/copilot-proxy@latest
-copilot-proxy --help
-copilot-proxy start
-
-# 一次性运行的替代方式
-npx --yes @jer-y/copilot-proxy@latest --help
-npx --yes @jer-y/copilot-proxy@latest start
+copilot-proxy setup claude
 ```
 
-registry 的 `latest` 发布版可能落后于当前 checkout，尚未提供 `setup`、`models` 或 `doctor`。请先查看所选版本的 `--help`，不要假定这些命令已经发布。要使用下文的引导式流程，请从空目录运行：
+按需把 `claude` 换为 `codex` 或 `openai-sdk`。setup 可能更新 copilot-proxy 自身的认证数据，但只打印配置，不写入客户端配置文件，也不启动客户端。
 
-```sh
-git clone https://github.com/Jer-y/copilot-proxy.git
-cd copilot-proxy
-bun install --frozen-lockfile
-```
+1. 在另一个终端执行 setup 输出的完整代理启动命令。
+2. 自行应用输出的客户端配置，再运行客户端。
+3. 使用 `copilot-proxy doctor` 检查运行中的服务。
 
-1. 根据使用的客户端运行设置命令，三选一：
+本文对应所在修订版；发布包请使用随包文档，各 CLI 命令保持同一版本。npx、源码安装及故障排查见[入门指南](docs/getting-started.zh-CN.md)；已有安装请先查看[升级清单](docs/operations.zh-CN.md#v0100-之后的升级变更)。
 
-   ```sh
-   bun run ./src/main.ts setup claude
-   bun run ./src/main.ts setup codex
-   bun run ./src/main.ts setup openai-sdk
-   ```
+## 能力
 
-   setup 会完成认证、选择并探测直连路由，然后输出配置而不写入客户端配置文件。它可能更新 copilot-proxy 自身的认证数据，但不会保存或启动生成的客户端 profile。HTTP 资格要求动态 `supported_endpoints` 声明匹配端点，不使用静态模型策略；WebSocket 始终要求实时明确的 `ws:/responses`。这些资格输入不是实时路由或语义证明，探测结果才是。Codex 还有本机版本和模型 metadata 检查，详见[入门指南](docs/getting-started.zh-CN.md)。
+- OpenAI 兼容的 Chat Completions、HTTP/SSE Responses、Models 和 Embeddings。
+- Anthropic 兼容的 Messages 和 token counting。
+- 所选模型明确声明支持时可用的原生 Responses WebSocket。
+- 确定性多账号路由、客户端设置、诊断和原生服务管理。
 
-2. 在另一个终端使用 setup 输出的完整命令启动代理。默认源码设置可简写为：
-
-   ```sh
-   bun run ./src/main.ts start --preset personal
-   ```
-
-3. 应用生成的配置。需要查看当前模型目录或诊断运行中的服务时，可以运行：
-
-   ```sh
-   bun run ./src/main.ts models --client codex
-   bun run ./src/main.ts doctor --client codex
-   ```
-
-可按需把 `codex` 换成 `claude` 或 `openai-sdk`。配置安全、非交互使用与故障排查见[入门指南](docs/getting-started.zh-CN.md)。
-
-代理启动后会输出指向当前监听地址的[托管诊断面板](https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics)链接。该面板是远程 GitHub Pages 站点：打开链接时，URL query 中编码后的本地 endpoint 会先发送给该站点，随后浏览器才读取 `/diagnostics`。如果 endpoint 地址也必须只保留在本机，请改用 `doctor` 或 `curl`。完整信任边界见[运维](docs/operations.zh-CN.md#诊断与状态面板)。
-
-## 能力摘要
-
-| 领域 | 摘要 |
-| --- | --- |
-| OpenAI 兼容 API | Chat Completions、HTTP/SSE Responses、Models 与 Embeddings |
-| Anthropic 兼容 API | Messages 与 token count；按模型选择直连路由 |
-| Responses WebSocket | 仅由实时明确的 `ws:/responses` metadata 放行的原生传输 |
-| 路由 | 只支持原生协议；客户端必须使用所选模型支持的 API |
-| 运维 | 客户端设置、模型查看、健康诊断、服务管理与诊断面板 |
-
-能力可用性取决于当前 Copilot 账号、模型、端点与传输。契约和限制见[协议兼容性](docs/protocol-compatibility.zh-CN.md)，验证范围、执行方式与结果判读见[能力验证](docs/copilot-capability-validation.md)。
-
-已移除 Messages ↔ Responses 跨协议路由。原先依赖翻译的请求现在会在本地失败，迁移方式见[协议兼容性](docs/protocol-compatibility.zh-CN.md#从跨协议路由迁移)。
-
-## 产品边界
-
-| 拓扑 | 支持状态 |
-| --- | --- |
-| 一个可信用户通过本机回环地址访问 | 支持 |
-| 位于认证网关之后的私有后端 | 有条件支持；缺失的安全与治理能力必须由网关提供 |
-| 团队直接共享 | 不支持 |
-| 公共多租户服务 | 不支持 |
-
-单个进程可以保存多个由所有者配置的 Copilot 身份，并按模型进行确定性路由；但代理仍只服务一个可信操作者，不是多租户网关，也不会在账号间负载均衡或自动故障转移。详见[运维](docs/operations.zh-CN.md#多个-copilot-账号)与[产品支持](docs/product-support.zh-CN.md)。
+只支持原生协议，不做跨协议翻译、账号负载均衡或自动故障转移。可用性取决于账号、模型、端点和传输，详见[协议兼容性](docs/protocol-compatibility.zh-CN.md)。
 
 ## 文档
 
-请从[文档索引](docs/README.zh-CN.md)按任务继续阅读。安全边界与私密漏洞报告方式见[安全策略（英文）](SECURITY.md)。
+通过[任务索引](docs/README.zh-CN.md)查找账号、部署、升级、API 和 Dashboard 文档。受支持的拓扑见[产品支持](docs/product-support.zh-CN.md)；暴露监听器或分享诊断前，请阅读[安全策略](SECURITY.md)。
 
 ## 开发
 
-源码开发要求 Bun >= 1.3.6。
-
-```sh
-bun install --frozen-lockfile
-bun run dev
-bun run build
-bun run typecheck
-bun run lint
-bun test
-bun run test:coverage
-bun run knip
-bun run audit
-```
-
-修改受上游能力约束的行为时，请执行[能力验证](docs/copilot-capability-validation.md)中对应的定向测试与真实验证。
+源码开发需要 Git 与 Bun >= 1.3.6。按[源码安装](docs/getting-started.zh-CN.md#源码安装)准备环境后运行 `bun run dev`。构建与测试命令集中维护在[本地验证](docs/copilot-capability-validation.md#local-validation)。
 
 ## 致谢
 

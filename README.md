@@ -2,111 +2,46 @@ English | [简体中文](README.zh-CN.md)
 
 # Copilot API Proxy
 
-A local adapter for one trusted operator that exposes one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs for Claude Code, Codex, SDKs, and custom tools.
-
-> [!IMPORTANT]
-> copilot-proxy is designed for one trusted user on loopback. Each configured account's individual, business, or enterprise type selects its Copilot upstream route; multi-account support does not add downstream authentication, tenant isolation, audit, billing, or enterprise governance. See [product support](docs/product-support.md) before using a gateway or non-loopback listener.
+A local adapter for one trusted operator, exposing one or more owner-configured GitHub Copilot identities through OpenAI- and Anthropic-compatible APIs.
 
 > [!WARNING]
-> This is a reverse-engineered proxy. It is not supported by GitHub and may break when Copilot changes. Excessive automated or bulk use may trigger GitHub abuse controls. Review the [GitHub Acceptable Use Policies](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github) and [GitHub Copilot Terms](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot), and use it responsibly.
+> Unofficial and reverse-engineered; Copilot changes may break it, and excessive automation may trigger abuse controls. Review the [GitHub Acceptable Use Policies](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github) and [Copilot Terms](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot).
+>
+> Use loopback for one trusted user. There is no downstream user authentication; remote access requires an [authenticated private gateway](docs/deployment.md#authenticated-private-gateway).
 
 ## Quick start
 
-Requirements: a GitHub account with an individual, business, or enterprise Copilot subscription; Node.js >= 22.19.0 for a registry release, or Git and Bun >= 1.3.6 for the current source checkout. Running `setup codex` also requires Codex >= 0.134.0 on `PATH`.
-
-From an empty directory, choose either the published package or the current source checkout. To install the registry release globally or run it once without installing:
+Requires a Copilot subscription and Node.js >= 22.19.0. For `setup codex`, install Codex >= 0.134.0 on `PATH`.
 
 ```sh
 npm install --global @jer-y/copilot-proxy@latest
-copilot-proxy --help
-copilot-proxy start
-
-# One-shot alternative
-npx --yes @jer-y/copilot-proxy@latest --help
-npx --yes @jer-y/copilot-proxy@latest start
+copilot-proxy setup claude
 ```
 
-The registry's `latest` release can lag this checkout and may not yet expose `setup`, `models`, or `doctor`. Check the selected release's `--help` instead of assuming those commands exist. To use the guided workflow documented below, start from an empty directory and run:
+Replace `claude` with `codex` or `openai-sdk` as needed. Setup may update copilot-proxy's own authentication data; it prints configuration without writing client configuration files or launching the client.
 
-```sh
-git clone https://github.com/Jer-y/copilot-proxy.git
-cd copilot-proxy
-bun install --frozen-lockfile
-```
+1. Start the proxy in another terminal using the exact command printed by setup.
+2. Apply the printed client configuration yourself, then run the client.
+3. Check the running service with `copilot-proxy doctor`.
 
-1. Run setup for the client you use. Choose one:
-
-   ```sh
-   bun run ./src/main.ts setup claude
-   bun run ./src/main.ts setup codex
-   bun run ./src/main.ts setup openai-sdk
-   ```
-
-   Setup authenticates, selects and probes a direct route, then prints configuration without writing client configuration files. It may update copilot-proxy's own authentication data, but it does not save or launch the generated client profile. HTTP eligibility requires the matching endpoint in the fetched `supported_endpoints`; no static model policy is used. WebSocket always requires explicit live `ws:/responses`. Those eligibility inputs are not live route or semantic proof—the probe is. Codex has additional installed-version and model-metadata checks; see [Getting started](docs/getting-started.md).
-
-2. Start the proxy in another terminal with the exact command printed by setup. For the default source setup, the equivalent short form is:
-
-   ```sh
-   bun run ./src/main.ts start --preset personal
-   ```
-
-3. Apply the generated configuration. You can inspect the current catalog or diagnose the running service with:
-
-   ```sh
-   bun run ./src/main.ts models --client codex
-   bun run ./src/main.ts doctor --client codex
-   ```
-
-Replace `codex` with `claude` or `openai-sdk` where appropriate. Configuration safety, non-interactive use, and troubleshooting are covered in [Getting started](docs/getting-started.md).
-
-When the proxy starts, it prints a link to the [hosted diagnostics dashboard](https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics) for the active listener. This is a remote GitHub Pages site: opening it sends the encoded local endpoint in the URL query to that site before your browser reads `/diagnostics`. Use `doctor` or `curl` instead when that endpoint must remain local. See [Operations](docs/operations.md#diagnostics-and-dashboard) for the trust boundary.
+This document describes its revision; use bundled documentation for a published package and keep CLI commands on the same version. For npx, source installation, or troubleshooting, see [Getting started](docs/getting-started.md). Existing users should read the [upgrade checklist](docs/operations.md#upgrade-changes-after-v0100).
 
 ## Capabilities
 
-| Area | Summary |
-| --- | --- |
-| OpenAI-compatible APIs | Chat Completions, Responses over HTTP/SSE, Models, and Embeddings |
-| Anthropic-compatible APIs | Messages and token counting, with model-aware direct routing |
-| Responses WebSocket | Native transport gated by explicit live `ws:/responses` metadata |
-| Routing | Native protocols only; clients must use an API supported by the selected model |
-| Operations | Client setup, model inspection, health diagnosis, service management, and a diagnostics dashboard |
+- OpenAI-compatible Chat Completions, Responses HTTP/SSE, Models, and Embeddings.
+- Anthropic-compatible Messages and token counting.
+- Native Responses WebSocket when advertised by the selected model.
+- Deterministic multi-account routing, client setup, diagnostics, and native services.
 
-Capability availability depends on the current Copilot account, model, endpoint, and transport. Read [Protocol compatibility](docs/protocol-compatibility.md) for contracts and limitations, and [Capability validation](docs/copilot-capability-validation.md) for what to validate, how to run it, and how to interpret the result.
-
-Cross-protocol Messages ↔ Responses routing has been removed. Previously translated requests now fail locally; see [migration guidance](docs/protocol-compatibility.md#migration-from-cross-protocol-routing).
-
-## Product boundary
-
-| Topology | Support |
-| --- | --- |
-| One trusted user on local loopback | Supported |
-| Private backend behind an authenticated gateway | Conditional; the gateway must provide the missing security and governance controls |
-| Direct team sharing | Unsupported |
-| Public multi-tenant service | Unsupported |
-
-One process may hold several owner-configured Copilot identities for deterministic model routing, but the proxy still serves one trusted operator and is not a multi-tenant gateway. It does not load-balance or automatically fail over between accounts. See [Operations](docs/operations.md#multiple-copilot-accounts) and [Product support](docs/product-support.md).
+Only native protocols are supported: no cross-protocol translation, account load balancing, or automatic failover. Availability depends on the account, model, endpoint, and transport; see [Protocol compatibility](docs/protocol-compatibility.md).
 
 ## Documentation
 
-Use the [documentation index](docs/README.md) to continue by task. Security boundaries and private vulnerability reporting are documented in the [security policy](SECURITY.md).
+Use the [task index](docs/README.md) for accounts, deployment, upgrades, API details, and the Dashboard. Read [Product support](docs/product-support.md) for supported topologies and [Security](SECURITY.md) before exposing a listener or sharing diagnostics.
 
 ## Development
 
-Source development requires Bun >= 1.3.6.
-
-```sh
-bun install --frozen-lockfile
-bun run dev
-bun run build
-bun run typecheck
-bun run lint
-bun test
-bun run test:coverage
-bun run knip
-bun run audit
-```
-
-Use the targeted and live validation commands documented in [Capability validation](docs/copilot-capability-validation.md) when changing upstream-gated behavior.
+Source development requires Git and Bun >= 1.3.6. Follow [source installation](docs/getting-started.md#source-checkout), then `bun run dev`. Build and test commands are maintained in [Local validation](docs/copilot-capability-validation.md#local-validation).
 
 ## Acknowledgments
 

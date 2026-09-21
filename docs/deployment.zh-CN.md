@@ -2,6 +2,8 @@
 
 # 部署
 
+升级现有部署前，请检查 [v0.10.0 之后的升级变更](operations.zh-CN.md#v0100-之后的升级变更)，尤其是已退役的审批设置和令牌诊断。
+
 copilot-proxy 可以保存一个或多个由所有者配置的 GitHub Copilot 身份，但只服务一个可信操作者，也没有下游用户认证。更改监听地址前，请先从[产品支持矩阵](product-support.zh-CN.md#部署支持矩阵)选择合适的拓扑。
 
 ## 本机回环地址
@@ -39,7 +41,7 @@ docker run \
 客户端 -> 认证网关 -> 私有 copilot-proxy -> GitHub Copilot
 ```
 
-网关必须负责用户、API Key、授权、每用户配额、模型权限、审计、计费和下游限流。即使 copilot-proxy 配置了多个由所有者管理的上游账号，它仍是面向单一操作者的私有上游，不构成租户边界。
+网关负责用户、API Key、授权、配额、模型权限、审计、计费和下游限流。多个上游账号不构成租户边界，详见[产品支持](product-support.zh-CN.md)。
 
 一个具体的网关选择是 [New API](https://github.com/QuantumNous/new-api)。可将 copilot-proxy 配置为它的私有 OpenAI 兼容上游（例如 `http://copilot-proxy:4399/v1`），并只向客户端暴露 New API。这只是拓扑示例，并非对兼容性或安全性的全面保证；下列要求仍需全部满足。
 
@@ -65,15 +67,13 @@ copilot-proxy start --preset gateway-upstream
 
 任何一项缺失，都会使部署变成不受支持的直接共享，而非受支持的私有网关。
 
-同一熔断状态也会反映在 `/readyz`：全局恢复熔断器打开时，就绪检查会带 `Retry-After` 返回 `503`。网关应传递或遵守该退避时间，不要循环重启代理，或反复切换身份和端点。
+熔断响应字段与就绪行为见[恢复退避](api-reference.zh-CN.md#恢复退避)。不要把退避变成循环重启、切换身份或端点。
 
 ## 监听器与浏览器安全
 
-- `COPILOT_PROXY_EXPOSE_TOKEN` 已退役；旧值不再生效或被原生服务恢复。开启值只产生警告。
 - 仅在确有需要时，将准确的非本地浏览器来源加入 `COPILOT_PROXY_CORS_ORIGINS`。
 - 将准确的非回环请求主机名加入 `COPILOT_PROXY_ALLOWED_HOSTS`；它不能代替认证。
-- `--show-token` 已移除并明确报错；请用 `doctor` 或 `/diagnostics` 查看不含凭据的状态。旧配置中的 `showToken` 布尔值读取时丢弃，开启值会警告；读取不改写文件，下一次正常保存时才清除该字段。
-- 已移除逐请求终端审批（`--manual`）。旧 CLI 参数和持久化的 `manual: true` 会明确报错；只有接受无人值守转发后，才应移除参数或将旧字段设为 `false`。旧 `manual: false` 仍可读取，但新保存的配置不再包含它。认证与 Host/Origin 检查保持不变。
 - 将 `/diagnostics` 和托管状态面板视为可见性工具，而非访问控制入口。
+- 逐请求审批和明文令牌诊断已退役。按[升级清单](operations.zh-CN.md#v0100-之后的升级变更)处理，不要静默关闭旧安全设置。
 
 运行预设和服务生命周期见[运维](operations.zh-CN.md)。网关不会改变协议行为，详见[协议兼容性](protocol-compatibility.zh-CN.md)。暴露任何监听器前，请阅读[安全策略（英文）](../SECURITY.md)。

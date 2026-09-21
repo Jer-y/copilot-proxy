@@ -19,6 +19,8 @@ Messages, Responses, Chat Completions, and Embeddings are direct-only. A request
 
 Routing uses endpoint capabilities, not model-brand rules. A model that advertises multiple native APIs remains usable through each of them.
 
+For the complete operator migration checklist, including retired CLI options and diagnostics behavior, see [upgrade changes after v0.10.0](operations.md#upgrade-changes-after-v0100).
+
 ## Dynamic model catalog
 
 Each account fetches its own Copilot model catalog at startup and keeps it in memory. HTTP routing, model selection, setup, and capability profiles use that account's fetched IDs and `supported_endpoints`; there is no bundled model table or family-prefix capability inference. Known client alias normalization remains separate from model availability.
@@ -29,6 +31,10 @@ Periodic refreshes atomically replace the complete snapshot, including removals.
 
 Proxy-generated output limits use only the fetched model limit. Explicit client limits remain unchanged. Narrow native wire-format adaptations, such as the existing GPT-5.4 Chat Completions token-field normalization, do not grant model or endpoint availability.
 
+## Usage
+
+Upstream usage is preserved; missing usage is not synthesized from local estimates. Treat it as unavailable, not zero. `POST /v1/messages/count_tokens` is a separate upstream-gated operation, not a replacement for actual generation usage; its [document acceptance boundary](api-reference.md#claude-code-document-boundary) differs from generation.
+
 ## Maturity labels
 
 | Label | Product meaning |
@@ -38,8 +44,6 @@ Proxy-generated output limits use only the fetched model limit. Explicit client 
 | `unsupported` | No native route is available |
 
 These labels classify routing eligibility. They do not guarantee that every field, tool, stop condition, or output semantic works for a model.
-
-Preview status changes a catalog-advertised direct HTTP route from `stable` to `experimental`. Native Responses WebSocket routes are always `experimental`.
 
 ## Responses over HTTP and SSE
 
@@ -63,9 +67,7 @@ The proxy catalog also sets `use_responses_lite=false` on exposed models. The ge
 
 `POST /v1/messages` requires a native Messages backend. Responses-only models cannot be used through this endpoint. Anthropic payloads and events stay in the Messages protocol, subject to the existing Copilot compatibility adaptations.
 
-Native tool probes distinguish hosted server tools such as `code_execution` and `web_search` from client-executed tools such as `bash`, text editor, and memory. The former require observable server results; the latter require a correctly named `tool_use` with executable input matching the requested operation. Anthropic platform control-plane APIs are outside the per-model capability matrix.
-
-Native Messages remains the source of truth for Anthropic-specific behavior. The proxy does not route Messages through Chat Completions to obtain a nominal `200` response.
+Messages never falls back to Chat Completions for Anthropic-specific features. Tool-call acceptance is not execution: see [tool ownership and probe semantics](copilot-capability-validation.md#live-copilot-capability-matrix), and the separate [document boundary](api-reference.md#claude-code-document-boundary).
 
 ## Evidence required for capability claims
 

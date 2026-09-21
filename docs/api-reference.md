@@ -31,9 +31,19 @@ Availability is model- and upstream-dependent. See [Protocol compatibility](prot
 
 ### Claude Code document boundary
 
-The supported Claude setup uses a model with a direct `/v1/messages` route. Claude Code reads local text and Markdown files into ordinary text or `tool_result` blocks. PDF input is forwarded only when the client emits a base64 `application/pdf` document block; Claude Code may instead render PDF pages as base64 images. The proxy does not expose Anthropic Files, Message Batches, Skills, or Managed Agents control planes. The generation path does not implement generic Anthropic document adaptation: `document.source` values using `text`, `content`, `url`, `file`, or non-PDF base64 media types return an Anthropic `400 invalid_request_error`. `/v1/messages/count_tokens` is intentionally endpoint-specific and does not apply generation-only sanitization or document gates because Copilot token counting accepts shapes that generation rejects. A successful URL or `file_id` token count proves only that the request shape was accepted; it does not prove that the URL was fetched or the file exists or is readable.
+Claude setup selects a native `/v1/messages` model. Document behavior is endpoint-specific:
 
-In multi-account mode, generation routes accept `x-copilot-account: <id>`. Model-bearing requests may instead use `<account-id>/<model-id>`. Conflicting selectors return `409`; an unavailable selected account returns `503` without failover. `/usage?account=<id>` and `/readyz?account=<id>` inspect one account.
+- Local text/Markdown becomes ordinary text or `tool_result` blocks in Claude Code.
+- PDF forwarding requires a client-emitted base64 `application/pdf` document block; Claude Code may instead render pages as base64 images.
+- Generation rejects `document.source` forms using `text`, `content`, `url`, `file`, or non-PDF base64 media with `400 invalid_request_error`; there is no generic document adaptation.
+- `/v1/messages/count_tokens` does not apply generation-only sanitization or document gates. Successful URL/`file_id` counting proves request acceptance, not resource retrieval, file existence/readability, or generation support.
+- Anthropic Files, Message Batches, Skills, and Managed Agents control planes are not exposed.
+
+### Account selection
+
+In multi-account mode, generation routes accept `x-copilot-account: <id>`; model-bearing requests also accept `<account-id>/<model-id>`. Conflicts return `409`; an unavailable account returns `503` without failover. `/usage?account=<id>` and `/readyz?account=<id>` inspect one account. Full precedence and connection pinning are in [Operations](operations.md#multiple-copilot-accounts).
+
+### Recovery backoff
 
 When authentication recovery opens a scoped or global circuit, protected upstream routes fail locally with `503`, `Retry-After`, error code `copilot_upstream_circuit_open`, and `X-Copilot-Proxy-Recovery-State`. While the global circuit is open, `/readyz` also returns `503` with `Retry-After`. Clients and gateways should honor that delay instead of starting their own restart or retry loop.
 
@@ -66,7 +76,7 @@ printf '%s\n' "$TOKEN" | copilot-proxy accounts auth <id> --token-stdin --yes
 copilot-proxy start --headers-timeout-ms <ms> --body-timeout-ms <ms> --connect-timeout-ms <ms>
 ```
 
-`--github-token` remains the legacy single-account bootstrap and is rejected when `accounts.json` exists. `--token-stdin` is the safe multi-account path because it does not place the token in argv. Never place real tokens in shared shell history or logs, and redact local paths, usernames, internal endpoints, and authenticated proxy URLs before sharing CLI output.
+`--github-token` is the legacy single-account bootstrap and is rejected with `accounts.json`; use `--token-stdin` for multi-account imports without secrets in argv. Follow [Security](../SECURITY.md) before sharing CLI output.
 
 Use `accounts concurrency set|clear` for optional account-specific limits and `accounts required-route set|remove|list` for startup/readiness capability gates. These writes use the same account transaction and rollback boundary described in [Operations](operations.md#multiple-copilot-accounts).
 

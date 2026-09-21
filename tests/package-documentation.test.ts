@@ -258,32 +258,109 @@ describe('published documentation', () => {
     expect(runnerStage).toContain('COPY --chown=bun:bun ./LICENSE ./LICENSE')
   })
 
-  test('documents runnable registry and source-checkout entry paths from an empty directory', () => {
-    const guidePaths = [
-      'README.md',
-      'README.zh-CN.md',
-      'docs/getting-started.md',
-      'docs/getting-started.zh-CN.md',
+  test('keeps README package-first and complete alternative installation paths in the guide', () => {
+    for (const suffix of ['', '.zh-CN']) {
+      const readme = fs.readFileSync(path.join(ROOT, `README${suffix}.md`), 'utf8')
+      const guide = fs.readFileSync(path.join(ROOT, `docs/getting-started${suffix}.md`), 'utf8')
+      expect(readme).toContain('npm install --global @jer-y/copilot-proxy@latest')
+      expect(readme).toContain('copilot-proxy setup claude')
+      expect(readme).toContain('copilot-proxy doctor')
+      expect(readme).toContain('codex')
+      expect(readme).toContain('openai-sdk')
+      expect(getLocalMarkdownReferences(readme).some(ref => ref.target === `docs/getting-started${suffix}.md`)).toBe(true)
+      for (const command of [
+        'npm install --global @jer-y/copilot-proxy@latest',
+        'npx --yes @jer-y/copilot-proxy@latest --help',
+        'npx --yes @jer-y/copilot-proxy@latest setup claude',
+        'npx --yes @jer-y/copilot-proxy@<version>',
+        'git clone https://github.com/Jer-y/copilot-proxy.git',
+        'cd copilot-proxy',
+        'bun install --frozen-lockfile',
+        'bun run ./src/main.ts',
+      ]) {
+        expect(guide).toContain(command)
+      }
+      for (const text of [readme, guide]) {
+        expect(text).toMatch(/bundled documentation|随包文档/)
+        expect(text).toMatch(/same version|同一版本/)
+        expect(text).not.toMatch(/may not yet expose|尚未提供 `setup`/)
+      }
+    }
+  })
+
+  test('keeps current security boundaries explicit and links legacy setting migration', () => {
+    const security = fs.readFileSync(path.join(ROOT, 'SECURITY.md'), 'utf8')
+    expect(security).toMatch(/approval has been removed/i)
+    expect(security).toMatch(/no interactive approval step/i)
+    expect(security).toContain('--manual')
+    expect(security).toMatch(/Hosts[\s\S]*?Origins/)
+    expect(security).toMatch(/no downstream user authentication/)
+    expect(security).not.toMatch(/`--manual` is an interactive foreground safeguard|approval times out/)
+    expect(getLocalMarkdownReferences(security)).toContainEqual({
+      target: 'docs/operations.md',
+      fragment: 'upgrade-changes-after-v0100',
+    })
+    expect(security).toContain('endpoint')
+    expect(security).toMatch(/browser history|infrastructure logs/)
+    expect(security).toMatch(/Never put credentials in the URL/)
+  })
+
+  test('keeps migration actions concise while retaining safety conditions and detail links', () => {
+    const migrations = [
+      { topic: /Messages ↔ Responses/, terms: [], safety: /native API|原生 API/, detail: 'protocol-compatibility' },
+      { topic: /Static model|静态模型/, terms: ['models --client all --json', '--account <id>'], detail: 'protocol-compatibility' },
+      { topic: /--manual/, terms: ['manual: true', 'manual: false'], safety: /only after accepting unattended forwarding|只有接受无人值守转发后/ },
+      { topic: /start --claude-code/, terms: ['start -c', 'setup claude', '--copy'], detail: 'getting-started' },
+      { topic: /Doctor/, terms: ['/diagnostics'], detail: '#doctor' },
+      { topic: /Plaintext|明文诊断/, terms: ['/token', '--show-token', 'COPILOT_PROXY_EXPOSE_TOKEN', 'showToken'], detail: 'api-reference' },
+      { topic: /Dashboard/, terms: ['/usage', '/diagnostics'], safety: /server `\/usage` API remains available|服务端 `\/usage` API 保留/ },
+      { topic: /Local token|本地 token/, terms: ['usage'], detail: 'protocol-compatibility' },
+      { topic: /document.source/, terms: ['tool_result'], detail: 'api-reference' },
     ]
 
-    for (const guidePath of guidePaths) {
+    for (const [guidePath, heading, oldHeading] of [
+      ['docs/operations.md', 'Upgrade changes after v0.10.0', 'Upgrade from pre-v0.10.0 installations'],
+      ['docs/operations.zh-CN.md', 'v0.10.0 之后的升级变更', '从 v0.10.0 之前的安装升级'],
+    ]) {
       const guide = fs.readFileSync(path.join(ROOT, guidePath), 'utf8')
+      const section = guide.split(`## ${heading}\n`)[1]?.split('\n## ')[0]
+      expect(section).toBeDefined()
+      expect(section).toMatch(/not an announcement of publication|不表示新版本已经发布/)
+      const rows = section!.split('\n').filter(line => line.startsWith('| ')).slice(2)
+      for (const { topic, terms, safety, detail } of migrations) {
+        const matches = rows.filter(row => topic.test(row.split('|')[1]))
+        expect(matches).toHaveLength(1)
+        for (const term of terms)
+          expect(matches[0]).toContain(term)
+        if (safety)
+          expect(matches[0]).toMatch(safety)
+        if (detail)
+          expect(getLocalMarkdownReferences(matches[0]).some(ref => `${ref.target}#${ref.fragment ?? ''}`.includes(detail))).toBe(true)
+      }
+      expect(section).toMatch(/Reads do not rewrite files|读取不改写文件/)
+      expect(section).toMatch(/next normal save|下次正常保存/)
+      expect(section).toContain('doctor --endpoint <base-url> --client <client>')
+      expect(section).toMatch(/real client turn|真实客户端回合/)
+      expect(section).toMatch(/do not replace a real request|不能代替真实请求/)
 
-      expect(guide).toContain('npm install --global @jer-y/copilot-proxy@latest')
-      expect(guide).toContain('npx --yes @jer-y/copilot-proxy@latest --help')
-      expect(guide).toContain('npx --yes @jer-y/copilot-proxy@latest start')
-      expect(guide).toContain('git clone https://github.com/Jer-y/copilot-proxy.git')
-      expect(guide).toContain('cd copilot-proxy')
-      expect(guide).toContain('bun install --frozen-lockfile')
+      const oldMigration = guide.split(`## ${oldHeading}\n`)[1]?.split('\n## ')[0]
+      expect(oldMigration).toBeDefined()
+      expect(oldMigration).toContain('@jer-y/copilot-proxy@0.9.3')
+      expect(oldMigration).toContain('@jer-y/copilot-proxy@0.10.0')
+      expect(oldMigration).toContain('daemon.json')
+    }
+  })
 
-      const releaseWarning = guide.split('\n').find((line) => {
-        return line.includes('registry')
-          && line.includes('`latest`')
-          && line.includes('`setup`')
-      })
-      expect(releaseWarning).toContain('`models`')
-      expect(releaseWarning).toContain('`doctor`')
-      expect(releaseWarning).toContain('`--help`')
+  test('links the central upgrade checklist from both language entrypoints', () => {
+    for (const [suffix, fragment] of [
+      ['', 'upgrade-changes-after-v0100'],
+      ['.zh-CN', 'v0100-之后的升级变更'],
+    ]) {
+      const target = `operations${suffix}.md`
+      for (const file of [`README${suffix}.md`, ...['README', 'getting-started', 'deployment', 'protocol-compatibility'].map(name => `docs/${name}${suffix}.md`)]) {
+        const references = getLocalMarkdownReferences(fs.readFileSync(path.join(ROOT, file), 'utf8'))
+        expect(references.some(reference => path.posix.basename(reference.target) === target && reference.fragment === fragment)).toBe(true)
+      }
     }
   })
 
@@ -295,7 +372,7 @@ describe('published documentation', () => {
 
     for (const guidePath of guidePaths) {
       const guide = fs.readFileSync(path.join(ROOT, guidePath), 'utf8')
-      const namedCodexVersions = [...guide.matchAll(/\bCodex\s+(\d+\.\d+\.\d+)\b/g)]
+      const namedCodexVersions = [...guide.matchAll(/\bCodex\s+(?:>=\s*)?(\d+\.\d+\.\d+)\b/g)]
         .map(match => match[1])
 
       expect(new Set(namedCodexVersions)).toEqual(new Set(['0.134.0']))
@@ -363,41 +440,43 @@ describe('published documentation', () => {
     }
   })
 
-  test('documents dynamic-only endpoint eligibility without replacing real route validation', () => {
-    for (const file of ['README.md', 'docs/getting-started.md']) {
-      const guide = fs.readFileSync(path.join(ROOT, file), 'utf8')
-      expect(guide).toContain('matching endpoint in the fetched `supported_endpoints`')
-      expect(guide).toContain('no static model policy is used')
-      expect(guide).not.toContain('otherwise may use bundled proxy policy')
-      expect(guide).not.toContain('fall back to copilot-proxy\'s bundled routing policy')
+  test('keeps detailed protocol contracts in their reference with direct entrypoint links', () => {
+    for (const suffix of ['', '.zh-CN']) {
+      const protocolPath = `docs/protocol-compatibility${suffix}.md`
+      const protocol = fs.readFileSync(path.join(ROOT, protocolPath), 'utf8')
+      const api = fs.readFileSync(path.join(ROOT, `docs/api-reference${suffix}.md`), 'utf8')
+      const guide = fs.readFileSync(path.join(ROOT, `docs/getting-started${suffix}.md`), 'utf8')
+      for (const term of ['supported_endpoints', '503 model_catalog_unavailable', 'ws:/responses', '400 invalid_request_error'])
+        expect(protocol).toContain(term)
+      expect(protocol).toMatch(/no bundled model table|不使用内置模型表/)
+      expect(protocol).toMatch(/missing usage is not synthesized|缺失时不使用本地估算/)
+      expect(protocol).toMatch(/not zero|而非零/)
+      expect(protocol).toContain('POST /v1/messages/count_tokens')
+      for (const term of ['60', '16 MiB', '32 MiB', '64 MiB', 'previous_response_id', 'generate: false'])
+        expect(protocol).toContain(term)
+      for (const term of ['document.source', 'application/pdf', 'file_id', '400 invalid_request_error', 'copilot_upstream_circuit_open', 'Retry-After', '410'])
+        expect(api).toContain(term)
+      expect(api).toMatch(/not resource retrieval|不证明资源已获取/)
+      expect(guide).toMatch(/not a client smoke|不等于客户端冒烟/)
+      expect(guide).toMatch(/before authentication|在认证前/)
+      for (const entry of [`README${suffix}.md`, `docs/getting-started${suffix}.md`]) {
+        const text = fs.readFileSync(path.join(ROOT, entry), 'utf8')
+        expect(getLocalMarkdownReferences(text).some(ref => path.posix.basename(ref.target) === path.posix.basename(protocolPath))).toBe(true)
+      }
     }
-    for (const file of ['README.zh-CN.md', 'docs/getting-started.zh-CN.md']) {
-      const guide = fs.readFileSync(path.join(ROOT, file), 'utf8')
-      expect(guide).toContain('动态 `supported_endpoints` 声明匹配端点')
-      expect(guide).toContain('不使用静态模型策略')
-      expect(guide).not.toContain('可使用代理内置策略回退')
-    }
-    const englishGuide = fs.readFileSync(path.join(ROOT, 'docs/getting-started.md'), 'utf8')
-    expect(englishGuide).toContain('the setup route probes separately validate observable proxy-route semantics')
-    expect(englishGuide).toContain('Codex further intersects the HTTP Responses-eligible models with the usable installed bundled entries')
   })
 
-  test('links the hosted dashboard while describing diagnostics as a JSON API', () => {
+  test('keeps dashboard operation and privacy in their owning pages', () => {
     const dashboardUrl = 'https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics'
-    const guides = [
-      'README.md',
-      'README.zh-CN.md',
-      'docs/operations.md',
-      'docs/operations.zh-CN.md',
-    ]
-
-    for (const guidePath of guides) {
-      const guide = fs.readFileSync(path.join(ROOT, guidePath), 'utf8')
+    for (const suffix of ['', '.zh-CN']) {
+      const guide = fs.readFileSync(path.join(ROOT, `docs/operations${suffix}.md`), 'utf8')
       expect(guide).toContain(dashboardUrl)
       expect(guide).toContain('/diagnostics')
+      expect(guide).toMatch(/JSON API, not an HTML dashboard|JSON API，不是 HTML 面板/)
+      expect(guide).toMatch(/reject redirects|拒绝重定向/)
+      expect(guide).toContain('model_catalog_stale')
+      expect(getLocalMarkdownReferences(guide)).toContainEqual({ target: '../SECURITY.md', fragment: 'diagnostics-privacy' })
     }
-    expect(fs.readFileSync(path.join(ROOT, 'docs/operations.md'), 'utf8')).toContain('JSON API, not an HTML dashboard')
-    expect(fs.readFileSync(path.join(ROOT, 'docs/operations.zh-CN.md'), 'utf8')).toContain('JSON API，不是 HTML 面板')
   })
 
   test('documents every model variable required by the live proxy route suite', () => {

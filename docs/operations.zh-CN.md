@@ -2,7 +2,7 @@
 
 # 运维
 
-本文介绍运行参数选择、检查、诊断和服务生命周期。网络暴露与网关要求见[部署](deployment.zh-CN.md)。文中的 `setup`、`models` 和 `doctor` 示例适用于当前源码，以及自身 `--help` 已列出这些命令的发布版 package；较早的已发布版本可能尚未包含它们。使用源码时，请把命令开头的 `copilot-proxy` 替换为 `bun run ./src/main.ts`。
+下文使用已安装的 `copilot-proxy`；源码运行时换为 `bun run ./src/main.ts`。安装与版本选择见[入门指南](getting-started.zh-CN.md#1-选择安装路径)，网络暴露要求见[部署](deployment.zh-CN.md)。
 
 ## 运行预设
 
@@ -73,58 +73,49 @@ copilot-proxy accounts required-route list
 
 ```sh
 copilot-proxy models --client all
-copilot-proxy models --client claude
-copilot-proxy models --client codex --json
-copilot-proxy models --client openai-sdk
-copilot-proxy models --account work --client all
+copilot-proxy models --account work --client codex --json
 copilot-proxy check-usage --account work
 ```
 
-启用 `accounts.json` 后，`models` 与 `check-usage` 默认使用 `defaultAccount`；可通过 `--account <id>` 检查其他已配置账号。两者只加载所选账号的持久 token，并以数值 GitHub identity 严格核对已记录的账号槽位，绝不会回退到旧版 `github_token` 或 Device Flow。没有 `accounts.json` 时，`models --account-type` 与旧版认证路径保持原有含义。
+存在 `accounts.json` 时，两条命令默认使用 `defaultAccount`；`--account <id>` 选择其他账号。它们按记录的数值 GitHub identity 验证持久 token，不回退到旧版 `github_token` 或 Device Flow。没有该文件时，`models --account-type` 与单账号认证含义不变。
 
-`models` 显示所选账号的完整实时目录，包括只能通过显式账号 header 或模型前缀访问的模型；不会按该账号的未前缀静态 glob 绑定进行裁剪。表格显示原生 `direct` 路由与 `unsupported` 组合，以及成熟度、限制和部分功能标志；JSON 输出还包含所选账号 ID、账号类型，以及精简的路由 source 与 reason code。客户端筛选和 setup 只包含具有对应客户端原生路由的模型。`models` 和 diagnostics 都会省略 `model_picker_enabled=false` 的条目。
+`models` 展示所选账号的实时目录，包括只能显式选择账号访问的模型，不局限于无前缀路由绑定。用 `--client claude|codex|openai-sdk` 筛选；输出包含直连/不支持路由、成熟度、限制及功能标志。JSON 还包含账号 ID/类型、路由 source/reason code，以及随 npm 和 Docker 分发的文档路径。models 和 diagnostics 均省略 `model_picker_enabled=false`。
 
-`models` 与 setup 共享这个 picker-enabled 和实时路由可见性基线，但候选集不一定相同。`setup codex` 还要求本机 Codex 不低于 0.134.0，并将直连 Responses 候选与 bundled catalog 中具备可用 `base_instructions` 和 `context_window` metadata 的条目取交集。`models --client codex` 不检查本机 bundled catalog，因此可能展示当前机器上的 setup 无法配置的特定传输模型或 metadata 缺失模型。面向兼容性的 `/v1/models` 响应是另一套按静态绑定生成的客户端目录。提供 `models` 的发布版会在 npm package 和 Docker 镜像中包含 `models --json` 返回的相对文档路径。
-
-这些信息表示当前路由是否可用，并不代表所有语义均受支持。路由定义见[协议兼容性](protocol-compatibility.zh-CN.md)，实时验证方法见[Copilot 能力验证](copilot-capability-validation.md)。
+setup 共享原生路由基线，但 `setup codex` 还检查本机内置 `base_instructions` 和 `context_window` metadata，因此 `models --client codex` 可能列出 setup 无法配置的模型。HTTP `/v1/models` 另按账号路由绑定和 [Codex 传输筛选](protocol-compatibility.zh-CN.md#websocket-上的-responses)生成目录，不是静态模型表。目录资格不证明功能语义。
 
 ## Doctor
 
 ```sh
-copilot-proxy doctor \
-  --endpoint http://127.0.0.1:4399 \
-  --client all
+copilot-proxy doctor --endpoint http://127.0.0.1:4399 --client all
 ```
 
-doctor 会检查连通性、就绪状态、令牌生命周期、恢复状态、并发、模型可用性、客户端候选模型和用量接口。请传入服务基础地址，不要传入 `/diagnostics` 路径。可用 `--client claude`、`codex` 或 `openai-sdk` 缩小模型检查范围，也可用 `--json` 供自动化处理。每个诊断请求默认最多等待 10 秒；可通过 `--timeout-ms <ms>` 设置其他正数且有界的超时时间。
-
-检查失败时命令以非零状态退出。doctor 要求服务提供 `/diagnostics`；HTTP 404 会生成失败报告并以退出码 1 结束。请检查服务基础地址和反代路由，或升级缺少该端点的服务端。doctor 不再降级为分别探测 `/livez`、`/readyz`、`/v1/models` 或 `/usage`。JSON 报告保留 `mode: "full"`，它表示报告格式，不表示检查成功。上述服务端端点保持不变；面板旧版用量链接已退役，见下文。
+- 传入服务基础 URL，而不是 `/diagnostics` 路径。doctor 检查就绪状态、令牌生命周期、恢复、并发、客户端模型可用性和用量。
+- 按需使用 `--client claude|codex|openai-sdk` 及 `--json`。默认超时 10 秒，`--timeout-ms <ms>` 接受正数且有界的覆盖值。
+- 必要检查失败时非零退出。缺少 `/diagnostics`（`404`）时退出码为 `1`，不回退到其他端点；请检查基础 URL、反代或升级服务端。JSON 的 `mode: "full"` 表示报告格式，不表示成功。
 
 ## 诊断与状态面板
 
 | 入口 | 用途 |
 | --- | --- |
 | `GET /livez` | 仅检查进程存活 |
-| `GET /readyz` | 被动检查认证、模型状态、恢复和并发状态 |
-| `GET /diagnostics` | 汇总运行状态、精简模型路由和用量快照；可能填充用量缓存 |
+| `GET /readyz` | 被动检查认证、模型、恢复和并发的就绪状态 |
+| `GET /diagnostics` | 汇总运行状态、模型路由和用量快照 |
 
 ```sh
 curl http://127.0.0.1:4399/diagnostics
 ```
 
-`/diagnostics` 不会刷新凭据或运行模型探针，但不保证对上游完全被动：usage cache miss 时可能请求当前配额并更新短期用量缓存。它不会返回 bearer token、提示词或下游用户密钥。需要严格被动的 readiness 时使用 `/readyz`。
+`/diagnostics` 不返回凭据或提示词，也不刷新 token 或探测模型，但用量缓存未命中时可能请求上游配额。严格被动检查用 `/readyz`。这些端点及 `/v1/models`、`/usage` 均保持独立。
 
-如果定时模型目录刷新失败，代理会保留最后一次成功快照继续服务已有路由，而不会清空目录。此时 `/readyz` 仍保持运行就绪，但会增加 `model_catalog_stale` warning 和目录生命周期时间；`/diagnostics`、面板与 `doctor` 会把该 warning 显示为降级或提示状态，直到后续刷新成功。面板会把保留的模型矩阵明确标为陈旧，不会再把诊断文档生成时间当成目录刷新时间；完全没有目录仍是硬性 readiness 失败。
+目录刷新失败时保留最后有效快照：`/readyz` 仍就绪并带 `model_catalog_stale` 和生命周期时间；diagnostics、doctor 与面板显示警告/降级视图，直到刷新成功。面板使用目录新鲜度，而非诊断文档时间。缺少目录是硬性就绪失败。
 
-默认监听地址可以打开[托管诊断面板](https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics)。`start` 会根据当前监听地址输出对应的托管页面 URL，并将 `/diagnostics` endpoint 编码到 `endpoint` query 参数中；Windows 开发启动器只会在确认当次服务实例就绪后打开该 URL。原始 `/diagnostics` 路由是 JSON API，不是 HTML 面板。
+可打开[托管诊断面板](https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics)，或使用 `start` 输出的当前监听器链接。Windows 启动器只在自身实例就绪后打开它。`/diagnostics` 本身是 JSON API，不是 HTML 面板。
 
-托管面板是独立的远程 GitHub Pages origin，不属于本地代理的信任边界。打开该 URL 会把完整的 `endpoint` query 参数发送给 GitHub Pages，该 URL 还可能保留在浏览器历史或基础设施日志中；之后页面才让浏览器请求本地诊断 endpoint。如果 endpoint 主机名也不能泄露，请不要打开托管页面。URL 中绝不能放入凭据或其他秘密；请改用本地 `curl`、`doctor` 或自行托管的面板副本。
+托管页面会把 endpoint URL 发给 GitHub Pages，并通过浏览器读取诊断。URL 中不得放入秘密；不能接受该披露时，用本地 `doctor`/`curl` 或自托管副本。详见[诊断隐私](../SECURITY.md#diagnostics-privacy)。
 
-面板与代理版本匹配时，会提供完整的运行状态、模型路由和配额视图。指向 `/usage` 的旧链接会在请求前被拒绝，并提示将 endpoint 路径改成 `/diagnostics`；不会自动改址或回退。服务端 `/usage` API 保持不变。面板只发送只读 GET 请求，不提供管理或认证能力；刷新仍可能触发上述用量缓存填充。
-
-面板只接受路径精确为 `/diagnostics` 的端点（可带一个结尾斜杠），且 URL 不得包含凭据、query 或 fragment。请求不会携带浏览器凭据，遇到重定向也会拒绝而非跟随。
-
-Chrome 142 及更高版本可能通过 [Local Network Access](https://developer.chrome.com/blog/local-network-access) 权限控制托管 HTTPS 面板对 `localhost` 的请求。如果面板明确报告本地网络访问被阻止，请在浏览器的网站设置中允许面板来源访问本地网络，然后重试。只有浏览器通过 Permissions API 明确返回匹配权限的 `denied` 状态时，面板才会显示这项权限指导；不支持的权限名称、尚未决定的权限提示和普通连接失败仍保留通用的连通性提示。可使用 `curl` 或 `copilot-proxy doctor` 独立于浏览器权限验证代理。
+- 面板应匹配代理版本。它只发送 GET，没有管理或认证能力，但可能触发上述用量缓存填充。
+- endpoint 必须精确使用 `/diagnostics`（可带结尾斜杠），不得包含凭据、query 或 fragment。请求省略浏览器凭据并拒绝重定向。旧链接见[升级清单](#v0100-之后的升级变更)。
+- Chrome 142+ 可能要求 [Local Network Access](https://developer.chrome.com/blog/local-network-access)。明确提示被阻止时，在面板来源设置中允许该权限。只有匹配的 Permissions API `denied` 状态才显示专门指导；不支持/未决定的权限或普通失败使用通用连通性提示。可用本地 doctor 或 curl 独立验证。
 
 ## 原生服务管理
 
@@ -152,6 +143,26 @@ copilot-proxy enable --account-type business --port 4400 --proxy-env
 
 其余生命周期操作使用 `restart`、`stop` 和 `disable`。
 
+## v0.10.0 之后的升级变更
+
+以下对比 v0.10.0 与当前源码修订版，不表示新版本已经发布。升级前以目标包的随包文档为准；现有账号文件和凭据不会重置。
+
+| 变更 | 操作 |
+| --- | --- |
+| 移除 Messages ↔ Responses 翻译 | 选择支持客户端原生 API 的模型；不兼容组合在本地失败，见[协议迁移](protocol-compatibility.zh-CN.md#从跨协议路由迁移)。 |
+| 移除静态模型/能力回退 | 用 `copilot-proxy models --client all --json` 检查（显式账号加 `--account <id>`），解决认证或目录失败，见[动态目录](protocol-compatibility.zh-CN.md#动态模型目录)。 |
+| 拒绝 `--manual` 与已保存的 `manual: true` | 只有接受无人值守转发后，才移除参数或设为 `manual: false`；不再提供逐请求审批。 |
+| 移除 `start --claude-code` / `start -c` | 运行 `copilot-proxy setup claude` 并按输出操作，需要时才加 `--copy`，见[setup](getting-started.zh-CN.md#2-使用-setup-验证代理路由)。 |
+| Doctor 要求 `/diagnostics` | 检查基础 URL、反代或升级服务端；不再进行旧式多端点回退，见 [Doctor](#doctor)。 |
+| 退役明文诊断：`/token`、`--show-token`、`COPILOT_PROXY_EXPOSE_TOKEN`、`showToken` | 移除退役参数/设置，改用 `doctor` 或 `/diagnostics`，不再输出 token；见 [API 参考](api-reference.zh-CN.md#路由)及下方旧设置处理规则。 |
+| 托管 Dashboard 拒绝 `/usage` 链接 | 把 endpoint 路径改为 `/diagnostics`；服务端 `/usage` API 保留，见[面板](#诊断与状态面板)。 |
+| 移除本地 token usage 估算 | 上游 usage 缺失时按不可用处理，见[用量](protocol-compatibility.zh-CN.md#用量)。 |
+| 移除通用 Anthropic `document.source` 适配 | 本地文本用 text 或 `tool_result`；PDF 和 token counting 按[文档边界](api-reference.zh-CN.md#claude-code-文档边界)处理。 |
+
+退役的 `--manual`、`--show-token` 和 `start --claude-code`/`-c` 参数在认证或持久化 token 前报错。旧设置：`manual: false` 仍可读取，`manual: true` 报错；历史 `showToken` 布尔值会被丢弃，开启值会警告；退役环境选项被忽略，开启时警告。读取不改写文件，退役字段在下次正常保存时省略。
+
+检查启动参数、服务设置与客户端配置后，运行 `copilot-proxy models --client <client> --json`、`copilot-proxy doctor --endpoint <base-url> --client <client>`，并完成真实客户端回合。替换实际客户端和基础 URL；源码运行使用 `bun run ./src/main.ts`。目录和健康检查不能代替真实请求或工具循环。更早的服务还需执行 [pre-v0.10.0 迁移](#从-v0100-之前的安装升级)。
+
 ## 从 v0.10.0 之前的安装升级
 
 如果旧版本仍使用应用自行管理的 daemon，或原生服务安装状态尚未保存完整配置，请先升级到最后一个支持迁移的版本并刷新原生服务状态：
@@ -169,7 +180,7 @@ copilot-proxy status
 
 ## 代理环境
 
-环境中的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY` 默认不受信任。命令需要使用已配置的代理路由时，请添加 `--proxy-env`：
+环境中的代理变量默认不生效，每条命令通过 `--proxy-env` 显式启用：
 
 ```sh
 copilot-proxy start --proxy-env
@@ -180,10 +191,8 @@ copilot-proxy models --client all --proxy-env
 copilot-proxy doctor --endpoint https://proxy.internal --proxy-env
 ```
 
-账号变更会独立执行 GitHub 身份、Copilot token 与模型目录验证。需要代理时，每次 `accounts add` 或 `accounts auth` 都要显式添加 `--proxy-env`；原生服务中保存的代理设置不会让交互式 CLI 命令自动选择该出口。
+启用后使用 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，无法建立可用代理路由时直接失败。账号 add/auth 独立执行身份、token 和目录检查，原生服务保存的代理选项不会自动应用到这些 CLI 命令。
 
-`--proxy-env` 是显式出口策略；无法建立可用代理路由时会直接失败。代理 URL 可能内嵌用户名或密码。原生服务配置会把该选项及相关代理和 TLS 环境保存在仅所有者可访问的状态中，因此这些状态和复制出的代理 URL 都应按凭据处理。只对受信任的基础设施使用 `--proxy-env`。
+服务配置把代理/TLS 设置保存在仅所有者可访问的文件中。该文件和带认证信息的代理 URL 都是凭据；只使用可信基础设施，分享输出前遵循[安全策略](../SECURITY.md)。
 
-分享 setup 输出、日志、`debug --json`、诊断快照或 shell 命令前，请删除 token、API Key、带认证信息的代理 URL、内部 endpoint、用户名和本地文件路径。本地输出只面向其所有者；日志边界的脱敏不代表每份诊断产物都可以公开。详见[安全策略（英文）](../SECURITY.md)。
-
-完整且当前有效的命令与参数列表请查看 `copilot-proxy --help` 和 `copilot-proxy <command> --help`。路由与安全设置摘要见 [API 与配置参考](api-reference.zh-CN.md)。
+完整参数见 `copilot-proxy <command> --help`；路由与环境字段见 [API 参考](api-reference.zh-CN.md)。

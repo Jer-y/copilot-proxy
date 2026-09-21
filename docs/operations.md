@@ -2,7 +2,7 @@ English | [简体中文](operations.zh-CN.md)
 
 # Operations
 
-This page covers runtime selection, inspection, diagnostics, and service lifecycle. Network exposure and gateway requirements live in [Deployment](deployment.md). The `setup`, `models`, and `doctor` examples describe the current source tree and any published package whose own `--help` lists those commands; an older published release may not include them. From source, replace the leading `copilot-proxy` with `bun run ./src/main.ts`.
+Commands below use the installed `copilot-proxy`; for source, use `bun run ./src/main.ts`. Follow the [installation/version guidance](getting-started.md#1-choose-an-installation-path) and [deployment requirements](deployment.md) for your environment.
 
 ## Runtime presets
 
@@ -73,32 +73,25 @@ Account, route, concurrency, and required-route writes use an owner-only lock an
 
 ```sh
 copilot-proxy models --client all
-copilot-proxy models --client claude
-copilot-proxy models --client codex --json
-copilot-proxy models --client openai-sdk
-copilot-proxy models --account work --client all
+copilot-proxy models --account work --client codex --json
 copilot-proxy check-usage --account work
 ```
 
-When `accounts.json` is active, `models` and `check-usage` default to `defaultAccount`; use `--account <id>` to inspect another configured account. They load only that account's persisted token, verify its numeric GitHub identity against the recorded account slot, and never fall back to the legacy `github_token` or Device Flow. Without `accounts.json`, `models --account-type` and the legacy authentication path retain their previous meaning.
+With `accounts.json`, both commands default to `defaultAccount`; `--account <id>` selects another account. They verify its persisted token against the recorded numeric GitHub identity, never falling back to the legacy `github_token` or Device Flow. Without that file, `models --account-type` and single-account authentication retain their meaning.
 
-`models` shows the selected account's complete live catalog, including models reachable only through an explicit account header or model prefix; it is not reduced to that account's unprefixed static glob bindings. The table shows native `direct` routes and `unsupported` combinations, plus maturity, limits, and selected feature flags; JSON adds the selected account id, account type, compact route source, and reason-code fields. Client filtering and setup include only models with a native route for that client. Entries with `model_picker_enabled=false` are omitted from both `models` and diagnostics.
+`models` shows the selected account's live catalog, including models reachable only by explicit account selection, not just its unprefixed route bindings. Use `--client claude|codex|openai-sdk` to filter; output includes direct/unsupported routes, maturity, limits, and feature flags. JSON also includes account ID/type, route source/reason codes, and a documentation path shipped in npm and Docker. Both models and diagnostics omit `model_picker_enabled=false`.
 
-`models` and setup share that picker-enabled, live-route visibility baseline, but not necessarily the same candidates. `setup codex` also requires installed Codex 0.134.0 or newer and intersects direct Responses candidates with bundled entries that have usable `base_instructions` and `context_window` metadata. Because `models --client codex` does not inspect that local bundled catalog, it may show transport-specific or metadata-missing models that setup cannot configure on the current machine. The compatibility-oriented `/v1/models` response is a separate, statically bound client catalog. Releases that provide `models` also include the relative documentation path returned by `models --json` in the npm package and Docker image.
-
-These values describe current routing eligibility, not universal semantic support. Route definitions are in [Protocol compatibility](protocol-compatibility.md); live validation procedures are in [Copilot capability validation](copilot-capability-validation.md).
+Setup shares the native-route baseline but `setup codex` additionally checks installed bundled `base_instructions` and `context_window` metadata. Thus `models --client codex` can list models setup cannot configure. The HTTP `/v1/models` catalog separately applies account-route bindings and [Codex transport filtering](protocol-compatibility.md#responses-over-websocket); it is not a static model table. Catalog eligibility is not proof of feature semantics.
 
 ## Doctor
 
 ```sh
-copilot-proxy doctor \
-  --endpoint http://127.0.0.1:4399 \
-  --client all
+copilot-proxy doctor --endpoint http://127.0.0.1:4399 --client all
 ```
 
-Doctor checks reachability, readiness, token lifecycle, recovery state, concurrency, model availability, client candidates, and usage availability. Pass the service base URL rather than the `/diagnostics` path. Use `--client claude`, `codex`, or `openai-sdk` to narrow model checks and `--json` for automation. Each diagnostics request has a 10-second deadline by default; use `--timeout-ms <ms>` to select another positive bounded deadline.
-
-A failed check produces a nonzero exit status. Doctor requires `/diagnostics`; an HTTP 404 produces a failed report and exit status 1. Check the service base URL and reverse-proxy routing, or upgrade a server that lacks this endpoint. Doctor no longer falls back to separate `/livez`, `/readyz`, `/v1/models`, or `/usage` probes. JSON reports retain `mode: "full"`; this identifies the report format, not a successful check. These server endpoints are unchanged; legacy dashboard usage links are retired as described below.
+- Pass the service base URL, not `/diagnostics`. Doctor checks readiness, token lifecycle, recovery, concurrency, client model availability, and usage.
+- Use `--client claude|codex|openai-sdk` and `--json` as needed. The default deadline is 10 seconds; `--timeout-ms <ms>` accepts a positive bounded override.
+- A required failure gives a nonzero exit. Missing `/diagnostics` (`404`) gives exit `1`, without falling back to other endpoints. Check the base URL/reverse proxy or upgrade the server. JSON `mode: "full"` describes the report format, not success.
 
 ## Diagnostics and dashboard
 
@@ -106,25 +99,23 @@ A failed check produces a nonzero exit status. Doctor requires `/diagnostics`; a
 | --- | --- |
 | `GET /livez` | Process liveness only |
 | `GET /readyz` | Passive readiness for authentication, model state, recovery, and concurrency |
-| `GET /diagnostics` | Combined runtime, compact model-route, and usage snapshot; may fill the usage cache |
+| `GET /diagnostics` | Combined runtime, model-route, and usage snapshot |
 
 ```sh
 curl http://127.0.0.1:4399/diagnostics
 ```
 
-`/diagnostics` does not refresh credentials or run a model probe, but it is not guaranteed to be upstream-passive: on a usage-cache miss it may fetch current quota data and update the short-lived usage cache. It omits bearer tokens, prompts, and downstream user keys. Use `/readyz` when a strictly passive readiness check is required.
+`/diagnostics` omits credentials and prompts. It does not refresh tokens or probe models, but a usage-cache miss can fetch upstream quota data. Use `/readyz` for a strictly passive check. These and `/v1/models` and `/usage` remain independent endpoints.
 
-If a scheduled model-catalog refresh fails, the proxy retains the last successful snapshot for existing request routing instead of clearing it. `/readyz` stays operationally ready while adding a `model_catalog_stale` warning and catalog lifecycle timestamps; `/diagnostics`, the dashboard, and `doctor` surface that warning as a degraded or advisory state until a later refresh succeeds. The dashboard labels the retained model matrix as stale rather than treating the diagnostics document time as the catalog refresh time. A missing catalog remains a hard readiness failure.
+A failed model-catalog refresh retains the last valid snapshot: `/readyz` stays ready with `model_catalog_stale` and lifecycle timestamps; diagnostics, doctor, and the dashboard show a warning/degraded view until refresh succeeds. The dashboard uses catalog freshness, not the diagnostics document timestamp. A missing catalog is a hard readiness failure.
 
-For the default listener, you can open the [hosted diagnostics dashboard](https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics). `start` prints the matching hosted URL for the active listener, with its `/diagnostics` endpoint encoded in the `endpoint` query parameter; the Windows development launcher opens that URL only after its exact server instance is ready. The raw `/diagnostics` route is a JSON API, not an HTML dashboard.
+Open the [hosted diagnostics dashboard](https://jer-y.github.io/copilot-proxy?endpoint=http%3A%2F%2Flocalhost%3A4399%2Fdiagnostics), or the listener-specific URL printed by `start`. The Windows launcher opens it only after its own instance is ready. `/diagnostics` itself is a JSON API, not an HTML dashboard.
 
-The hosted dashboard is a separate remote GitHub Pages origin, not part of the local proxy trust boundary. Opening its URL sends the full `endpoint` query parameter to GitHub Pages and can retain that URL in browser history or infrastructure logs; the page then asks the browser to fetch the local diagnostics endpoint. Do not open the hosted page if revealing the endpoint hostname is unacceptable. Never put credentials or other secrets in that URL. Use local `curl`, `doctor`, or a locally hosted copy of the dashboard instead.
+The hosted page sends your endpoint URL to GitHub Pages and reads diagnostics in the browser. Never include secrets in its URL; use local `doctor`/`curl` or a self-hosted copy when that disclosure is unacceptable. See [Diagnostics privacy](../SECURITY.md#diagnostics-privacy).
 
-A dashboard deployment matching the proxy revision provides the complete runtime, model-route, and quota view. Old links pointing to `/usage` are rejected before fetching, with instructions to change the endpoint path to `/diagnostics`; no automatic rewrite or fallback occurs. The server `/usage` API is unchanged. The dashboard performs read-only GET requests and has no administration or authentication controls, but refreshing it can trigger the usage-cache fill described above.
-
-The dashboard accepts only the exact `/diagnostics` endpoint path, with an optional trailing slash and no URL credentials, query, or fragment. It omits browser credentials from these requests and refuses redirects rather than following them.
-
-Chrome 142 and later may gate requests from the hosted HTTPS dashboard to `localhost` behind [Local Network Access](https://developer.chrome.com/blog/local-network-access). If the dashboard reports that local network access is blocked, allow local network access for the dashboard origin in the browser's site settings, then retry. The dashboard shows this permission-specific guidance only when the browser exposes a matching Permissions API state as `denied`; unsupported permission descriptors, undecided permission prompts, and ordinary connection failures keep the generic reachability message. You can use `curl` or `copilot-proxy doctor` to verify the proxy independently of browser permissions.
+- Use a dashboard matching the proxy revision. It only performs GETs, has no administration/authentication controls, and can trigger the usage-cache fill above.
+- Endpoint URLs must have exactly `/diagnostics` (optional trailing slash), with no credentials, query, or fragment. Requests omit browser credentials and reject redirects. See the [upgrade checklist](#upgrade-changes-after-v0100) for old links.
+- Chrome 142+ may require [Local Network Access](https://developer.chrome.com/blog/local-network-access). Allow it for the dashboard origin if explicitly reported as blocked. That guidance appears only for a matching Permissions API `denied` state; unsupported/pending permissions or ordinary failures use generic reachability guidance. Verify independently with local doctor or curl.
 
 ## Native service management
 
@@ -152,6 +143,26 @@ Use `--host` only with the matching `COPILOT_PROXY_ALLOWED_HOSTS` deployment bou
 
 Use `restart`, `stop`, and `disable` for the remaining lifecycle operations.
 
+## Upgrade changes after v0.10.0
+
+Changes below compare v0.10.0 with this source revision, not an announcement of publication. Check the target package's bundled documentation before upgrading; existing account files and credentials are not reset.
+
+| Change | What to do |
+| --- | --- |
+| Messages ↔ Responses translation removed | Select a model supporting the client's native API; incompatible pairs fail locally. See [protocol migration](protocol-compatibility.md#migration-from-cross-protocol-routing). |
+| Static model/capability fallback removed | Use `copilot-proxy models --client all --json` (`--account <id>` for explicit accounts); resolve authentication/catalog failures. See [dynamic catalogs](protocol-compatibility.md#dynamic-model-catalog). |
+| `--manual` and saved `manual: true` rejected | Remove the option or set `manual: false` only after accepting unattended forwarding; there is no per-request approval. |
+| `start --claude-code` / `start -c` removed | Run `copilot-proxy setup claude` and follow its output; add `--copy` only if needed. See [setup](getting-started.md#2-validate-the-proxy-route-with-setup). |
+| Doctor requires `/diagnostics` | Check the base URL/reverse proxy or upgrade the server; there is no old multi-endpoint fallback. See [Doctor](#doctor). |
+| Plaintext diagnostics retired: `/token`, `--show-token`, `COPILOT_PROXY_EXPOSE_TOKEN`, `showToken` | Remove retired options/settings; use `doctor` or `/diagnostics`, not token output. See [API reference](api-reference.md#routes) and saved-setting behavior below. |
+| Hosted Dashboard rejects `/usage` links | Change the endpoint path to `/diagnostics`; the server `/usage` API remains available. See [Dashboard](#diagnostics-and-dashboard). |
+| Local token usage estimates removed | Treat absent upstream usage as unavailable; see [Usage](protocol-compatibility.md#usage). |
+| General Anthropic `document.source` adaptation removed | Send local text as text or `tool_result`; follow the [document boundary](api-reference.md#claude-code-document-boundary) for PDFs and token counting. |
+
+The retired `--manual`, `--show-token`, and `start --claude-code`/`-c` options fail before authentication or token persistence. Saved settings: legacy `manual: false` remains readable; `manual: true` fails. Historical `showToken` booleans are discarded, with warnings for enabled values; the retired environment option is ignored and warns when enabled. Reads do not rewrite files; the next normal save omits retired fields.
+
+After reviewing launch arguments, service settings, and client configuration, run `copilot-proxy models --client <client> --json`, `copilot-proxy doctor --endpoint <base-url> --client <client>`, and a real client turn. Substitute your client/base URL; from source use `bun run ./src/main.ts`. Catalog and health checks do not replace a real request or tool loop. Older services also need the [pre-v0.10.0 migration](#upgrade-from-pre-v0100-installations).
+
 ## Upgrade from pre-v0.10.0 installations
 
 Before upgrading from a release that still supported the app-managed daemon or an older native-service state, first move to the final migration-capable release and refresh the native service state:
@@ -169,7 +180,7 @@ copilot-proxy status
 
 ## Proxy environment
 
-Ambient `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` values are not automatically trusted. Add `--proxy-env` when a command must use the configured proxy route:
+Ambient proxy variables are ignored unless the command opts in with `--proxy-env`:
 
 ```sh
 copilot-proxy start --proxy-env
@@ -180,10 +191,8 @@ copilot-proxy models --client all --proxy-env
 copilot-proxy doctor --endpoint https://proxy.internal --proxy-env
 ```
 
-Account mutations perform their own GitHub identity, Copilot-token, and model-catalog validation. Add `--proxy-env` to each `accounts add` or `accounts auth` invocation that needs the proxy; a proxy setting persisted for the native service does not implicitly opt an interactive CLI command into that egress path.
+Opt-in uses `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` and fails closed if a usable proxy route cannot be established. Account add/auth perform their own identity, token, and catalog checks: a native service's saved proxy choice does not opt those CLI commands in.
 
-`--proxy-env` is an explicit egress policy and fails closed when it cannot establish a usable proxy route. Proxy URLs may embed usernames or passwords. Native-service configuration persists the choice and relevant proxy/TLS environment in owner-only state, so treat that state and any copied proxy URL as credentials. Use `--proxy-env` only for infrastructure you trust.
+Service configuration persists proxy/TLS settings in owner-only files. Treat those files and authenticated proxy URLs as credentials; use only trusted infrastructure and follow [Security](../SECURITY.md) before sharing output.
 
-Before sharing setup output, logs, `debug --json`, diagnostics snapshots, or shell commands, remove tokens, API keys, authenticated proxy URLs, internal endpoints, usernames, and local filesystem paths. Local output is intended for its owner; redaction at logging boundaries does not make every diagnostic artifact safe to publish. See the [Security policy](../SECURITY.md).
-
-For the complete current command and option list, use `copilot-proxy --help` and `copilot-proxy <command> --help`. Route and security settings are summarized in [API and configuration reference](api-reference.md).
+For all options, use `copilot-proxy <command> --help`; route and environment fields are listed in [API reference](api-reference.md).

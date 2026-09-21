@@ -2,6 +2,8 @@ English | [简体中文](deployment.zh-CN.md)
 
 # Deployment
 
+Before upgrading an existing deployment, review the [upgrade changes after v0.10.0](operations.md#upgrade-changes-after-v0100), especially retired approval settings and token diagnostics.
+
 copilot-proxy may hold one or more owner-configured GitHub Copilot identities, but it serves one trusted operator and has no downstream user authentication. Choose a topology from the [Product support matrix](product-support.md#deployment-support-matrix) before changing its listener.
 
 ## Local loopback
@@ -39,7 +41,7 @@ The conditionally supported shared topology is:
 Clients -> authenticated gateway -> private copilot-proxy -> GitHub Copilot
 ```
 
-The gateway must own users, API keys, authorization, per-user quota, model permissions, audit, billing, and downstream limits. Even when copilot-proxy has several owner-configured upstream accounts, it remains a single-operator private upstream rather than a tenant boundary.
+The gateway owns users, API keys, authorization, quotas, model permissions, audit, billing, and downstream limits. Multiple upstream accounts do not create a tenant boundary; see [Product support](product-support.md).
 
 One concrete gateway option is [New API](https://github.com/QuantumNous/new-api). Configure copilot-proxy as its private OpenAI-compatible upstream (for example, `http://copilot-proxy:4399/v1`) and expose only New API to clients. This is a topology example, not a blanket compatibility or security guarantee; all requirements below still apply.
 
@@ -65,15 +67,13 @@ The deployment must also:
 
 If any of those controls are absent, the result is unsupported direct sharing rather than a supported private gateway.
 
-The same circuit state appears on `/readyz`: a globally open recovery circuit makes readiness return `503` with `Retry-After`. Gateways should propagate or respect that backoff rather than restarting the proxy or switching identities/endpoints in a loop.
+For circuit-open response fields and readiness behavior, see [Recovery backoff](api-reference.md#recovery-backoff). Do not turn backoff into restart, identity-switching, or endpoint-switching loops.
 
 ## Listener and browser security
 
-- `COPILOT_PROXY_EXPOSE_TOKEN` is retired; old values no longer enable exposure or get restored by native services. Enabled values only produce a warning.
 - Add exact non-local browser origins to `COPILOT_PROXY_CORS_ORIGINS` only when they are required.
 - Add exact non-loopback request hostnames to `COPILOT_PROXY_ALLOWED_HOSTS`; do not use it as a substitute for authentication.
-- `--show-token` has been removed and fails explicitly; use `doctor` or `/diagnostics` for credential-free status. Historical `showToken` booleans are discarded on read, with a warning if enabled. Reads do not rewrite files; the next normal save omits the field.
-- Per-request terminal approval (`--manual`) has been removed. Old CLI flags and persisted `manual: true` settings fail explicitly; remove the flag or set the old field to `false` only after accepting unattended forwarding. Old `manual: false` settings remain readable and are omitted from newly saved configurations. Authentication and Host/Origin checks are unchanged.
 - Treat `/diagnostics` and the hosted dashboard as visibility tools, not access-control surfaces.
+- Per-request approval and plaintext token diagnostics are retired. Apply the [upgrade checklist](operations.md#upgrade-changes-after-v0100); do not silently disable an old safety setting.
 
 Runtime presets and service lifecycle are documented in [Operations](operations.md). Protocol behavior does not change because a gateway is present; see [Protocol compatibility](protocol-compatibility.md). Review the [Security policy](../SECURITY.md) before exposing any listener.
