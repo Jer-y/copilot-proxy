@@ -31,6 +31,21 @@ function validateCatalogLog(log: string, expectedClientVersion = '0.144.6') {
   })
 }
 
+function validateWebSocketConnections(log: string, upgrades: number, attempts: number) {
+  const directory = makeTemporaryDirectory('codex-smoke-connections-')
+  const logFile = path.join(directory, 'proxy.log')
+  writeFileSync(logFile, log)
+  return spawnSync('bash', [
+    '-c',
+    'source "$1"; require_codex_websocket_connections "$2" "$3" "$4"',
+    'bash',
+    fileURLToPath(CODEX_SMOKE_LOG_EVIDENCE),
+    logFile,
+    String(upgrades),
+    String(attempts),
+  ], { encoding: 'utf8' })
+}
+
 describe('real Codex CLI smoke script', () => {
   test('uses the preflighted Bun runtime for provider authentication', async () => {
     const script = await readFile(CODEX_SMOKE_SCRIPT, 'utf8')
@@ -172,6 +187,32 @@ describe('real Codex CLI smoke script', () => {
     expect(script).toContain('"$CODEX_SMOKE_ROOT/ws-diagnostics.log"')
     expect(script).toContain('"$CODEX_SMOKE_ROOT/http-events.jsonl"')
     expect(script).toContain('"$CODEX_SMOKE_ROOT/ws-events.jsonl"')
+  })
+
+  test('allows an extra locally closed socket without relaxing the single upstream chain', () => {
+    const active = [
+      'Responses WebSocket downstream upgrade completed: { connectionId: \'active\' }',
+      'Forwarded Responses WebSocket request: { connectionId: \'active\' }',
+      'Copilot Responses WebSocket terminal event: { connectionId: \'active\' }',
+    ]
+    const warmup = [
+      'Responses WebSocket downstream upgrade completed: { connectionId: \'warmup\' }',
+      'Rejected Responses WebSocket generate:false locally: { connectionId: \'warmup\' }',
+    ]
+    const unused = 'Responses WebSocket downstream upgrade completed: { connectionId: \'unused\' }'
+    const closed = 'Responses WebSocket client disconnected: { code: 1006, connectionId: \'unused\', reason: \'\' }'
+
+    for (const [extra, upgrades] of [[[], 1], [warmup, 2], [[...warmup, unused, closed], 3]] as const) {
+      const result = validateWebSocketConnections([...active, ...extra].join('\n'), upgrades, 1)
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe('1\n')
+    }
+    expect(validateWebSocketConnections([...active, unused].join('\n'), 2, 1).status).toBe(1)
+    expect(validateWebSocketConnections([...active, unused, closed].join('\n'), 2, 2).status).toBe(1)
+    expect(validateWebSocketConnections(active.join('\n'), 2, 1).status).toBe(1)
+    expect(validateWebSocketConnections(active[0], 1, 1).status).toBe(1)
+    expect(validateWebSocketConnections(active.join('\n').replace('terminal event: { connectionId: \'active\'', 'terminal event: { connectionId: \'other\''), 1, 1).status).toBe(1)
+    expect(validateWebSocketConnections([...active, ...active.map(line => line.replaceAll('\'active\'', '\'second\''))].join('\n'), 2, 2).status).toBe(1)
   })
 
   test('has valid Bash syntax', () => {

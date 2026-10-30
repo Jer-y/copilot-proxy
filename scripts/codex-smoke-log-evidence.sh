@@ -69,3 +69,31 @@ require_codex_catalog_success() {
 
   printf '%s\n' "$expected_success"
 }
+
+# Codex may close an extra local socket without ever opening an upstream one.
+# Account for closed sockets while retaining exactly one active upstream chain.
+require_codex_websocket_connections() {
+  local log_file=$1
+  local downstream_upgrades=$2
+  local upstream_attempts=$3
+  local forwarded terminal downstream rejected closed expected connection_count expected_count
+
+  forwarded="$(sed -nE "/Forwarded Responses WebSocket request:/s/.*connectionId: '([^']+)'.*/\1/p" "$log_file" | sort -u)"
+  terminal="$(sed -nE "/Copilot Responses WebSocket terminal event:/s/.*connectionId: '([^']+)'.*/\1/p" "$log_file" | sort -u)"
+  downstream="$(sed -nE "/Responses WebSocket downstream upgrade completed:/s/.*connectionId: '([^']+)'.*/\1/p" "$log_file" | sort -u)"
+  rejected="$(sed -nE "/Rejected Responses WebSocket generate:false locally:/s/.*connectionId: '([^']+)'.*/\1/p" "$log_file" | sort -u)"
+  closed="$(sed -nE "/Responses WebSocket client disconnected:/s/.*connectionId: '([^']+)'.*/\1/p" "$log_file" | sort -u)"
+  expected="$(printf '%s\n%s\n%s\n' "$forwarded" "$rejected" "$closed" | sed '/^$/d' | sort -u)"
+  connection_count="$(awk 'NF { count++ } END { print count + 0 }' <<<"$forwarded")"
+  expected_count="$(awk 'NF { count++ } END { print count + 0 }' <<<"$expected")"
+
+  if [[ -z "$forwarded" || "$forwarded" != "$terminal" \
+    || "$connection_count" -ne 1 || "$upstream_attempts" -ne 1 \
+    || "$downstream" != "$expected" || "$downstream_upgrades" -ne "$expected_count" ]]; then
+    printf 'Unexpected WebSocket connection evidence: local_101=%s active_connections=%s accounted_connections=%s upstream_attempts=%s\n' \
+      "$downstream_upgrades" "$connection_count" "$expected_count" "$upstream_attempts" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$connection_count"
+}

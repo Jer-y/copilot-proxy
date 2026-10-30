@@ -479,46 +479,8 @@ if ! [[ "$CODEX_WS_SEQUENCE" =~ ^request,terminal(,request,terminal)+$ ]]; then
   exit 1
 fi
 
-CODEX_WS_FORWARD_CONNECTIONS="$(
-  rg 'Forwarded Responses WebSocket request:' "$CODEX_SMOKE_ROOT/ws-proxy.log" \
-    | sed -nE "s/.*connectionId: '([^']+)'.*/\1/p" \
-    | sort -u
-)"
-CODEX_WS_TERMINAL_CONNECTIONS="$(
-  rg 'Copilot Responses WebSocket terminal event:' "$CODEX_SMOKE_ROOT/ws-proxy.log" \
-    | sed -nE "s/.*connectionId: '([^']+)'.*/\1/p" \
-    | sort -u
-)"
-CODEX_WS_DOWNSTREAM_CONNECTIONS="$(
-  rg 'Responses WebSocket downstream upgrade completed:' "$CODEX_SMOKE_ROOT/ws-proxy.log" \
-    | sed -nE "s/.*connectionId: '([^']+)'.*/\1/p" \
-    | sort -u
-)"
-CODEX_WS_REJECTED_CONNECTIONS="$(
-  sed -nE "/Rejected Responses WebSocket generate:false locally:/s/.*connectionId: '([^']+)'.*/\1/p" \
-    "$CODEX_SMOKE_ROOT/ws-proxy.log" \
-    | sort -u
-)"
-CODEX_WS_EXPECTED_CONNECTIONS="$(
-  printf '%s\n%s\n' "$CODEX_WS_FORWARD_CONNECTIONS" "$CODEX_WS_REJECTED_CONNECTIONS" \
-    | sed '/^$/d' \
-    | sort -u
-)"
-[[ -n "$CODEX_WS_FORWARD_CONNECTIONS" ]]
-[[ "$CODEX_WS_FORWARD_CONNECTIONS" == "$CODEX_WS_TERMINAL_CONNECTIONS" ]]
-CODEX_WS_CONNECTION_COUNT="$(rg -c '.+' <<<"$CODEX_WS_FORWARD_CONNECTIONS")"
-[[ "$CODEX_WS_CONNECTION_COUNT" -eq 1 ]]
-rg -Fxq -- "$CODEX_WS_FORWARD_CONNECTIONS" <<<"$CODEX_WS_DOWNSTREAM_CONNECTIONS"
-CODEX_WS_EXPECTED_DOWNSTREAM_CONNECTIONS="$(awk 'NF { count++ } END { print count + 0 }' <<<"$CODEX_WS_EXPECTED_CONNECTIONS")"
-if [[ "$CODEX_WS_DOWNSTREAM_CONNECTIONS" != "$CODEX_WS_EXPECTED_CONNECTIONS" \
-  || "$CODEX_WS_DOWNSTREAM_101" -ne "$CODEX_WS_EXPECTED_DOWNSTREAM_CONNECTIONS" \
-  || "$CODEX_WS_UPSTREAM_ATTEMPTS" -ne "$CODEX_WS_CONNECTION_COUNT" ]]; then
-  printf 'Unexpected WebSocket connection evidence: local_101=%s active_connections=%s rejected_connections=%s generate_false_rejections=%s upstream_attempts=%s\n' \
-    "$CODEX_WS_DOWNSTREAM_101" "$CODEX_WS_CONNECTION_COUNT" \
-    "$CODEX_WS_REJECTED_CONNECTIONS" "$CODEX_WS_GENERATE_FALSE_REJECTIONS" \
-    "$CODEX_WS_UPSTREAM_ATTEMPTS" >&2
-  exit 1
-fi
+CODEX_WS_CONNECTION_COUNT="$(require_codex_websocket_connections \
+  "$CODEX_SMOKE_ROOT/ws-proxy.log" "$CODEX_WS_DOWNSTREAM_101" "$CODEX_WS_UPSTREAM_ATTEMPTS")"
 CODEX_WS_GENERATE_FALSE_SUMMARY=''
 if [[ "$CODEX_WS_GENERATE_FALSE_REJECTIONS" -gt 0 ]]; then
   CODEX_WS_GENERATE_FALSE_SUMMARY=" generate_false_local_rejections=$CODEX_WS_GENERATE_FALSE_REJECTIONS generate_false_upstream_attempts=0"
