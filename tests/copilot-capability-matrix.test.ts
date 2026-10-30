@@ -182,13 +182,18 @@ describe('Capability probe boundaries', () => {
 
     for (const [id, toolName, input] of clientTools) {
       const probe = anthropicProbe(id)
-      expect(probe.buildPayload(CONFIG).tool_choice).toEqual({ type: 'tool', name: toolName })
+      // Forced tool_choice support has separate probes; it must not gate a
+      // client tool's executable-call semantics on adaptive-thinking models.
+      expect(probe.buildPayload(CONFIG).tool_choice).toEqual({ type: 'auto' })
       expect(probe.validateResponse?.(response([
         { type: 'tool_use', id: 'toolu_1', name: toolName, input },
       ], 'tool_use'))).toBeUndefined()
       expect(probe.validateResponse?.(response([
         { type: 'tool_use', id: 'toolu_1', name: toolName, input: {} },
       ], 'tool_use'))).toContain('input')
+      expect(probe.validateResponse?.(response([
+        { type: 'text', text: 'Tool call accepted' },
+      ], 'end_turn'))).toContain('Expected a client tool_use')
       expect(probe.title).toContain('client tool call')
     }
 

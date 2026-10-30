@@ -2580,7 +2580,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       ...buildAnthropicBasicPayload(config),
       max_tokens: 256,
       tools: [{ type: 'memory_20250818', name: 'memory' }],
-      tool_choice: { type: 'tool', name: 'memory' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: 'Use the memory tool to list the memory directory.' }],
     }),
     validateResponse: validateAnthropicClientToolUse(
@@ -2607,7 +2607,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       ...buildAnthropicBasicPayload(config),
       max_tokens: 256,
       tools: [{ type: 'bash_20250124', name: 'bash' }],
-      tool_choice: { type: 'tool', name: 'bash' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: 'Use the bash tool to run printf CLIENT_BASH_OK.' }],
     }),
     validateResponse: validateAnthropicClientToolUse('bash', validateAnthropicBashInput),
@@ -2631,7 +2631,7 @@ export const copilotCapabilityProbes: Array<CapabilityProbe> = [
       ...buildAnthropicBasicPayload(config),
       max_tokens: 256,
       tools: [{ type: 'text_editor_20250728', name: 'str_replace_based_edit_tool' }],
-      tool_choice: { type: 'tool', name: 'str_replace_based_edit_tool' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: 'Use the text editor tool to view the file /tmp/probe.txt.' }],
     }),
     validateResponse: validateAnthropicClientToolUse(
