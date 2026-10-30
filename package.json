@@ -56,13 +56,13 @@
     "consola": "^3.4.2",
     "crossws": "^0.4.10",
     "fetch-event-stream": "^0.1.6",
-    "hono": "^4.13.5",
+    "hono": "^4.13.11",
     "https-proxy-agent": "^7.0.6",
     "proxy-from-env": "^2.1.0",
     "srvx": "^0.11.15",
-    "undici": "^8.9.0",
+    "undici": "^8.12.2",
     "ws": "^8.18.3",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^8.2.0",
@@ -81,16 +81,19 @@
   },
   "overrides": {
     "@humanfs/node": "0.16.8",
-    "brace-expansion": "5.0.9",
+    "brace-expansion": "5.0.12",
     "browserslist": "4.28.8",
     "flatted": "^3.4.2",
+    "katex": "0.18.2",
     "nanoid": "3.3.18",
     "picomatch": "^4.0.4",
     "postcss": "^8.5.23",
-    "postcss-selector-parser": "7.1.5",
-    "smol-toml": "1.7.1",
+    "postcss-selector-parser": "7.1.6",
+    "smol-toml": "1.9.0",
+    "source-map-js": "1.2.2",
     "tar": "7.5.22",
-    "yaml": "^2.8.4"
+    "yaml": "^2.8.4",
+    "zod": "^4.6.6"
   },
   "simple-git-hooks": {
     "pre-commit": "bun run lint-staged"
