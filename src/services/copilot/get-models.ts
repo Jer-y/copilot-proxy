@@ -9,7 +9,7 @@ import { fetchCopilot } from '~/lib/upstream-fetch'
 import { fetchAuthenticatedCopilot } from './authenticated-fetch'
 
 export async function getModels(ctx: AccountContext = state.defaultAccount) {
-  // Primary: standard vscode-chat auth (consistent with all other API calls)
+  // Primary: Copilot-token auth (consistent with all other API calls)
   const response = await fetchAuthenticatedCopilot(ctx, {
     endpoint: '/models',
     request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/models`, {
@@ -18,28 +18,27 @@ export async function getModels(ctx: AccountContext = state.defaultAccount) {
   })
 
   if (response.ok) {
-    return (await response.json()) as ModelsResponse
+    return await addVscodeChatModels(ctx, await response.json() as ModelsResponse)
   }
-  consola.warn(`vscode-chat models request failed (${response.status} ${response.statusText}), falling back to copilot-developer-cli`)
+  consola.warn(`Copilot-token models request failed (${response.status} ${response.statusText}), falling back to GitHub-token auth`)
   const primaryFailureResponse = await consumeAndRebuildResponse(response)
 
-  // Fallback: copilot-developer-cli for extended model list
+  // Keep the same client headers when falling back to GitHub-token auth.
   if (ctx.githubToken) {
     try {
-      const cliHeaders = copilotHeaders(ctx)
-      cliHeaders.Authorization = `Bearer ${ctx.githubToken}`
-      cliHeaders['copilot-integration-id'] = 'copilot-developer-cli'
-      const cliResponse = await fetchCopilot(`${copilotBaseUrl(ctx)}/models`, {
-        headers: cliHeaders,
+      const fallbackHeaders = copilotHeaders(ctx)
+      fallbackHeaders.Authorization = `Bearer ${ctx.githubToken}`
+      const fallbackResponse = await fetchCopilot(`${copilotBaseUrl(ctx)}/models`, {
+        headers: fallbackHeaders,
       })
-      if (cliResponse.ok) {
-        return (await cliResponse.json()) as ModelsResponse
+      if (fallbackResponse.ok) {
+        return await addVscodeChatModels(ctx, await fallbackResponse.json() as ModelsResponse, true)
       }
-      consola.warn(`copilot-developer-cli fallback also failed (${cliResponse.status} ${cliResponse.statusText})`)
-      throw new HTTPError('Failed to get models using copilot-developer-cli fallback', cliResponse)
+      consola.warn(`GitHub-token fallback also failed (${fallbackResponse.status} ${fallbackResponse.statusText})`)
+      throw new HTTPError('Failed to get models using GitHub-token fallback', fallbackResponse)
     }
     catch (e) {
-      consola.warn('copilot-developer-cli fallback error:', e)
+      consola.warn('GitHub-token fallback error:', e)
       if (e instanceof HTTPError) {
         throw e
       }
@@ -47,6 +46,54 @@ export async function getModels(ctx: AccountContext = state.defaultAccount) {
   }
 
   throw new HTTPError('Failed to get models', primaryFailureResponse)
+}
+
+async function addVscodeChatModels(
+  ctx: AccountContext,
+  models: ModelsResponse,
+  githubTokenAuth = false,
+): Promise<ModelsResponse> {
+  const request = () => {
+    const headers = copilotHeaders(ctx, false, { vscodeChat: true })
+    if (githubTokenAuth)
+      headers.Authorization = `Bearer ${ctx.githubToken}`
+    return fetchCopilot(`${copilotBaseUrl(ctx)}/models`, { headers })
+  }
+  let response: Response | undefined
+  try {
+    response = githubTokenAuth
+      ? await request()
+      : await fetchAuthenticatedCopilot(ctx, {
+          endpoint: '/models#vscode-chat',
+          contributesToGlobalCircuit: false,
+          request,
+        })
+    if (!response.ok)
+      throw new Error('Supplementary model catalog request failed')
+
+    const legacyModels = await response.json() as ModelsResponse
+    const primaryIds = new Set(models.data.map(model => model.id))
+    // Supplement Gemini from this account's fetched metadata. Other vendors keep
+    // the Codex profile, and entries already present there retain its metadata.
+    const additions = legacyModels.data.filter(model => model.vendor === 'Google' && !primaryIds.has(model.id))
+    if (additions.length === 0)
+      return models
+
+    return {
+      ...models,
+      data: [...models.data, ...additions],
+      vscodeChatModelIds: additions.map(model => model.id),
+    }
+  }
+  catch (error) {
+    // Release the authenticated request's lease even when its body is unused.
+    await response?.body?.cancel().catch(() => {})
+    consola.warn('Failed to load supplementary vscode-chat catalog; using the primary catalog without supplementary Google models.', {
+      status: response?.status,
+      error: error instanceof Error ? error.name : 'UnknownError',
+    })
+    return models
+  }
 }
 
 async function consumeAndRebuildResponse(response: Response): Promise<Response> {
@@ -61,6 +108,7 @@ async function consumeAndRebuildResponse(response: Response): Promise<Response> 
 export interface ModelsResponse {
   data: Array<Model>
   object: string
+  vscodeChatModelIds?: string[]
 }
 
 interface ModelLimits {

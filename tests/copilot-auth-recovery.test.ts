@@ -3134,6 +3134,113 @@ describe('authenticated Copilot recovery', () => {
     }, { refreshToken })).rejects.toBeInstanceOf(HTTPError)
   })
 
+  test('excludes optional scopes after repeated opaque failures while refresh is suppressed', async () => {
+    const now = 1_000
+    const refreshToken = mock(async () => ({ outcome: 'failed' as const, generation: 1 }))
+    const request = mock(async () => opaqueForbidden())
+    for (const contributesToGlobalCircuit of [false, true]) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const response = await fetchAuthenticatedCopilot({
+          endpoint: contributesToGlobalCircuit ? '/responses' : '/models#vscode-chat',
+          contributesToGlobalCircuit,
+          request,
+        }, { now: () => now, refreshToken })
+        expect(response.status).toBe(403)
+        await response.body?.cancel()
+      }
+    }
+
+    expect(refreshToken).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledTimes(6)
+    expect(getCopilotRecoveryStatus(now)).toMatchObject({
+      scopes: { open: 2 },
+      globalCircuit: { phase: 'closed' },
+      metrics: { globalCircuitOpens: 0 },
+    })
+  })
+
+  test('keeps optional requests blocked during global cooldown and half-open recovery', async () => {
+    let now = 1_000
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    for (const model of ['gpt-global-a', 'gpt-global-b']) {
+      const response = await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model,
+        request: async () => opaqueForbidden(),
+      }, { now: () => now, refreshToken })
+      await response.body?.cancel()
+    }
+    const request = mock(async () => completed('optional catalog recovered'))
+    const optionalRequest = () => fetchAuthenticatedCopilot({
+      endpoint: '/models#vscode-chat',
+      contributesToGlobalCircuit: false,
+      request,
+    }, { now: () => now, refreshToken })
+
+    await expect(optionalRequest()).rejects.toBeInstanceOf(HTTPError)
+    now += 60_001
+    await expect(optionalRequest()).rejects.toBeInstanceOf(HTTPError)
+    expect(getCopilotRecoveryStatus(now).globalCircuit.phase).toBe('half_open')
+
+    for (const model of ['gpt-global-a', 'gpt-global-b']) {
+      const response = await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model,
+        request: async () => completed(),
+      }, { now: () => now, refreshToken })
+      await response.text()
+      if (model === 'gpt-global-a')
+        await expect(optionalRequest()).rejects.toBeInstanceOf(HTTPError)
+    }
+    expect(request).not.toHaveBeenCalled()
+    expect(getCopilotRecoveryStatus(now).globalCircuit.phase).toBe('closed')
+    expect(await (await optionalRequest()).text()).toBe('optional catalog recovered')
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  test('does not extend global cooldown when an in-flight optional replay is rejected', async () => {
+    let now = 1_000
+    const refreshToken = mock(async () => ({ outcome: 'refreshed' as const, generation: 2 }))
+    let rejectReplay!: (response: Response) => void
+    let markReplayStarted!: () => void
+    const replayStarted = new Promise<void>((resolve) => {
+      markReplayStarted = resolve
+    })
+    const replayResponse = new Promise<Response>((resolve) => {
+      rejectReplay = resolve
+    })
+    const optionalRequest = fetchAuthenticatedCopilot({
+      endpoint: '/models#vscode-chat',
+      contributesToGlobalCircuit: false,
+      request: async (attempt) => {
+        if (attempt === 0)
+          return opaqueForbidden()
+        markReplayStarted()
+        return await replayResponse
+      },
+    }, { now: () => now, refreshToken })
+    await replayStarted
+    for (const model of ['gpt-global-a', 'gpt-global-b']) {
+      const response = await fetchAuthenticatedCopilot({
+        endpoint: '/responses',
+        model,
+        request: async () => opaqueForbidden(),
+      }, { now: () => now, refreshToken })
+      await response.body?.cancel()
+    }
+    const originalOpenUntil = getCopilotRecoveryStatus(now).globalCircuit.openUntil
+    now += 1_000
+    rejectReplay(opaqueForbidden())
+    const response = await optionalRequest
+    expect(response.status).toBe(403)
+    await response.body?.cancel()
+
+    expect(getCopilotRecoveryStatus(now)).toMatchObject({
+      globalCircuit: { phase: 'open', openUntil: originalOpenUntil },
+      metrics: { globalCircuitOpens: 1, scopeCircuitOpens: 3 },
+    })
+  })
+
   test('doubles a half-open scope cooldown when token refresh fails after opaque evidence opened it', async () => {
     let now = 1_000
     const model = 'gpt-half-open-refresh-failure'

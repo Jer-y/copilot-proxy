@@ -11,7 +11,7 @@ export function standardHeaders() {
 
 const COPILOT_VERSION = '0.26.7'
 const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
-const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
+export const USER_AGENT = 'vscode_codex/0.162.1'
 
 const API_VERSION = '2025-05-01'
 
@@ -20,11 +20,14 @@ export function copilotBaseUrl(ctx: AccountContext) {
     ? 'https://api.githubcopilot.com'
     : `https://api.${ctx.accountType}.githubcopilot.com`
 }
-export function copilotHeaders(ctx: AccountContext, vision: boolean = false) {
+export function copilotHeaders(
+  ctx: AccountContext,
+  vision: boolean = false,
+  options?: { model?: string, vscodeChat?: boolean },
+) {
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${ctx.copilotToken}`,
     'content-type': standardHeaders()['content-type'],
-    'copilot-integration-id': 'vscode-chat',
     'editor-version': `vscode/${ctx.vsCodeVersion}`,
     'editor-plugin-version': EDITOR_PLUGIN_VERSION,
     'user-agent': USER_AGENT,
@@ -33,6 +36,12 @@ export function copilotHeaders(ctx: AccountContext, vision: boolean = false) {
     'x-github-api-version': API_VERSION,
     'x-request-id': randomUUID(),
     'x-vscode-user-agent-library-version': 'electron-fetch',
+  }
+
+  // The snapshot records which models were fetched only through vscode-chat.
+  if (options?.vscodeChat || (options?.model && ctx.models?.vscodeChatModelIds?.includes(options.model))) {
+    headers['user-agent'] = `GitHubCopilotChat/${COPILOT_VERSION}`
+    headers['copilot-integration-id'] = 'vscode-chat'
   }
 
   if (vision)

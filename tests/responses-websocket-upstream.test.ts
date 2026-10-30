@@ -333,6 +333,10 @@ describe('authenticated Copilot Responses WebSocket connection', () => {
       'Bearer new-token',
     ])
     expect(attemptHeaders[0]['x-request-id']).not.toBe(attemptHeaders[1]['x-request-id'])
+    for (const headers of attemptHeaders) {
+      expect(new Headers(headers).get('user-agent')).toBe('vscode_codex/0.162.1')
+      expect(new Headers(headers).has('copilot-integration-id')).toBe(false)
+    }
     expect(attemptHeaders.map(headers => headers['X-Initiator'])).toEqual(['agent', 'agent'])
     expect(attemptHeaders.every(headers => headers['copilot-vision-request'] === 'true')).toBe(true)
 

@@ -4,20 +4,26 @@
  * Usage: ACCOUNT_TYPE=individual|enterprise bun scripts/probe-all-apis.ts
  */
 
-import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 
+import { createAccountContext } from '~/lib/account/context'
+import { copilotBaseUrl, copilotHeaders, USER_AGENT } from '~/lib/api-config'
+import { validateAccountType } from '~/lib/cli-validators'
+import { getModels as fetchModelCatalog } from '~/services/copilot/get-models'
+
 // ── Config ──────────────────────────────────────────────────────────
 const ACCOUNT_TYPE = process.env.ACCOUNT_TYPE || 'individual'
-const BASE_URL = ACCOUNT_TYPE === 'individual'
-  ? 'https://api.githubcopilot.com'
-  : `https://api.${ACCOUNT_TYPE}.githubcopilot.com`
+if (!validateAccountType(ACCOUNT_TYPE))
+  throw new Error('ACCOUNT_TYPE must be individual, business, or enterprise')
+const context = createAccountContext({ id: 'probe', accountType: ACCOUNT_TYPE })
+const BASE_URL = copilotBaseUrl(context)
 
 const COPILOT_VERSION = '0.26.7'
 const VSCODE_VERSION = '1.104.3'
+context.vsCodeVersion = VSCODE_VERSION
 
 // ── Auth ────────────────────────────────────────────────────────────
 async function getGithubToken(): Promise<string> {
@@ -36,7 +42,7 @@ async function getCopilotToken(githubToken: string): Promise<string> {
       'accept': 'application/json',
       'editor-version': `vscode/${VSCODE_VERSION}`,
       'editor-plugin-version': `copilot-chat/${COPILOT_VERSION}`,
-      'user-agent': `GitHubCopilotChat/${COPILOT_VERSION}`,
+      'user-agent': USER_AGENT,
       'x-github-api-version': '2025-05-01',
     },
   })
@@ -46,19 +52,10 @@ async function getCopilotToken(githubToken: string): Promise<string> {
   return data.token
 }
 
-function makeHeaders(copilotToken: string): Record<string, string> {
+function makeHeaders(copilotToken: string, model?: string): Record<string, string> {
+  context.copilotToken = copilotToken
   return {
-    'Authorization': `Bearer ${copilotToken}`,
-    'content-type': 'application/json',
-    'copilot-integration-id': 'vscode-chat',
-    'editor-version': `vscode/${VSCODE_VERSION}`,
-    'editor-plugin-version': `copilot-chat/${COPILOT_VERSION}`,
-    'user-agent': `GitHubCopilotChat/${COPILOT_VERSION}`,
-    'openai-intent': 'conversation-agent',
-    'x-interaction-type': 'conversation-agent',
-    'x-github-api-version': '2025-05-01',
-    'x-request-id': randomUUID(),
-    'x-vscode-user-agent-library-version': 'electron-fetch',
+    ...copilotHeaders(context, false, { model }),
     'X-Initiator': 'user',
   }
 }
@@ -79,13 +76,9 @@ interface ModelEntry {
 }
 
 async function getModels(copilotToken: string): Promise<ModelEntry[]> {
-  const res = await fetch(`${BASE_URL}/models`, {
-    headers: makeHeaders(copilotToken),
-  })
-  if (!res.ok)
-    throw new Error(`Models fetch failed: ${res.status} ${await res.text()}`)
-  const data = await res.json() as { data: ModelEntry[] }
-  return data.data
+  context.copilotToken = copilotToken
+  context.models = await fetchModelCatalog(context)
+  return context.models.data
 }
 
 // ── API probes ──────────────────────────────────────────────────────
@@ -104,7 +97,7 @@ async function probeChatCompletions(
   model: string,
   copilotToken: string,
 ): Promise<ProbeResult> {
-  const headers = makeHeaders(copilotToken)
+  const headers = makeHeaders(copilotToken, model)
   try {
     const res = await fetch(`${BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -232,6 +225,7 @@ async function main() {
   // Auth
   console.log('🔑 Authenticating...')
   const githubToken = await getGithubToken()
+  context.githubToken = githubToken
   const copilotToken = await getCopilotToken(githubToken)
   console.log('✅ Got Copilot token\n')
 

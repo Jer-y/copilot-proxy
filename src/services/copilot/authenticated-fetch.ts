@@ -57,6 +57,10 @@ export interface AuthenticatedCopilotFetchOptions {
   model?: string
   request: (attempt: 0 | 1) => Promise<Response>
   signal?: AbortSignal
+  // Optional identity-specific catalogs keep scoped recovery but cannot open or
+  // act as half-open probes for the account-wide circuit. Existing global
+  // cooldowns still apply. Use a distinct endpoint scope for these requests.
+  contributesToGlobalCircuit?: boolean
 }
 
 interface ResolvedAuthenticatedCopilotFetchOptions extends AuthenticatedCopilotFetchOptions {
@@ -99,7 +103,7 @@ export async function fetchAuthenticatedCopilot(
   const resolvedOptions: ResolvedAuthenticatedCopilotFetchOptions = { ...options, ctx }
   const now = deps.now ?? Date.now
   const scopeKey = createScopeKey(ctx.id, options.endpoint, options.model)
-  const scope = getScopeCircuit(ctx.recovery, scopeKey)
+  const scope = getScopeCircuit(ctx.recovery, scopeKey, options.contributesToGlobalCircuit)
   const requestContext: AuthenticatedRequestContext = {}
   scope.activeRequests++
   try {
@@ -1269,7 +1273,9 @@ function assertCircuitAllowsRequest(scope: ScopeCircuit, now: number): void {
   const { globalCircuit, metrics } = scope.registry
   for (const [circuit, label] of [[globalCircuit, 'global'], [scope, 'scope']] as const) {
     const phase = resolveCircuitPhase(circuit, now)
-    if (phase === 'open' || (phase === 'half_open' && circuit.probeInFlight)) {
+    if (phase === 'open' || (phase === 'half_open' && (
+      circuit.probeInFlight || (circuit === globalCircuit && !scope.contributesToGlobalCircuit)
+    ))) {
       metrics.circuitOpenRejections++
       const retryAfterSeconds = getRetryAfterSeconds(circuit, now) ?? 1
       throw createControlError(
@@ -1395,6 +1401,8 @@ function updateGlobalCircuitAffectedScopeEpoch(scope: ScopeCircuit): void {
 }
 
 function maybeOpenGlobalCircuit(sourceScope: ScopeCircuit, now: number): void {
+  if (!sourceScope.contributesToGlobalCircuit)
+    return
   const registry = sourceScope.registry
   const {
     globalCircuit,
@@ -1403,7 +1411,8 @@ function maybeOpenGlobalCircuit(sourceScope: ScopeCircuit, now: number): void {
     successfulRecoveriesAwaitingFollowers,
   } = registry
   const recentlyOpenedScopes = [...scopeCircuits.values()].filter(scope =>
-    scope.openedAt !== undefined
+    scope.contributesToGlobalCircuit
+    && scope.openedAt !== undefined
     && now - scope.openedAt <= OPAQUE_FORBIDDEN_FAILURE_WINDOW_MS,
   )
   if (recentlyOpenedScopes.length < 2)
@@ -1490,7 +1499,7 @@ function getRetryAfterSeconds(circuit: ScopeCircuit, now: number): number | unde
   return Math.max(1, Math.ceil((circuit.openUntil - now) / 1000))
 }
 
-function getScopeCircuit(registry: RecoveryRegistry, key: string): ScopeCircuit {
+function getScopeCircuit(registry: RecoveryRegistry, key: string, contributesToGlobalCircuit = true): ScopeCircuit {
   const { scopeCircuits } = registry
   const existing = scopeCircuits.get(key)
   if (existing)
@@ -1505,7 +1514,7 @@ function getScopeCircuit(registry: RecoveryRegistry, key: string): ScopeCircuit 
       })
     }
   }
-  const circuit = createRecoveryCircuit(registry)
+  const circuit = createRecoveryCircuit(registry, contributesToGlobalCircuit)
   scopeCircuits.set(key, circuit)
   return circuit
 }

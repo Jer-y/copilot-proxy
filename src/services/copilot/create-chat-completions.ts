@@ -42,7 +42,7 @@ export async function createChatCompletions(
     request: () => fetchCopilot(`${copilotBaseUrl(ctx)}/chat/completions`, {
       method: 'POST',
       headers: {
-        ...copilotHeaders(ctx, enableVision),
+        ...copilotHeaders(ctx, enableVision, { model: payload.model }),
         'X-Initiator': isAgentCall ? 'agent' : 'user',
       },
       body,

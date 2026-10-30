@@ -7,6 +7,7 @@ export interface AuthenticatedRequestContext {
 
 export interface ScopeCircuit {
   readonly registry: RecoveryRegistry
+  readonly contributesToGlobalCircuit: boolean
   pendingInitialAuthRequests: Set<AuthenticatedRequestContext>
   activeRequests: number
   phase: CircuitPhase
@@ -123,9 +124,10 @@ export class RecoveryRegistry {
   }
 }
 
-export function createRecoveryCircuit(registry: RecoveryRegistry): ScopeCircuit {
+export function createRecoveryCircuit(registry: RecoveryRegistry, contributesToGlobalCircuit = true): ScopeCircuit {
   return {
     registry,
+    contributesToGlobalCircuit,
     pendingInitialAuthRequests: new Set(),
     activeRequests: 0,
     circuitEpoch: 0,
