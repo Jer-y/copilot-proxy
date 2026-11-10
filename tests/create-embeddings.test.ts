@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 import { state } from '../src/lib/state'
 import { server } from '../src/server'
 import { createEmbeddings } from '../src/services/copilot/create-embeddings'
+import { createTestModelCatalog } from './model-fixtures'
 
 const originalFetch = globalThis.fetch
 
@@ -39,6 +40,7 @@ beforeEach(() => {
   state.defaultAccount.copilotToken = 'test-token'
   state.defaultAccount.vsCodeVersion = '1.0.0'
   state.defaultAccount.accountType = 'individual'
+  state.defaultAccount.models = createTestModelCatalog()
   // @ts-expect-error test mock only needs callable fetch shape
   globalThis.fetch = fetchMock
 })
